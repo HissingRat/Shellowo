@@ -1,0 +1,18 @@
+.{
+    .name = .Shellowo,
+    .version = "0.0.0",
+    .fingerprint = 0x8d217a35e2c64c2d, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#9707de2c7e9408b9326bb3c2c83ca0aa603fddca",
+            .hash = "dvui-0.5.0-dev-AQFJmbbs9gAKq7l6sNTZ5958PkPBH_dJ7rlbc4D7oYMs",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "assets",
+        "src",
+    },
+}
