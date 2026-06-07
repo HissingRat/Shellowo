@@ -29,6 +29,9 @@
 当前方向：
 
 - `libssh2` C 库绑定，作为 Shellow SSH/SFTP 后端首选。
+- 当前 vendor 版本：`third_party/libssh2-1.11.1`。
+- 当前 crypto backend 候选：`third_party/mbedtls-3.6.6`。
+- 当前 Zig build 已编译 `shellow_mbedcrypto` 与 `shellow_libssh2` 静态库，并通过 `libssh2_init/libssh2_exit` smoke test。
 - Zig 原生 SSH/SFTP 库暂不作为主路线。
 - 外部 `ssh` 进程桥接仅可作为诊断或临时验证手段，不进入正式运行时。
 
@@ -55,12 +58,15 @@
 | --- | --- |
 | `src/protocols/ssh.zig` | 稳定 SSH/SFTP 抽象，定义 endpoint、auth、host key policy、shell、sftp、client、connector。 |
 | `src/protocols/libssh2_backend.zig` | 未来 libssh2 backend，负责 C API、非阻塞等待、错误映射和 raw handle 生命周期。 |
+| `third_party/libssh2-1.11.1` | vendored libssh2 1.11.1 source。 |
+| `third_party/mbedtls-3.6.6` | vendored mbedTLS 3.6.6 source for libssh2 crypto backend。 |
 
 ## 4. 计划评估：Terminal Emulator
 
 当前方向：
 
 - 自建 `libvterm` C 库 binding，作为 Shellow terminal emulator 后端首选。
+- 当前 vendor 版本：`third_party/libvterm-0.3.3`。
 - 不在 DVUI widget 中手写 ANSI/VT escape parser。
 - 不把 terminal emulator API 直接暴露给 app/session/UI 层。
 
@@ -85,6 +91,7 @@
 | --- | --- |
 | `src/terminal/terminal.zig` 或同级 Shellow facade | 稳定 terminal emulator 抽象，定义输入字节、grid snapshot、cursor、style、resize。 |
 | `src/terminal/libvterm_backend.zig` | 未来 libvterm backend，负责 C API、状态回调、错误映射和 raw handle 生命周期。 |
+| `third_party/libvterm-0.3.3` | vendored libvterm 0.3.3 source。 |
 
 ## 5. 计划评估：FTP / FTPS
 

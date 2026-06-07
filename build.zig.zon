@@ -14,5 +14,6 @@
         "build.zig.zon",
         "assets",
         "src",
+        "third_party",
     },
 }
