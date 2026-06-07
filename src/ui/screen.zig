@@ -259,7 +259,7 @@ pub fn frame(app: *App) !dvui.App.Result {
 
 fn topBar(app: *App, palette: theme.Palette) void {
     const bar_height: f32 = 32;
-    const button_height: f32 = 28;
+    const button_height: f32 = 26;
     const close_size: f32 = 18;
     const controls_enabled = !app.configVisible();
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, theme.topbar(.{
@@ -286,7 +286,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
 
     for (app.sessions.tabs.items) |tab| {
         const active = app.sessions.active_tab_id == tab.id;
-        switch (connectionTab(tab, active, button_height, close_size, palette, controls_enabled)) {
+        switch (connectionTab(tab, active, button_height - 2, close_size - 2, palette, controls_enabled)) {
             .none => {},
             .activate => app.sessions.activate(tab.id),
             .close => {
@@ -340,36 +340,52 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
         .font_size = theme.font_sizes.tab,
     };
     const title_width = tabTitleWidth(tab.title);
-    var box = dvui.box(@src(), .{ .dir = .horizontal }, theme.buttonOptions(.{
+    var bg: dvui.ButtonWidget = undefined;
+    bg.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
         .gravity_y = 0.5,
         .min_size_content = .height(height),
+        .max_size_content = .height(height),
         .padding = .{ .x = 0, .y = 0, .w = 2, .h = 0 },
         .margin = .{ .x = 4 },
         .corner_radius = .all(5),
         .id_extra = tab.id,
     }, palette, style));
-    defer box.deinit();
+    bg.drawBackground();
+    defer bg.deinit();
+
+    var content = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .both,
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = tab.id + 1_000,
+    });
+    defer content.deinit();
 
     if (maybeButtonNoHoverAndPress(@src(), tab.title, .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = title_width, .h = height },
-        .padding = .{ .x = 5, .y = 1, .w = 5, .h = 0 },
+        .max_size_content = .{ .w = title_width, .h = height },
+        .padding = .{ .x = 5, .y = 2, .w = 5, .h = 0 },
         .margin = .all(0),
-        .corner_radius = .all(5),
+        .corner_radius = .all(0),
         .id_extra = tab.id + 10_000,
-    }, palette, style, enabled)) {
+    }, palette, .{
+        .variant = .ghost,
+        .font_size = style.font_size,
+    }, enabled)) {
         return .activate;
     }
 
     if (maybeButton(@src(), "x", .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = close_size, .h = close_size },
-        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 2 },
+        .padding = .{ .x = 0.5, .y = 2, .w = 0, .h = 2 },
         .margin = .all(0),
         .corner_radius = .all(5),
         .id_extra = tab.id + 20_000,
     }, palette, .{
         .state = style.state,
+        .variant = .ghost,
         .font_size = theme.font_sizes.close,
     }, enabled)) {
         return .close;

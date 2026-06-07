@@ -26,11 +26,11 @@
 
 ## 3. 计划评估：SSH / SFTP
 
-候选方向：
+当前方向：
 
-- `libssh2` C 库绑定，当前首选
-- Zig 原生 SSH/SFTP 库
-- 外部 `ssh` 进程桥接作为早期验证手段
+- `libssh2` C 库绑定，作为 Shellow SSH/SFTP 后端首选。
+- Zig 原生 SSH/SFTP 库暂不作为主路线。
+- 外部 `ssh` 进程桥接仅可作为诊断或临时验证手段，不进入正式运行时。
 
 准入标准：
 
@@ -45,6 +45,7 @@
 - SSH/SFTP controller 不依赖 DVUI。
 - 终端字节流不在 UI 层改写。
 - SFTP 传输必须进入 transfer queue。
+- 生产代码只调用 Shellow 自有 SSH/SFTP API，不直接调用 `libssh2` C API。
 - Raw libssh2 handle 只允许出现在 `src/protocols/libssh2_backend.zig` 或同级 backend/shim 文件中。
 - App、service 和 UI 层只使用 `src/protocols/ssh.zig` 暴露的 Shellow API。
 
@@ -55,13 +56,43 @@
 | `src/protocols/ssh.zig` | 稳定 SSH/SFTP 抽象，定义 endpoint、auth、host key policy、shell、sftp、client、connector。 |
 | `src/protocols/libssh2_backend.zig` | 未来 libssh2 backend，负责 C API、非阻塞等待、错误映射和 raw handle 生命周期。 |
 
-## 4. 计划评估：FTP / FTPS
+## 4. 计划评估：Terminal Emulator
 
-候选方向：
+当前方向：
 
-- Zig 原生 FTP client
-- C 库绑定
-- 自研最小 FTP client
+- 自建 `libvterm` C 库 binding，作为 Shellow terminal emulator 后端首选。
+- 不在 DVUI widget 中手写 ANSI/VT escape parser。
+- 不把 terminal emulator API 直接暴露给 app/session/UI 层。
+
+准入标准：
+
+- 支持常见 VT/xterm 控制序列。
+- 支持 grid、scrollback、cursor、style/color 状态输出。
+- 支持输入编码、粘贴、选区、复制所需的数据边界。
+- 支持与 SSH PTY cols/rows resize 同步。
+- 可在 Windows/macOS/Linux 构建或有清晰 fallback。
+
+维护原则：
+
+- PTY channel 只负责字节流和 resize，不负责 terminal escape 解析。
+- Terminal emulator backend 不依赖 DVUI。
+- DVUI terminal widget 只渲染 Shellow terminal state，不直接调用 `libvterm`。
+- Raw libvterm handle 只允许出现在 dedicated backend/shim 文件中。
+
+当前 Shellow API 落点：
+
+| 文件 | 用途 |
+| --- | --- |
+| `src/terminal/terminal.zig` 或同级 Shellow facade | 稳定 terminal emulator 抽象，定义输入字节、grid snapshot、cursor、style、resize。 |
+| `src/terminal/libvterm_backend.zig` | 未来 libvterm backend，负责 C API、状态回调、错误映射和 raw handle 生命周期。 |
+
+## 5. 计划评估：FTP / FTPS
+
+当前方向：
+
+- FTP 优先级下调到 SSH terminal 和 SFTP MVP 之后。
+- 第一版倾向自研最小 FTP client，保持 Shellow 自有 API。
+- C 库绑定和 `libcurl` 只作为后续兼容性/FTPS 压力增大时的评估项。
 
 准入标准：
 
@@ -73,8 +104,10 @@
 
 - FTP controller 与 SSH/SFTP controller 分离。
 - FTP workspace 使用 `file_only` 布局。
+- FTP 生产代码只调用 Shellow 自有 FTP API，不直接散落 socket/protocol 细节到 UI/session。
+- FTPS 暂缓，不阻塞 SSH terminal MVP。
 
-## 5. 计划评估：本地存储
+## 6. 计划评估：本地存储
 
 早期策略：
 
@@ -88,7 +121,7 @@
 - 平台安全存储
 - 加密文件存储
 
-## 6. 新依赖准入规则
+## 7. 新依赖准入规则
 
 新增或替换第三方项目时，至少补齐：
 

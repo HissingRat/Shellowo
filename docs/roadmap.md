@@ -50,9 +50,11 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 交付：
 
-- SSH 连接选型与集成
+- `libssh2` 后端构建与 Shellow SSH wrapper
+- SSH connect/auth/host-key verification
 - PTY shell channel
-- 终端渲染 widget
+- `libvterm` binding 与 Shellow terminal emulator wrapper
+- 终端渲染 widget / grid viewport
 - 输入输出
 - resize 同步
 - 断开、重连、错误状态
@@ -84,7 +86,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 ## Phase 4: FTP MVP
 
-目标：加入第二种独立会话类型，但不污染 SSH 工作流。
+目标：在 SSH terminal 和 SFTP MVP 稳定后，加入第二种独立会话类型，但不污染 SSH 工作流。
 
 交付：
 
@@ -154,10 +156,11 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 1. 先拆 `src/main.zig`，立 app shell。
 2. 先做布局和连接配置。
-3. 先打通 SSH 终端。
-4. 再接 SFTP 文件面板。
-5. 再补 FTP 独立会话。
-6. 最后统一传输中心、设置和发布。
+3. 用 `libssh2` 封装打通 SSH connect/auth/PTY shell。
+4. 用 `libvterm` 封装打通 terminal emulator 和终端渲染。
+5. 再接 SFTP 文件面板和 transfer queue。
+6. 再补 FTP 独立会话。
+7. 最后统一传输中心、设置和发布。
 
 ## 近期待办
 
@@ -165,5 +168,6 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 2. 创建 `src/app`，把窗口帧和工作区状态从 `main.zig` 拆出来。
 3. 做连接管理的 DVUI 表单与列表。
 4. 做 profile 文件存储，暂不保存敏感信息。
-5. 调研并验证 Zig SSH/SFTP 方案。
-6. 为终端 widget 建立尺寸同步和回归清单。
+5. 验证 `libssh2` 构建、链接和 backend wrapper 策略。
+6. 验证 `libvterm` binding、terminal state 和尺寸同步策略。
+7. 为终端 widget 建立尺寸同步和回归清单。

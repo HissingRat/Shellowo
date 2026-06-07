@@ -1,64 +1,157 @@
 const dvui = @import("dvui");
+
 const workspace = @import("../core/workspace.zig");
+const file_panel = @import("workspace/file_panel.zig");
+const resize = @import("workspace/resize.zig");
+const status_panel = @import("workspace/status_panel.zig");
+const terminal_panel = @import("workspace/terminal_panel.zig");
 const theme = @import("theme.zig");
 
+const default_sidebar_width: f32 = 190;
+const default_file_panel_height: f32 = 230;
+const default_local_file_width: f32 = 214;
+const transfer_height: f32 = 24;
+
+const min_sidebar_width: f32 = 150;
+const max_sidebar_width: f32 = 320;
+const min_file_panel_height: f32 = 150;
+const max_file_panel_height: f32 = 430;
+
+const LayoutState = struct {
+    sidebar_width: f32 = default_sidebar_width,
+    file_panel_height: f32 = default_file_panel_height,
+    local_file_width: f32 = default_local_file_width,
+};
+
 pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette) void {
-    var stage = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
+    var stage = dvui.box(@src(), .{ .dir = .vertical }, theme.app(.{
         .expand = .both,
-        .padding = .all(18),
-        .corner_radius = .all(0),
+        .padding = .all(0),
         .id_extra = 600,
-    }, palette).override(.{
-        .color_fill = palette.app_bg,
-        .color_border = palette.border_subtle,
-    }));
+    }, palette));
     defer stage.deinit();
 
-    dvui.label(@src(), "{s}", .{tab.title}, .{
-        .font = theme.textFont(tab.title, 20),
-        .color_text = palette.text,
-        .margin = .{ .h = 8 },
-    });
-    dvui.label(@src(), "{s} / {s}", .{ tab.layout.label(), tab.status.label() }, .{
-        .color_text = palette.muted_text,
-        .font = theme.textFont(tab.layout.label(), 12),
-        .margin = .{ .h = 18 },
-    });
+    const layout = dvui.dataGetPtrDefault(null, stage.data().id, "layout", LayoutState, .{});
 
     switch (tab.layout) {
-        .terminal_file => sshWorkspace(palette),
-        .file_only => fileOnlyWorkspace(palette),
+        .terminal_file => terminalFileWorkspace(tab, palette, layout),
+        .file_only => fileOnlyWorkspace(tab, palette, layout),
     }
 }
 
-fn sshWorkspace(palette: theme.Palette) void {
-    var terminal = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
+fn terminalFileWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
+    var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
-        .padding = .all(12),
-        .corner_radius = .all(4),
+        .padding = .all(0),
         .id_extra = 610,
-    }, palette).override(.{
-        .color_fill = palette.surface_bg,
-        .color_border = palette.border_subtle,
-    }));
-    defer terminal.deinit();
+    });
+    defer shell.deinit();
 
-    dvui.label(@src(), "Terminal", .{}, .{ .font = theme.textFont("Terminal", 13), .color_text = palette.text });
-    dvui.label(@src(), "$ ssh session will render here", .{}, .{ .font = theme.textFont("$ ssh session will render here", 12), .color_text = palette.text_subtle });
+    status_panel.show(tab, palette, .{
+        .width = layout.sidebar_width,
+        .id_extra = 620,
+    });
+
+    resize.handle(palette, .{
+        .axis = .vertical,
+        .value = &layout.sidebar_width,
+        .min = min_sidebar_width,
+        .max = max_sidebar_width,
+        .id_extra = 621,
+    });
+
+    var main = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .padding = .all(0),
+        .id_extra = 630,
+    });
+    defer main.deinit();
+
+    terminal_panel.show(tab, palette, .{
+        .id_extra = 640,
+    });
+
+    resize.handle(palette, .{
+        .axis = .horizontal,
+        .value = &layout.file_panel_height,
+        .min = min_file_panel_height,
+        .max = max_file_panel_height,
+        .direction = -1,
+        .id_extra = 650,
+    });
+
+    file_panel.show(tab, palette, .{
+        .height = layout.file_panel_height,
+        .local_width = &layout.local_file_width,
+        .id_extra = 660,
+    });
+
+    transferStrip(palette, false, 670);
 }
 
-fn fileOnlyWorkspace(palette: theme.Palette) void {
-    var files = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
+fn fileOnlyWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
+    var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
-        .padding = .all(12),
-        .corner_radius = .all(4),
-        .id_extra = 620,
+        .padding = .all(0),
+        .id_extra = 680,
+    });
+    defer shell.deinit();
+
+    status_panel.show(tab, palette, .{
+        .width = layout.sidebar_width,
+        .id_extra = 690,
+    });
+
+    resize.handle(palette, .{
+        .axis = .vertical,
+        .value = &layout.sidebar_width,
+        .min = min_sidebar_width,
+        .max = max_sidebar_width,
+        .id_extra = 691,
+    });
+
+    var main = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .padding = .all(0),
+        .id_extra = 700,
+    });
+    defer main.deinit();
+
+    file_panel.show(tab, palette, .{
+        .height = null,
+        .local_width = &layout.local_file_width,
+        .id_extra = 710,
+    });
+
+    transferStrip(palette, false, 720);
+}
+
+fn transferStrip(palette: theme.Palette, full_width: bool, id_extra: usize) void {
+    _ = full_width;
+    var strip = dvui.box(@src(), .{ .dir = .horizontal }, theme.panel(.{
+        .expand = .horizontal,
+        .min_size_content = .height(transfer_height),
+        .max_size_content = .height(transfer_height),
+        .padding = .{ .x = 10, .y = 0, .w = 10, .h = 0 },
+        .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.surface_bg,
+        .color_fill = palette.topbar_bg,
         .color_border = palette.border_subtle,
     }));
-    defer files.deinit();
+    defer strip.deinit();
 
-    dvui.label(@src(), "Files", .{}, .{ .font = theme.textFont("Files", 13), .color_text = palette.text });
-    dvui.label(@src(), "Remote directory table will render here.", .{}, .{ .font = theme.textFont("Remote directory table will render here.", 12), .color_text = palette.text_subtle });
+    dvui.label(@src(), "Transfers", .{}, .{
+        .font = theme.textFont("Transfers", 10),
+        .color_text = palette.text_subtle,
+        .gravity_y = 0.5,
+        .id_extra = id_extra + 1,
+    });
+
+    dvui.label(@src(), "0 active tasks", .{}, .{
+        .font = theme.textFont("0 active tasks", 10),
+        .color_text = palette.muted_text,
+        .gravity_x = 1,
+        .gravity_y = 0.5,
+        .id_extra = id_extra + 2,
+    });
 }

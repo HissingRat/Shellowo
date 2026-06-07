@@ -17,11 +17,30 @@ Read these before cross-layer work:
 
 Use this skill to keep Shellow on the native Zig + DVUI route while building a FinalShell-style remote workstation.
 
+## Current Technical Stack
+
+Prioritize SSH terminal work before FTP.
+
+- GUI: Zig + DVUI + SDL3.
+- SSH/SFTP backend: `libssh2`, wrapped behind Shellow-owned Zig APIs.
+- Terminal emulator backend: Shellow `libvterm` binding, wrapped behind Shellow-owned terminal APIs.
+- FTP backend: lower priority; start with a Shellow-owned minimal FTP client after SSH terminal and SFTP are stable.
+- FTPS: defer until the plain FTP client and transfer system are stable.
+
+Production code must call Shellow abstractions, not third-party APIs directly:
+
+- Use `src/protocols/ssh.zig` or a same-layer Shellow facade for SSH/SFTP.
+- Keep raw `libssh2` handles inside `src/protocols/libssh2_backend.zig` or a same-layer backend/shim file.
+- Use `src/terminal/` or `src/protocols/terminal/` Shellow abstractions for terminal emulation.
+- Keep raw `libvterm` handles inside a dedicated `libvterm_backend.zig`/shim file.
+- Keep FTP runtime separate from SSH/SFTP runtime even if file operation data shapes are shared.
+
 ## Architecture Rules
 
 - Keep UI, domain model, service/runtime, and protocol controller separate.
 - Keep SSH/SFTP and FTP controller/runtime types separate.
 - Share data shapes such as `RemoteFileEntry`, `TransferTask`, and user-facing error models.
+- Hide all third-party library APIs behind Shellow-owned wrappers before production use.
 - Do not put protocol clients inside DVUI widget code.
 - Do not put file transfer through shell byte streams.
 - Do not save secrets in ordinary profile files.
@@ -38,6 +57,14 @@ For a new feature:
 6. Update `docs/integration-inventory.md` for new dependencies.
 7. Run `zig build`.
 
+Current priority order:
+
+1. SSH connect/auth/host-key verification through `libssh2_backend`.
+2. PTY shell channel, read/write, close, and resize synchronization.
+3. Terminal emulator binding and terminal viewport/render state.
+4. SFTP list/upload/download wired into transfer queue.
+5. FTP file-only controller after SSH terminal and SFTP are usable.
+
 ## Session Modeling
 
 Use these conceptual boundaries:
@@ -48,6 +75,16 @@ Use these conceptual boundaries:
 - `TransferTask`: global task independent of the widget that started it.
 
 Avoid a single giant `RemoteSession` with optional terminal/file/auth fields.
+
+## Terminal Modeling
+
+Use these boundaries:
+
+- `TerminalEmulator`: accepts PTY bytes and produces grid/scrollback/cursor state.
+- `TerminalViewport`: UI-owned presentation state such as selection, visible rows, and font metrics.
+- `SshPtyChannel`: protocol-owned byte stream and resize endpoint.
+
+Do not parse ANSI/VT escape sequences in DVUI widgets. Feed bytes into the terminal emulator wrapper, then render the resulting grid.
 
 ## Storage Rules
 

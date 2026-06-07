@@ -4,10 +4,13 @@
 
 Shellow 需要 SSH shell 和 SFTP 文件能力。`libssh2` 适合作为底层库，但它的 C API、非阻塞状态和原始 handle 不应该泄漏到 app state、DVUI widget 或 transfer system。
 
+生产代码必须通过 Shellow 自有 wrapper 使用 SSH/SFTP 能力，不直接调用 `libssh2` API。
+
 ## 目标
 
 - 建立 Shellow 自己的 `ssh` API。
 - 将 `libssh2` 限制在 backend 文件内。
+- 将 `libssh2` C API、raw handle、错误码和非阻塞等待细节封装在 backend/shim 内。
 - 支持 SSH shell、PTY resize、SFTP 文件操作。
 - 为 host key verification 和认证错误映射预留边界。
 
@@ -24,6 +27,7 @@ Shellow 需要 SSH shell 和 SFTP 文件能力。`libssh2` 适合作为底层库
   - 包含 endpoint、auth、host key policy、shell、sftp、client、connector。
 - `src/protocols/libssh2_backend.zig`
   - 未来唯一允许接触 raw libssh2 handle 的位置。
+  - 负责 C API 调用、生命周期、错误映射和 socket wait 策略。
 
 ## API 边界
 
