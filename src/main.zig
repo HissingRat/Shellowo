@@ -1,6 +1,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const App = @import("app/App.zig");
+const libssh2_backend = @import("protocols/libssh2_backend.zig");
 const ui_theme = @import("ui/theme.zig");
 const screen = @import("ui/screen.zig");
 
@@ -32,8 +33,12 @@ var app_state: ?App = null;
 
 fn appInit(window: *dvui.Window) !void {
     const init = dvui.App.main_init orelse return error.MissingProcessInit;
+    try libssh2_backend.init();
     loadEmbeddedFonts(window);
-    app_state = try App.initPersistent(gpa_instance.allocator(), init.io);
+    app_state = App.initPersistent(gpa_instance.allocator(), init.io) catch |err| {
+        libssh2_backend.deinit();
+        return err;
+    };
 }
 
 fn appDeinit() void {
@@ -41,6 +46,7 @@ fn appDeinit() void {
         app.deinit();
     }
     app_state = null;
+    libssh2_backend.deinit();
     _ = gpa_instance.deinit();
 }
 

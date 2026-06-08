@@ -420,7 +420,7 @@ fn mainArea(app: *App, palette: theme.Palette) void {
     defer body.deinit();
 
     if (app.sessions.activeTab()) |tab| {
-        workspace_view.show(tab, palette);
+        workspace_view.show(app, tab, palette);
     } else {
         homeStage(app, palette);
     }

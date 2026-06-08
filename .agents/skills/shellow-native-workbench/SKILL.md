@@ -43,7 +43,7 @@ Production code must call Shellow abstractions, not third-party APIs directly:
 - Hide all third-party library APIs behind Shellow-owned wrappers before production use.
 - Do not put protocol clients inside DVUI widget code.
 - Do not put file transfer through shell byte streams.
-- Do not save secrets in ordinary profile files.
+- Profile secrets may be saved only through Shellow-owned credential storage boundaries; do not scatter plaintext secrets outside the profile repository/security layer.
 
 ## Implementation Order
 
@@ -88,8 +88,8 @@ Do not parse ANSI/VT escape sequences in DVUI widgets. Feed bytes into the termi
 
 ## Storage Rules
 
-- Profile metadata may be persisted early.
-- Passwords, passphrases, tokens, and private key contents need a separate security design.
+- Profile metadata and user-approved secrets may be persisted, but secrets must pass through the security/profile repository boundary.
+- Passwords, passphrases, tokens, and private key contents need an explicit storage strategy before release.
 - Log host/user/status, not secrets.
 - Prefer repository/service APIs over direct file reads from UI.
 
@@ -100,6 +100,8 @@ Always run:
 ```powershell
 zig build
 ```
+
+Do not run `git diff` or `git status` after every code edit as a fixed ritual. Use them only when they are needed for review, troubleshooting, handoff, commit prep, or when the user asks.
 
 For terminal changes, also consult:
 

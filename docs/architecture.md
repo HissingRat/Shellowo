@@ -182,7 +182,7 @@ pub const FtpProfile = struct {
 };
 ```
 
-敏感字段先不要直接写入普通 profile 文件。密码、私钥 passphrase、临时凭据需要单独设计。
+敏感字段可以在用户选择持久化时进入 profile 存储，但必须通过 Shellow-owned profile repository/security 边界。密码、私钥 passphrase、临时凭据不能在 UI、日志或普通业务对象里明文散落。
 
 ### 6.3 Workspace Tab
 
@@ -296,8 +296,8 @@ FTP 工作区：
 
 敏感信息策略需要单独决策：
 
-- 普通 profile 文件只保存非敏感元数据。
-- 密码、passphrase、私钥内容不直接写入明文 JSON。
+- profile 可以保存用户选择持久化的 secret。
+- 密码、passphrase、私钥内容必须通过 profile repository/security 层定义的存储格式处理，不直接明文写入 JSON。
 - 可以先支持每次连接输入密码，再评估平台安全存储。
 
 ## 12. 实施原则

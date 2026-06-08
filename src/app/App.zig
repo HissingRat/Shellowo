@@ -1,8 +1,14 @@
 const std = @import("std");
 const profile = @import("../core/profile.zig");
 const transfer = @import("../core/transfer.zig");
+const libssh2_backend = @import("../protocols/libssh2_backend.zig");
+const ssh = @import("../protocols/ssh.zig");
 const profile_repository = @import("../services/profile_repository.zig");
 const session_registry = @import("../services/session_registry.zig");
+const ssh_session = @import("../services/ssh_session.zig");
+const known_hosts_store = @import("../security/known_hosts.zig");
+const libvterm_backend = @import("../terminal/libvterm_backend.zig");
+const terminal = @import("../terminal/terminal.zig");
 const ui_theme = @import("../ui/theme.zig");
 
 const App = @This();
@@ -15,7 +21,10 @@ const GroupExpansion = struct {
 allocator: std.mem.Allocator,
 io: ?std.Io = null,
 profiles: profile_repository.MemoryProfileRepository,
+known_hosts: known_hosts_store.KnownHosts,
 sessions: session_registry.MockSessionRegistry,
+ssh_backend: libssh2_backend.Backend,
+terminal_backend: libvterm_backend.Backend,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
 selected_profile_id: ?u64 = null,
 draft: profile.ProfileDraft = .{},
@@ -30,13 +39,18 @@ group_expansions: std.ArrayList(GroupExpansion) = .empty,
 group_defaults_initialized: bool = false,
 
 const profiles_path = "data/profiles.json";
+const known_hosts_path = "data/known_hosts.json";
 
 pub fn initMemory(allocator: std.mem.Allocator) !App {
     var app = App{
         .allocator = allocator,
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
+        .known_hosts = known_hosts_store.KnownHosts.init(allocator),
         .sessions = session_registry.MockSessionRegistry.init(allocator),
+        .ssh_backend = .{ .allocator = allocator },
+        .terminal_backend = .{ .allocator = allocator },
     };
+    app.known_hosts.trust_missing = true;
     app.draft.reset(.ssh);
     try app.profiles.seedDefaults();
     app.selectFirstProfile();
@@ -49,10 +63,15 @@ pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
         .allocator = allocator,
         .io = io,
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
+        .known_hosts = known_hosts_store.KnownHosts.init(allocator),
         .sessions = session_registry.MockSessionRegistry.init(allocator),
+        .ssh_backend = .{ .allocator = allocator },
+        .terminal_backend = .{ .allocator = allocator },
     };
+    app.known_hosts.trust_missing = true;
     app.draft.reset(.ssh);
     try app.profiles.loadFromDisk(io, profiles_path);
+    try app.known_hosts.loadFromDisk(io, known_hosts_path);
     if (app.profiles.items().len == 0) {
         try app.profiles.seedDefaults();
         try app.profiles.saveToDisk(io, profiles_path);
@@ -67,8 +86,10 @@ pub fn deinit(self: *App) void {
         self.allocator.free(entry.name);
     }
     self.group_expansions.deinit(self.allocator);
-    self.profiles.deinit();
     self.sessions.deinit();
+    self.persistKnownHosts();
+    self.profiles.deinit();
+    self.known_hosts.deinit();
     for (self.transfers.items) |task| {
         self.allocator.free(task.title);
     }
@@ -119,6 +140,7 @@ pub fn toggleTheme(self: *App) void {
 
 pub fn beginFrame(self: *App) void {
     self.frame_index +%= 1;
+    self.sessions.pollWorkers();
 }
 
 pub fn saveDraft(self: *App) void {
@@ -211,11 +233,22 @@ pub fn openProfile(self: *App, id: u64) void {
         return;
     };
 
-    _ = self.sessions.openMockTab(item.*) catch {
-        self.message = "Could not open mock tab";
-        return;
-    };
-    self.message = "Session opened";
+    switch (item.*) {
+        .ssh => {
+            _ = self.sessions.openSshWorkerTab(item.*, self.sshRuntimeOptions()) catch {
+                self.message = "Could not start SSH session";
+                return;
+            };
+            self.message = "SSH session starting";
+        },
+        .ftp => {
+            _ = self.sessions.openMockTab(item.*) catch {
+                self.message = "Could not open mock tab";
+                return;
+            };
+            self.message = "FTP session opened";
+        },
+    }
 }
 
 pub fn openSelectedProfile(self: *App) void {
@@ -238,6 +271,67 @@ pub fn profileClicked(self: *App, id: u64) void {
 pub fn currentTitle(self: *App) []const u8 {
     if (self.sessions.activeTab()) |tab| return tab.title;
     return "Shellowo";
+}
+
+pub fn sendTerminalBytes(self: *App, tab_id: u64, bytes: []const u8) void {
+    if (bytes.len == 0) return;
+    self.sessions.sendSshInput(tab_id, bytes) catch {
+        self.message = "Could not send terminal input";
+        return;
+    };
+}
+
+pub fn sendTerminalMouse(self: *App, tab_id: u64, event: terminal.MouseEvent) void {
+    self.sessions.sendSshMouse(tab_id, event) catch {
+        self.message = "Could not send terminal mouse event";
+        return;
+    };
+}
+
+pub fn resizeTerminal(self: *App, tab_id: u64, size: ssh.PtySize) void {
+    self.sessions.resizeSshTerminal(tab_id, size) catch {
+        self.message = "Could not resize terminal";
+        return;
+    };
+}
+
+pub fn clearTerminalScrollback(self: *App, tab_id: u64) void {
+    self.sessions.clearSshScrollback(tab_id) catch {
+        self.message = "Could not clear terminal scrollback";
+        return;
+    };
+}
+
+pub fn createTerminalSlot(self: *App, tab_id: u64) void {
+    _ = self.sessions.createTerminalSlot(tab_id) catch {
+        self.message = "Could not create terminal";
+        return;
+    };
+    self.message = "Terminal created";
+}
+
+pub fn activateTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
+    if (!self.sessions.activateTerminalSlot(tab_id, slot_id)) {
+        self.message = "Terminal not found";
+        return;
+    }
+    self.message = "Terminal selected";
+}
+
+pub fn closeTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
+    if (!self.sessions.closeTerminalSlot(tab_id, slot_id)) {
+        self.message = "Terminal not found";
+        return;
+    }
+    self.message = "Terminal closed";
+}
+
+pub fn reconnectTab(self: *App, tab_id: u64) void {
+    const tab = self.sessions.tabById(tab_id) orelse {
+        self.message = "Workspace tab not found";
+        return;
+    };
+    self.openProfile(tab.profile_id);
 }
 
 fn seedTransfers(self: *App) !void {
@@ -263,6 +357,39 @@ fn persistProfiles(self: *App) void {
     };
 }
 
+pub fn persistKnownHosts(self: *App) void {
+    const io = self.io orelse return;
+    self.known_hosts.saveToDisk(io, known_hosts_path) catch {
+        self.message = "Known host trusted in memory, but disk write failed";
+    };
+}
+
+pub fn sshRuntimeOptions(self: *App) ssh_session.Options {
+    return .{
+        .connector = self.ssh_backend.connector(),
+        .terminal_factory = terminalFactory(&self.terminal_backend),
+        .host_key_verifier = self.known_hosts.verifier(),
+        .host_key_policy = .trust_on_first_use,
+    };
+}
+
+fn terminalFactory(backend: *libvterm_backend.Backend) ssh_session.TerminalFactory {
+    return .{
+        .context = backend,
+        .vtable = &terminal_factory_vtable,
+    };
+}
+
+fn createTerminal(context: *anyopaque, allocator: std.mem.Allocator, size: terminal.Size) terminal.Error!terminal.Emulator {
+    _ = allocator;
+    const backend: *libvterm_backend.Backend = @ptrCast(@alignCast(context));
+    return backend.create(size);
+}
+
+const terminal_factory_vtable: ssh_session.TerminalFactory.VTable = .{
+    .create = createTerminal,
+};
+
 fn normalizedGroup(group_name: []const u8) []const u8 {
     return if (group_name.len == 0) "Default" else group_name;
 }
@@ -280,8 +407,6 @@ fn addGroupExpansion(self: *App, group_name: []const u8, expanded: bool) !void {
         .expanded = expanded,
     });
 }
-
-
 
 test "app seeds profiles" {
     var app = try App.initMemory(std.testing.allocator);

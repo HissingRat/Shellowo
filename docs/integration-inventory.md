@@ -32,6 +32,8 @@
 - 当前 vendor 版本：`third_party/libssh2-1.11.1`。
 - 当前 crypto backend 候选：`third_party/mbedtls-3.6.6`。
 - 当前 Zig build 已编译 `shellow_mbedcrypto` 与 `shellow_libssh2` 静态库，并通过 `libssh2_init/libssh2_exit` smoke test。
+- `src/protocols/libssh2_backend.zig` 已具备第一版阻塞式 connect/auth/shell channel wrapper，并在认证前提取 host key SHA256 fingerprint 交给 Shellow verifier；known_hosts strict/TOFU 存储已接入，agent auth、SFTP 仍需继续实现。
+- `zig build ssh-probe -- host port username password` 可通过 Shellow libssh2 backend 做真实 SSH connect/auth/open shell/write/read smoke test。
 - Zig 原生 SSH/SFTP 库暂不作为主路线。
 - 外部 `ssh` 进程桥接仅可作为诊断或临时验证手段，不进入正式运行时。
 
@@ -67,6 +69,7 @@
 
 - 自建 `libvterm` C 库 binding，作为 Shellow terminal emulator 后端首选。
 - 当前 vendor 版本：`third_party/libvterm-0.3.3`。
+- 当前 Zig build 已编译 `shellow_libvterm` 静态库，并通过 `src/terminal/libvterm_shim.c` 将 C bitfield/callback-facing cell 数据转换为 Shellow terminal snapshot。
 - 不在 DVUI widget 中手写 ANSI/VT escape parser。
 - 不把 terminal emulator API 直接暴露给 app/session/UI 层。
 
@@ -89,8 +92,9 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `src/terminal/terminal.zig` 或同级 Shellow facade | 稳定 terminal emulator 抽象，定义输入字节、grid snapshot、cursor、style、resize。 |
-| `src/terminal/libvterm_backend.zig` | 未来 libvterm backend，负责 C API、状态回调、错误映射和 raw handle 生命周期。 |
+| `src/terminal/terminal.zig` | 稳定 terminal emulator 抽象，定义输入字节、grid snapshot、cursor、style、resize。 |
+| `src/terminal/libvterm_backend.zig` | libvterm backend，负责 C API、状态转换和 raw handle 生命周期。 |
+| `src/terminal/libvterm_shim.c` | C shim，负责把 libvterm bitfield cell/color 数据转成 Zig 可直接消费的 plain struct。 |
 | `third_party/libvterm-0.3.3` | vendored libvterm 0.3.3 source。 |
 
 ## 5. 计划评估：FTP / FTPS
@@ -119,7 +123,7 @@
 早期策略：
 
 - profile 元数据使用本地文件。
-- 敏感信息不进入普通 profile 文件。
+- 用户选择持久化的敏感信息可以进入 profile 存储，但必须通过 profile repository/security 层处理，不在 UI、日志或普通业务对象里明文散落。
 - settings、layout、recent sessions 可以先用 JSON 或 Zig 结构化序列化。
 
 后续评估：

@@ -38,6 +38,17 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const ssh_probe = b.addExecutable(.{
+        .name = "shellow-ssh-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ssh_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    attachNativeDeps(b, ssh_probe, native_deps);
+    b.installArtifact(ssh_probe);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -46,6 +57,33 @@ pub fn build(b: *std.Build) void {
 
     if (b.args) |args| {
         run_cmd.addArgs(args);
+    }
+
+    const ssh_probe_step = b.step("ssh-probe", "Probe an SSH server through Shellow's libssh2 backend");
+    const ssh_probe_cmd = b.addRunArtifact(ssh_probe);
+    ssh_probe_step.dependOn(&ssh_probe_cmd.step);
+    ssh_probe_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        ssh_probe_cmd.addArgs(args);
+    }
+
+    const ssh_worker_probe = b.addExecutable(.{
+        .name = "shellow-ssh-worker-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ssh_worker_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    attachNativeDeps(b, ssh_worker_probe, native_deps);
+    b.installArtifact(ssh_worker_probe);
+
+    const ssh_worker_probe_step = b.step("ssh-worker-probe", "Probe an SSH server through Shellow's worker-backed runtime");
+    const ssh_worker_probe_cmd = b.addRunArtifact(ssh_worker_probe);
+    ssh_worker_probe_step.dependOn(&ssh_worker_probe_cmd.step);
+    ssh_worker_probe_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        ssh_worker_probe_cmd.addArgs(args);
     }
 
     const tests = b.addTest(.{
@@ -57,6 +95,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     attachNativeDeps(b, tests, native_deps);
+    tests.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
@@ -65,6 +104,7 @@ pub fn build(b: *std.Build) void {
 const NativeDeps = struct {
     mbedcrypto: *std.Build.Step.Compile,
     libssh2: *std.Build.Step.Compile,
+    libvterm: *std.Build.Step.Compile,
 };
 
 fn addNativeDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) NativeDeps {
@@ -104,25 +144,85 @@ fn addNativeDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
     libssh2.root_module.addCSourceFiles(.{
         .root = b.path("third_party/libssh2-1.11.1/src"),
         .files = &libssh2_sources,
+        .flags = libssh2FlagsForTarget(target),
+    });
+
+    const libvterm_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const libvterm = b.addLibrary(.{
+        .name = "shellow_libvterm",
+        .root_module = libvterm_module,
+    });
+    libvterm.root_module.addIncludePath(b.path("third_party/libvterm-0.3.3/include"));
+    libvterm.root_module.addIncludePath(b.path("third_party/libvterm-0.3.3/src"));
+    libvterm.root_module.addIncludePath(b.path("src/terminal"));
+    libvterm.root_module.addCSourceFiles(.{
+        .root = b.path("third_party/libvterm-0.3.3/src"),
+        .files = &libvterm_sources,
         .flags = &.{
-            "-DLIBSSH2_MBEDTLS",
-            "-DLIBSSH2_LIBRARY",
-            "-D_FILE_OFFSET_BITS=64",
+            "-D_XOPEN_SOURCE=600",
+            "-std=c99",
+        },
+    });
+    libvterm.root_module.addCSourceFile(.{
+        .file = b.path("src/terminal/libvterm_shim.c"),
+        .flags = &.{
+            "-D_XOPEN_SOURCE=600",
+            "-std=c99",
         },
     });
 
     return .{
         .mbedcrypto = mbedcrypto,
         .libssh2 = libssh2,
+        .libvterm = libvterm,
     };
 }
+
+fn libssh2FlagsForTarget(target: std.Build.ResolvedTarget) []const []const u8 {
+    return switch (target.result.os.tag) {
+        .windows => &libssh2_windows_flags,
+        else => &libssh2_posix_flags,
+    };
+}
+
+const libssh2_windows_flags = [_][]const u8{
+    "-DLIBSSH2_MBEDTLS",
+    "-DLIBSSH2_LIBRARY",
+    "-D_FILE_OFFSET_BITS=64",
+};
+
+const libssh2_posix_flags = [_][]const u8{
+    "-DLIBSSH2_MBEDTLS",
+    "-DLIBSSH2_LIBRARY",
+    "-D_FILE_OFFSET_BITS=64",
+    "-DHAVE_SELECT=1",
+    "-DHAVE_SNPRINTF=1",
+    "-DHAVE_STRTOLL=1",
+    "-DHAVE_GETTIMEOFDAY=1",
+    "-DHAVE_INTTYPES_H=1",
+    "-DHAVE_UNISTD_H=1",
+    "-DHAVE_SYS_TIME_H=1",
+    "-DHAVE_SYS_SELECT_H=1",
+    "-DHAVE_SYS_SOCKET_H=1",
+    "-DHAVE_SYS_UIO_H=1",
+    "-DHAVE_SYS_IOCTL_H=1",
+    "-DHAVE_SYS_UN_H=1",
+    "-DHAVE_O_NONBLOCK=1",
+};
 
 fn attachNativeDeps(b: *std.Build, compile: *std.Build.Step.Compile, native_deps: NativeDeps) void {
     compile.root_module.link_libc = true;
     compile.root_module.linkLibrary(native_deps.libssh2);
     compile.root_module.linkLibrary(native_deps.mbedcrypto);
+    compile.root_module.linkLibrary(native_deps.libvterm);
     compile.root_module.addIncludePath(b.path("third_party/libssh2-1.11.1/include"));
     compile.root_module.addIncludePath(b.path("third_party/mbedtls-3.6.6/include"));
+    compile.root_module.addIncludePath(b.path("third_party/libvterm-0.3.3/include"));
+    compile.root_module.addIncludePath(b.path("src/terminal"));
 
     if (compile.root_module.resolved_target.?.result.os.tag == .windows) {
         compile.root_module.linkSystemLibrary("bcrypt", .{});
@@ -157,6 +257,18 @@ const libssh2_sources = [_][]const u8{
     "userauth.c",
     "userauth_kbd_packet.c",
     "version.c",
+};
+
+const libvterm_sources = [_][]const u8{
+    "encoding.c",
+    "keyboard.c",
+    "mouse.c",
+    "parser.c",
+    "pen.c",
+    "screen.c",
+    "state.c",
+    "unicode.c",
+    "vterm.c",
 };
 
 const mbedcrypto_sources = [_][]const u8{

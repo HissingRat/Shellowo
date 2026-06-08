@@ -3,6 +3,8 @@ const std = @import("std");
 pub const Error = error{
     UnsupportedAuth,
     InvalidHostKey,
+    HostKeyUnknown,
+    HostKeyChanged,
     ConnectionFailed,
     AuthenticationFailed,
     ChannelOpenFailed,
@@ -40,10 +42,57 @@ pub const HostKeyPolicy = union(enum) {
     insecure_accept_any,
 };
 
+pub const HostKeyAlgorithm = enum {
+    unknown,
+    rsa,
+    dss,
+    ecdsa_256,
+    ecdsa_384,
+    ecdsa_521,
+    ed25519,
+
+    pub fn label(self: HostKeyAlgorithm) []const u8 {
+        return switch (self) {
+            .unknown => "unknown",
+            .rsa => "rsa",
+            .dss => "dss",
+            .ecdsa_256 => "ecdsa-sha2-nistp256",
+            .ecdsa_384 => "ecdsa-sha2-nistp384",
+            .ecdsa_521 => "ecdsa-sha2-nistp521",
+            .ed25519 => "ssh-ed25519",
+        };
+    }
+};
+
+pub const HostKey = struct {
+    algorithm: HostKeyAlgorithm,
+    sha256: [32]u8,
+
+    pub fn fingerprintBase64(self: HostKey, allocator: std.mem.Allocator) ![]u8 {
+        const len = std.base64.standard_no_pad.Encoder.calcSize(self.sha256.len);
+        const out = try allocator.alloc(u8, len);
+        return @constCast(std.base64.standard_no_pad.Encoder.encode(out, &self.sha256));
+    }
+};
+
+pub const HostKeyVerifier = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        verify: *const fn (*anyopaque, Endpoint, HostKeyPolicy, HostKey) Error!void,
+    };
+
+    pub fn verify(self: HostKeyVerifier, endpoint: Endpoint, policy: HostKeyPolicy, host_key: HostKey) Error!void {
+        return self.vtable.verify(self.context, endpoint, policy, host_key);
+    }
+};
+
 pub const ConnectOptions = struct {
     endpoint: Endpoint,
     auth: Auth,
     host_key_policy: HostKeyPolicy = .strict,
+    host_key_verifier: ?HostKeyVerifier = null,
     timeout_ms: u32 = 15_000,
 };
 
@@ -210,4 +259,18 @@ test "connect options keep host key policy explicit" {
     try std.testing.expectEqualStrings("example.test", opts.endpoint.host);
     try std.testing.expectEqual(@as(u16, 22), opts.endpoint.port);
     try std.testing.expectEqual(HostKeyPolicy.strict, opts.host_key_policy);
+}
+
+test "host key fingerprint formats as OpenSSH-style base64 body" {
+    var key = HostKey{
+        .algorithm = .ed25519,
+        .sha256 = [_]u8{0} ** 32,
+    };
+    key.sha256[31] = 1;
+
+    const encoded = try key.fingerprintBase64(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+
+    try std.testing.expectEqualStrings("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE", encoded);
+    try std.testing.expectEqualStrings("ssh-ed25519", key.algorithm.label());
 }

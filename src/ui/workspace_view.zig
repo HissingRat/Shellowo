@@ -1,10 +1,13 @@
 const dvui = @import("dvui");
 
+const App = @import("../app/App.zig");
 const workspace = @import("../core/workspace.zig");
 const file_panel = @import("workspace/file_panel.zig");
 const resize = @import("workspace/resize.zig");
 const status_panel = @import("workspace/status_panel.zig");
 const terminal_panel = @import("workspace/terminal_panel.zig");
+const terminal_slot = @import("../core/terminal_slot.zig");
+const terminal_slot_bar = @import("workspace/terminal_slot_bar.zig");
 const theme = @import("theme.zig");
 
 const default_sidebar_width: f32 = 190;
@@ -23,7 +26,7 @@ const LayoutState = struct {
     local_file_width: f32 = default_local_file_width,
 };
 
-pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette) void {
+pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void {
     var stage = dvui.box(@src(), .{ .dir = .vertical }, theme.app(.{
         .expand = .both,
         .padding = .all(0),
@@ -34,12 +37,12 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette) void {
     const layout = dvui.dataGetPtrDefault(null, stage.data().id, "layout", LayoutState, .{});
 
     switch (tab.layout) {
-        .terminal_file => terminalFileWorkspace(tab, palette, layout),
+        .terminal_file => terminalFileWorkspace(app, tab, palette, layout),
         .file_only => fileOnlyWorkspace(tab, palette, layout),
     }
 }
 
-fn terminalFileWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
+fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
     var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
         .padding = .all(0),
@@ -67,8 +70,30 @@ fn terminalFileWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, la
     });
     defer main.deinit();
 
-    terminal_panel.show(tab, palette, .{
+    var snapshot = app.sessions.copySshSnapshot(app.allocator, tab.id) catch null;
+    defer if (snapshot) |*shot| shot.deinit();
+
+    var slot_buffer: [64]terminal_slot.TerminalSlotSummary = undefined;
+    const slots = app.sessions.terminalSlots(tab.id, &slot_buffer);
+    const active_slot_id = app.sessions.activeTerminalSlotId(tab.id);
+    topSeparator(palette, 634);
+    if (terminal_slot_bar.show(slots, palette, .{
+        .id_extra = 635,
+        .active_slot_id = active_slot_id,
+    })) |action| {
+        switch (action) {
+            .activate => |slot_id| app.activateTerminalSlot(tab.id, slot_id),
+            .close => |slot_id| app.closeTerminalSlot(tab.id, slot_id),
+            .create => app.createTerminalSlot(tab.id),
+        }
+    }
+    topSeparator(palette, 636);
+
+    terminal_panel.show(app, tab, palette, .{
         .id_extra = 640,
+        .snapshot = snapshot,
+        .failure = app.sessions.sshFailure(tab.id),
+        .active_slot_id = active_slot_id,
     });
 
     resize.handle(palette, .{
@@ -124,6 +149,19 @@ fn fileOnlyWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, layout
     });
 
     transferStrip(palette, false, 720);
+}
+
+fn topSeparator(palette: theme.Palette, id_extra: usize) void {
+    var line = dvui.box(@src(), .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .height(1),
+        .max_size_content = .height(1),
+        .padding = .all(0),
+        .background = true,
+        .color_fill = palette.border_subtle,
+        .id_extra = id_extra,
+    });
+    defer line.deinit();
 }
 
 fn transferStrip(palette: theme.Palette, full_width: bool, id_extra: usize) void {

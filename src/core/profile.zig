@@ -87,6 +87,33 @@ pub const ConnectionProfile = union(SessionType) {
             .ftp => |profile| allocator.free(profile.password),
         }
     }
+
+    pub fn clone(self: ConnectionProfile, allocator: std.mem.Allocator) !ConnectionProfile {
+        const b = self.base();
+        const copied_base = BaseProfile{
+            .id = b.id,
+            .name = try allocator.dupe(u8, b.name),
+            .host = try allocator.dupe(u8, b.host),
+            .port = b.port,
+            .username = try allocator.dupe(u8, b.username),
+            .group = try allocator.dupe(u8, b.group),
+        };
+
+        return switch (self) {
+            .ssh => |ssh| .{ .ssh = .{
+                .base = copied_base,
+                .auth_type = ssh.auth_type,
+                .password = try allocator.dupe(u8, ssh.password),
+                .private_key_path = try allocator.dupe(u8, ssh.private_key_path),
+                .sftp_enabled = ssh.sftp_enabled,
+            } },
+            .ftp => |ftp| .{ .ftp = .{
+                .base = copied_base,
+                .password = try allocator.dupe(u8, ftp.password),
+                .secure = ftp.secure,
+            } },
+        };
+    }
 };
 
 pub const ProfileDraft = struct {
@@ -175,4 +202,23 @@ test "draft defaults use protocol ports" {
     draft.reset(.ftp);
     try std.testing.expectEqual(SessionType.ftp, draft.profile_type);
     try std.testing.expectEqual(@as(u16, 21), draft.port);
+}
+
+test "connection profile clone owns copied fields" {
+    var draft = ProfileDraft{};
+    draft.reset(.ssh);
+    setBuffer(&draft.name, "Clone Me");
+    setBuffer(&draft.host, "example.test");
+    setBuffer(&draft.username, "dev");
+    setBuffer(&draft.password, "pw");
+
+    const original = try draft.toProfile(std.testing.allocator, 1);
+    defer original.deinit(std.testing.allocator);
+    const copied = try original.clone(std.testing.allocator);
+    defer copied.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(original.base().name, copied.base().name);
+    try std.testing.expect(original.base().name.ptr != copied.base().name.ptr);
+    try std.testing.expectEqualStrings(original.ssh.password, copied.ssh.password);
+    try std.testing.expect(original.ssh.password.ptr != copied.ssh.password.ptr);
 }

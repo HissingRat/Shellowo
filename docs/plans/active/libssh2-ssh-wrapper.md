@@ -17,7 +17,7 @@ Shellow 需要 SSH shell 和 SFTP 文件能力。`libssh2` 适合作为底层库
 ## 非目标
 
 - 不在第一步完成真实 libssh2 链接。
-- 不保存密码或 passphrase。
+- 密码或 passphrase 可以按用户选择持久化，但必须通过 Shellow-owned profile repository/security 边界，不在协议 wrapper、UI 或日志中明文散落。
 - 不把 FTP 混进 SSH/SFTP wrapper。
 
 ## 当前落点
@@ -42,28 +42,28 @@ DVUI terminal/file widgets
 ## 实施步骤
 
 1. 验证 libssh2 构建策略
-   - Windows: vcpkg/system lib 或 Zig 编译源码。
-   - macOS/Linux: system lib 或源码构建。
-   - 记录 OpenSSL/libcrypto 策略。
+   - [x] 当前使用 vendored libssh2 source + vendored mbedTLS source，通过 Zig build 编译静态库。
+   - [x] 记录 mbedTLS crypto backend 策略。
 
 2. 建立 C/Zig 绑定
-   - 优先尝试小型 C shim。
-   - 不让 `@cImport` 生成内容进入业务模块。
+   - [x] raw libssh2 C API 只在 `src/protocols/libssh2_backend.zig` 内使用。
+   - [x] 不让 raw handle 进入 app/service/UI。
 
 3. 实现 connect
-   - socket connect。
-   - `libssh2_session_init_ex`。
-   - handshake。
-   - host key check。
-   - password/private key/agent auth。
+   - [x] socket connect。
+   - [x] `libssh2_session_init_ex`。
+   - [x] handshake。
+   - [x] host key check。
+   - [x] password/private key auth。
+   - [ ] agent auth。
 
 4. 实现 shell
-   - open session channel。
-   - request pty。
-   - shell。
-   - read/write。
-   - resize。
-   - close。
+   - [x] open session channel。
+   - [x] request pty。
+   - [x] shell。
+   - [x] read/write。
+   - [x] resize。
+   - [x] close。
 
 5. 实现 SFTP
    - init sftp session。
@@ -82,3 +82,7 @@ DVUI terminal/file widgets
 - SSH terminal 可以正常执行命令。
 - PTY resize 与 UI cols/rows 一致。
 - SFTP list/upload/download 进入统一 transfer system。
+
+当前验证：
+
+- `zig build ssh-probe -- 10.157.123.76 8022 root 123456` 已通过 Shellow libssh2 backend 连接真实 SSH server，并读回 `shellow_probe_okLinux`。

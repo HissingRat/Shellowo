@@ -1,0 +1,330 @@
+const std = @import("std");
+const profile = @import("../core/profile.zig");
+const ssh = @import("../protocols/ssh.zig");
+const terminal = @import("../terminal/terminal.zig");
+const ssh_session = @import("ssh_session.zig");
+
+pub const State = enum(u8) {
+    idle,
+    starting,
+    connected,
+    stopping,
+    stopped,
+    failed,
+};
+
+pub const SshSessionWorker = struct {
+    allocator: std.mem.Allocator,
+    connection: profile.ConnectionProfile,
+    options: ssh_session.Options,
+    thread: ?std.Thread = null,
+    state_raw: std.atomic.Value(u8) = .init(@intFromEnum(State.idle)),
+    stop_requested: std.atomic.Value(bool) = .init(false),
+    snapshot_lock: std.atomic.Mutex = .unlocked,
+    snapshot_cache: ?terminal.Snapshot = null,
+    input_lock: std.atomic.Mutex = .unlocked,
+    pending_input: std.ArrayList(u8) = .empty,
+    mouse_lock: std.atomic.Mutex = .unlocked,
+    pending_mouse: std.ArrayList(terminal.MouseEvent) = .empty,
+    resize_lock: std.atomic.Mutex = .unlocked,
+    pending_resize: ?ssh.PtySize = null,
+    clear_scrollback_requested: std.atomic.Value(bool) = .init(false),
+    last_error: ?ssh_session.Error = null,
+
+    pub fn create(
+        allocator: std.mem.Allocator,
+        connection: profile.ConnectionProfile,
+        options: ssh_session.Options,
+    ) !*SshSessionWorker {
+        const worker = try allocator.create(SshSessionWorker);
+        errdefer allocator.destroy(worker);
+
+        worker.* = .{
+            .allocator = allocator,
+            .connection = try connection.clone(allocator),
+            .options = options,
+        };
+        return worker;
+    }
+
+    pub fn destroy(self: *SshSessionWorker) void {
+        self.requestStop();
+        self.join();
+        self.clearSnapshotCache();
+        self.pending_input.deinit(self.allocator);
+        self.pending_mouse.deinit(self.allocator);
+        self.connection.deinit(self.allocator);
+        const allocator = self.allocator;
+        allocator.destroy(self);
+    }
+
+    pub fn start(self: *SshSessionWorker) !void {
+        if (self.thread != null) return;
+        self.setState(.starting);
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+    }
+
+    pub fn requestStop(self: *SshSessionWorker) void {
+        self.stop_requested.store(true, .release);
+    }
+
+    pub fn join(self: *SshSessionWorker) void {
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
+        }
+    }
+
+    pub fn state(self: *const SshSessionWorker) State {
+        return @enumFromInt(self.state_raw.load(.acquire));
+    }
+
+    pub fn queueInput(self: *SshSessionWorker, bytes: []const u8) !void {
+        self.lockInput();
+        defer self.unlockInput();
+        try self.pending_input.appendSlice(self.allocator, bytes);
+    }
+
+    pub fn queueMouse(self: *SshSessionWorker, event: terminal.MouseEvent) !void {
+        self.lockMouse();
+        defer self.unlockMouse();
+        try self.pending_mouse.append(self.allocator, event);
+    }
+
+    pub fn queueResize(self: *SshSessionWorker, size: ssh.PtySize) void {
+        self.lockResize();
+        defer self.unlockResize();
+        self.pending_resize = size;
+    }
+
+    pub fn queueClearScrollback(self: *SshSessionWorker) void {
+        self.clear_scrollback_requested.store(true, .release);
+    }
+
+    pub fn copySnapshot(self: *SshSessionWorker, allocator: std.mem.Allocator) !?terminal.Snapshot {
+        self.lockSnapshot();
+        defer self.unlockSnapshot();
+
+        const cached = self.snapshot_cache orelse return null;
+        const cells = try allocator.dupe(terminal.Cell, cached.cells);
+        errdefer allocator.free(cells);
+        const scrollback_cells = try allocator.dupe(terminal.Cell, cached.scrollback_cells);
+        errdefer allocator.free(scrollback_cells);
+        const title = if (cached.title) |title| try allocator.dupe(u8, title) else null;
+        return .{
+            .allocator = allocator,
+            .size = cached.size,
+            .cells = cells,
+            .scrollback_cells = scrollback_cells,
+            .scrollback_rows = cached.scrollback_rows,
+            .alternate_screen = cached.alternate_screen,
+            .bracketed_paste = cached.bracketed_paste,
+            .mouse_mode = cached.mouse_mode,
+            .cursor = cached.cursor,
+            .title = title,
+        };
+    }
+
+    fn run(self: *SshSessionWorker) void {
+        var session = ssh_session.SshSession.init(self.allocator);
+        defer session.deinit();
+
+        session.open(self.connection, self.options) catch |err| {
+            self.last_error = session.last_error orelse err;
+            self.setState(.failed);
+            return;
+        };
+        self.setState(.connected);
+        self.cacheSnapshot(&session) catch {};
+
+        var buffer: [8192]u8 = undefined;
+        var input_buffer: [4096]u8 = undefined;
+        while (!self.stop_requested.load(.acquire)) {
+            if (self.drainResize()) |size| {
+                session.resize(size) catch |err| switch (err) {
+                    ssh.Error.WouldBlock => {},
+                    else => {
+                        self.last_error = err;
+                        self.setState(.failed);
+                        return;
+                    },
+                };
+            }
+
+            const input_len = self.drainInput(&input_buffer);
+            if (input_len > 0) {
+                _ = session.writeInput(input_buffer[0..input_len]) catch |err| switch (err) {
+                    ssh.Error.WouldBlock => {},
+                    else => {
+                        self.last_error = err;
+                        self.setState(.failed);
+                        return;
+                    },
+                };
+            }
+
+            while (self.drainMouse()) |mouse| {
+                _ = session.writeMouse(self.allocator, mouse) catch |err| switch (err) {
+                    ssh.Error.WouldBlock => break,
+                    else => {
+                        self.last_error = err;
+                        self.setState(.failed);
+                        return;
+                    },
+                };
+            }
+
+            if (self.clear_scrollback_requested.swap(false, .acq_rel)) {
+                session.clearScrollback() catch |err| {
+                    self.last_error = err;
+                    self.setState(.failed);
+                    return;
+                };
+            }
+
+            const read_len = session.pumpReadOnce(&buffer) catch |err| switch (err) {
+                ssh.Error.WouldBlock => {
+                    yieldThread();
+                    continue;
+                },
+                else => {
+                    self.last_error = err;
+                    self.setState(.failed);
+                    return;
+                },
+            };
+            if (read_len > 0 or session.dirty) {
+                self.cacheSnapshot(&session) catch {};
+                session.dirty = false;
+            }
+            yieldThread();
+        }
+
+        self.setState(.stopping);
+        self.setState(.stopped);
+    }
+
+    fn setState(self: *SshSessionWorker, new_state: State) void {
+        self.state_raw.store(@intFromEnum(new_state), .release);
+    }
+
+    fn cacheSnapshot(self: *SshSessionWorker, session: *ssh_session.SshSession) !void {
+        var shot = try session.snapshot(self.allocator);
+        errdefer shot.deinit();
+
+        self.lockSnapshot();
+        defer self.unlockSnapshot();
+
+        if (self.snapshot_cache) |*cached| {
+            cached.deinit();
+        }
+        self.snapshot_cache = shot;
+    }
+
+    fn clearSnapshotCache(self: *SshSessionWorker) void {
+        self.lockSnapshot();
+        defer self.unlockSnapshot();
+
+        if (self.snapshot_cache) |*cached| {
+            cached.deinit();
+            self.snapshot_cache = null;
+        }
+    }
+
+    fn lockSnapshot(self: *SshSessionWorker) void {
+        while (!self.snapshot_lock.tryLock()) {
+            yieldThread();
+        }
+    }
+
+    fn unlockSnapshot(self: *SshSessionWorker) void {
+        self.snapshot_lock.unlock();
+    }
+
+    fn drainInput(self: *SshSessionWorker, buffer: []u8) usize {
+        self.lockInput();
+        defer self.unlockInput();
+
+        const len = @min(buffer.len, self.pending_input.items.len);
+        if (len == 0) return 0;
+        @memcpy(buffer[0..len], self.pending_input.items[0..len]);
+        self.pending_input.replaceRangeAssumeCapacity(0, len, &.{});
+        return len;
+    }
+
+    fn drainMouse(self: *SshSessionWorker) ?terminal.MouseEvent {
+        self.lockMouse();
+        defer self.unlockMouse();
+
+        if (self.pending_mouse.items.len == 0) return null;
+        return self.pending_mouse.orderedRemove(0);
+    }
+
+    fn drainResize(self: *SshSessionWorker) ?ssh.PtySize {
+        self.lockResize();
+        defer self.unlockResize();
+
+        const size = self.pending_resize orelse return null;
+        self.pending_resize = null;
+        return size;
+    }
+
+    fn lockInput(self: *SshSessionWorker) void {
+        while (!self.input_lock.tryLock()) {
+            yieldThread();
+        }
+    }
+
+    fn unlockInput(self: *SshSessionWorker) void {
+        self.input_lock.unlock();
+    }
+
+    fn lockMouse(self: *SshSessionWorker) void {
+        while (!self.mouse_lock.tryLock()) {
+            yieldThread();
+        }
+    }
+
+    fn unlockMouse(self: *SshSessionWorker) void {
+        self.mouse_lock.unlock();
+    }
+
+    fn lockResize(self: *SshSessionWorker) void {
+        while (!self.resize_lock.tryLock()) {
+            yieldThread();
+        }
+    }
+
+    fn unlockResize(self: *SshSessionWorker) void {
+        self.resize_lock.unlock();
+    }
+};
+
+fn yieldThread() void {
+    std.Thread.yield() catch {};
+}
+
+test "worker owns a cloned connection profile" {
+    var fake_options = ssh_session.Options{
+        .connector = .{ .context = undefined, .vtable = undefined },
+        .terminal_factory = .{ .context = undefined, .vtable = undefined },
+        .host_key_policy = .insecure_accept_any,
+    };
+    _ = &fake_options;
+
+    var draft = profile.ProfileDraft{};
+    draft.reset(.ssh);
+    profile.setBuffer(&draft.name, "Worker SSH");
+    profile.setBuffer(&draft.host, "example.test");
+    profile.setBuffer(&draft.username, "dev");
+    profile.setBuffer(&draft.password, "pw");
+
+    const connection = try draft.toProfile(std.testing.allocator, 1);
+    defer connection.deinit(std.testing.allocator);
+
+    const worker = try SshSessionWorker.create(std.testing.allocator, connection, fake_options);
+    defer worker.destroy();
+
+    try std.testing.expectEqual(State.idle, worker.state());
+    try std.testing.expect(worker.connection.base().host.ptr != connection.base().host.ptr);
+}
