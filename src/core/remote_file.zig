@@ -22,6 +22,11 @@ pub const RemoteFileEntry = struct {
     size: ?u64 = null,
     permissions: ?u32 = null,
     modified_unix: ?i64 = null,
+    uid: ?u64 = null,
+    gid: ?u64 = null,
+    full_path: []const u8 = "",
+    depth: u8 = 0,
+    expanded: bool = false,
 
     pub fn isDirectory(self: RemoteFileEntry) bool {
         return self.kind == .directory;
@@ -104,7 +109,14 @@ pub const FileTransferIntent = struct {
     name: []const u8,
 };
 
+pub const FileSelectIntent = struct {
+    target: FileEntryTarget,
+    additive: bool = false,
+};
+
 pub const FilePanelIntent = union(enum) {
+    select: FileSelectIntent,
+    toggle_tree: FileEntryTarget,
     refresh: FilePaneTarget,
     go_parent: FilePaneTarget,
     open: FileEntryTarget,

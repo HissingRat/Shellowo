@@ -1,6 +1,7 @@
 const dvui = @import("dvui");
 
 const App = @import("../app/App.zig");
+const remote_file = @import("../core/remote_file.zig");
 const workspace = @import("../core/workspace.zig");
 const file_panel = @import("workspace/file_panel.zig");
 const resize = @import("workspace/resize.zig");
@@ -19,6 +20,7 @@ const min_sidebar_width: f32 = 150;
 const max_sidebar_width: f32 = 320;
 const min_file_panel_height: f32 = 150;
 const max_file_panel_height: f32 = 430;
+const max_file_panel_rows: usize = 256;
 
 const LayoutState = struct {
     sidebar_width: f32 = default_sidebar_width,
@@ -105,11 +107,14 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
         .id_extra = 650,
     });
 
-    file_panel.show(tab, palette, .{
+    var local_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
+    var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
+    if (file_panel.show(tab, palette, .{
+        .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
         .height = layout.file_panel_height,
         .local_width = &layout.local_file_width,
         .id_extra = 660,
-    });
+    })) |intent| app.handleFilePanelIntent(tab.id, intent);
 
     transferStrip(palette, false, 670);
 }
@@ -142,11 +147,14 @@ fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Pale
     });
     defer main.deinit();
 
-    file_panel.show(tab, palette, .{
+    var local_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
+    var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
+    if (file_panel.show(tab, palette, .{
+        .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
         .height = null,
         .local_width = &layout.local_file_width,
         .id_extra = 710,
-    });
+    })) |intent| app.handleFilePanelIntent(tab.id, intent);
 
     transferStrip(palette, false, 720);
 }

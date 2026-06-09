@@ -1,5 +1,6 @@
 const std = @import("std");
 const profile = @import("../core/profile.zig");
+const remote_file = @import("../core/remote_file.zig");
 const transfer = @import("../core/transfer.zig");
 const libssh2_backend = @import("../protocols/libssh2_backend.zig");
 const ssh = @import("../protocols/ssh.zig");
@@ -334,6 +335,18 @@ pub fn reconnectTab(self: *App, tab_id: u64) void {
     self.openProfile(tab.profile_id);
 }
 
+pub fn filePanelSnapshot(self: *App, tab_id: u64, local_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
+    return self.sessions.filePanelSnapshot(tab_id, local_buffer, remote_buffer);
+}
+
+pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePanelIntent) void {
+    self.sessions.handleFilePanelIntent(tab_id, intent) catch {
+        self.message = "File action is not available yet";
+        return;
+    };
+    self.message = fileIntentMessage(intent);
+}
+
 fn seedTransfers(self: *App) !void {
     try self.transfers.append(self.allocator, .{
         .id = 1,
@@ -377,6 +390,21 @@ fn terminalFactory(backend: *libvterm_backend.Backend) ssh_session.TerminalFacto
     return .{
         .context = backend,
         .vtable = &terminal_factory_vtable,
+    };
+}
+
+fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
+    return switch (intent) {
+        .select => "File selected",
+        .toggle_tree => "Toggling folder",
+        .refresh => "Refreshing files",
+        .go_parent => "Opening parent folder",
+        .open => "Opening folder",
+        .create_directory => "Create folder is planned",
+        .rename => "Rename is planned",
+        .delete => "Delete is planned",
+        .upload => "Upload is planned",
+        .download => "Download is planned",
     };
 }
 

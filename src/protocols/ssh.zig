@@ -1,4 +1,5 @@
 const std = @import("std");
+const remote_file = @import("../core/remote_file.zig");
 
 pub const Error = error{
     UnsupportedAuth,
@@ -122,20 +123,8 @@ pub const SessionState = enum {
     failed,
 };
 
-pub const RemoteFileKind = enum {
-    file,
-    directory,
-    symlink,
-    other,
-};
-
-pub const RemoteFileEntry = struct {
-    name: []const u8,
-    kind: RemoteFileKind,
-    size: ?u64 = null,
-    permissions: ?u32 = null,
-    modified_unix: ?i64 = null,
-};
+pub const RemoteFileKind = remote_file.RemoteFileKind;
+pub const RemoteFileEntry = remote_file.RemoteFileEntry;
 
 pub const Shell = struct {
     context: *anyopaque,

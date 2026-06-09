@@ -35,6 +35,15 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("shellowo-settings-icon", .{
         .root_source_file = b.path("assets/settings.png"),
     });
+    exe.root_module.addAnonymousImport("shellowo-folder-icon", .{
+        .root_source_file = b.path("assets/folder.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-file-icon", .{
+        .root_source_file = b.path("assets/file.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-refresh-icon", .{
+        .root_source_file = b.path("assets/refresh.png"),
+    });
     exe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
     });
@@ -107,6 +116,15 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     tests.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-folder-icon", .{
+        .root_source_file = b.path("assets/folder.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-file-icon", .{
+        .root_source_file = b.path("assets/file.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-refresh-icon", .{
+        .root_source_file = b.path("assets/refresh.png"),
     });
 
     const test_step = b.step("test", "Run unit tests");

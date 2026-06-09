@@ -1,5 +1,6 @@
 const std = @import("std");
 const profile = @import("../core/profile.zig");
+const remote_file = @import("../core/remote_file.zig");
 const ssh = @import("../protocols/ssh.zig");
 const status_panel = @import("../core/status_panel.zig");
 const terminal_slot = @import("../core/terminal_slot.zig");
@@ -180,6 +181,31 @@ pub const MockSessionRegistry = struct {
         return worker.statusPanelSnapshot();
     }
 
+    pub fn filePanelSnapshot(self: *MockSessionRegistry, tab_id: u64, local_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
+        const tab = self.tabById(tab_id) orelse return .{};
+        if (tab.session_type == .ssh) {
+            if (self.sshWorkspace(tab_id)) |worker| {
+                return .{
+                    .local = worker.fileTreeSnapshot(local_buffer),
+                    .remote = worker.filePanelSnapshot(remote_buffer),
+                };
+            }
+        }
+        const remote = switch (tab.session_type) {
+            .ssh => mockSftpPane(tab.status),
+            .ftp => mockFtpPane(tab.status),
+        };
+        const local = remoteTreePane(remote, local_buffer);
+        return .{ .local = local, .remote = remote };
+    }
+
+    pub fn handleFilePanelIntent(self: *MockSessionRegistry, tab_id: u64, intent: remote_file.FilePanelIntent) !void {
+        if (self.tabById(tab_id) == null) return ssh_session.Error.ChannelClosed;
+        if (self.sshWorkspace(tab_id)) |worker| {
+            try worker.queueFileIntent(intent);
+        }
+    }
+
     pub fn terminalSlots(self: *MockSessionRegistry, tab_id: u64, buffer: []terminal_slot.TerminalSlotSummary) []terminal_slot.TerminalSlotSummary {
         if (buffer.len == 0) return buffer[0..0];
         const tab = self.tabById(tab_id) orelse return buffer[0..0];
@@ -350,3 +376,133 @@ pub const MockSessionRegistry = struct {
         return null;
     }
 };
+
+const mock_sftp_entries = [_]remote_file.RemoteFileEntry{
+    .{ .name = "home", .kind = .directory, .permissions = 0o755 },
+    .{ .name = "etc", .kind = .directory, .permissions = 0o755 },
+    .{ .name = "var", .kind = .directory, .permissions = 0o755 },
+    .{ .name = "motd.dynamic", .kind = .file, .size = 1024, .permissions = 0o644 },
+};
+
+fn mockSftpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
+    if (status == .connecting) {
+        return .{
+            .location = .sftp,
+            .path = "/",
+            .state = .loading,
+            .capabilities = .{ .can_refresh = true },
+        };
+    }
+    if (status == .failed or status == .closed) {
+        return .{
+            .location = .sftp,
+            .path = "/",
+            .state = .failed,
+            .error_summary = "SFTP is unavailable until the SSH workspace reconnects.",
+        };
+    }
+    return .{
+        .location = .sftp,
+        .path = "/",
+        .state = .ready,
+        .entries = &mock_sftp_entries,
+        .capabilities = .{
+            .can_refresh = true,
+            .can_go_parent = true,
+            .can_create_directory = true,
+            .can_rename = true,
+            .can_delete = true,
+            .can_upload = true,
+            .can_download = true,
+        },
+    };
+}
+
+fn mockFtpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
+    _ = status;
+    return .{
+        .location = .ftp,
+        .path = "/",
+        .state = .unavailable,
+        .error_summary = "FTP file runtime is planned after SFTP MVP.",
+        .capabilities = .{},
+    };
+}
+
+fn remoteTreePane(remote: remote_file.FilePaneSnapshot, buffer: []remote_file.RemoteFileEntry) remote_file.FilePaneSnapshot {
+    var count: usize = 0;
+    if (buffer.len > 0) {
+        buffer[count] = .{
+            .name = "/",
+            .kind = .directory,
+            .full_path = "/",
+            .depth = 0,
+            .expanded = true,
+        };
+        count += 1;
+    }
+
+    count = appendPathAncestors(remote.path, buffer, count);
+    const child_depth: u8 = @intCast(pathDepth(remote.path) + 1);
+    for (remote.entries) |entry| {
+        if (count >= buffer.len) break;
+        if (!entry.isDirectory() or std.mem.eql(u8, entry.name, "..")) continue;
+        buffer[count] = .{
+            .name = entry.name,
+            .kind = .directory,
+            .full_path = entry.full_path,
+            .depth = child_depth,
+            .expanded = false,
+        };
+        count += 1;
+    }
+
+    return .{
+        .location = remote.location,
+        .path = remote.path,
+        .state = remote.state,
+        .entries = buffer[0..count],
+        .selected_name = remote.selected_name,
+        .error_summary = remote.error_summary,
+        .capabilities = remote.capabilities,
+    };
+}
+
+fn appendPathAncestors(path: []const u8, buffer: []remote_file.RemoteFileEntry, start: usize) usize {
+    if (path.len <= 1) return start;
+    var count = start;
+    var depth: u8 = 1;
+    var i: usize = 1;
+    while (i < path.len and count < buffer.len) {
+        while (i < path.len and path[i] == '/') i += 1;
+        if (i >= path.len) break;
+        const name_start = i;
+        while (i < path.len and path[i] != '/') i += 1;
+        const name = path[name_start..i];
+        buffer[count] = .{
+            .name = name,
+            .kind = .directory,
+            .full_path = path[0..i],
+            .depth = depth,
+            .expanded = true,
+        };
+        count += 1;
+        depth += 1;
+    }
+    return count;
+}
+
+fn pathDepth(path: []const u8) usize {
+    if (path.len <= 1) return 0;
+    var depth: usize = 0;
+    var in_segment = false;
+    for (path) |ch| {
+        if (ch == '/') {
+            in_segment = false;
+        } else if (!in_segment) {
+            in_segment = true;
+            depth += 1;
+        }
+    }
+    return depth;
+}

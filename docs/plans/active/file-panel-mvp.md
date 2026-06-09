@@ -2,7 +2,7 @@
 
 ## 背景
 
-Shellow 现在已经有 `src/ui/workspace/file_panel.zig`，但它仍是写死 rows 的 DVUI mock panel。下一阶段要把它升级成 FinalShell 风格的文件工作区：SSH workspace 下方显示 SFTP 文件面板，FTP workspace 使用 file-only 文件工作区。
+Shellow 现在已经有 `src/ui/workspace/file_panel.zig`，并已从早期写死 rows 的 DVUI mock panel 逐步升级为 snapshot-driven 文件工作区。下一阶段要继续向 FinalShell 风格收敛：SSH workspace 下方显示远端 SFTP 文件面板，左侧是远端目录树，右侧是当前目录文件表；FTP workspace 后续使用 file-only 文件工作区。
 
 当前必须继续遵守既有边界：
 
@@ -17,7 +17,7 @@ Shellow 现在已经有 `src/ui/workspace/file_panel.zig`，但它仍是写死 r
 - `file_panel` 只发出 intent，不直接执行 SFTP/FTP/local filesystem 操作。
 - SSH workspace 支持 terminal + remote SFTP panel。
 - FTP workspace 复用文件 UI，但走独立 FTP runtime。
-- local/remote 双栏布局先稳定下来，为上传下载做准备。
+- 左侧远端目录树 + 右侧远端文件表布局先稳定下来，为上传下载和批量操作做准备。
 - 上传、下载、删除、重命名等操作有明确 busy/error/disabled 状态。
 
 ## 非目标
@@ -36,14 +36,13 @@ DVUI file_panel
     -> App / Session Registry
       -> SSH workspace runtime -> SFTP controller -> libssh2 backend
       -> FTP workspace runtime -> FTP controller
-      -> local file service
-        -> transfer queue
+      -> transfer queue
 ```
 
 职责：
 
 - `src/ui/workspace/file_panel.zig`
-  - 渲染 toolbar、路径栏、local/remote panes、table rows、空态和错误态。
+  - 渲染远端目录树、远端文件表、路径栏、空态、错误态和右键菜单。
   - 将用户动作转换成 `FilePanelIntent`。
   - 不保存协议状态，不计算传输进度。
 - `src/core/remote_file.zig`
@@ -62,6 +61,11 @@ DVUI file_panel
   - 接收 upload/download intent，创建 transfer task。
   - file panel 只显示任务入口和来自 transfer snapshot 的摘要。
 
+说明：
+
+- `FilePanelSnapshot.local` 当前作为兼容字段承载左侧目录树快照，不代表真实本机文件服务。
+- `RemoteFileEntry.full_path/depth/expanded` 是第一版 tree metadata；长期应拆成独立 `FileTreeSnapshot`，避免 table entry 与 tree node 语义混在一起。
+
 ## 数据模型草案
 
 第一版放在 `src/core/remote_file.zig`：
@@ -73,6 +77,9 @@ pub const RemoteFileEntry = struct {
     size: ?u64 = null,
     permissions: ?u32 = null,
     modified_unix: ?i64 = null,
+    full_path: []const u8 = "",
+    depth: u8 = 0,
+    expanded: bool = false,
 };
 
 pub const FilePanelSnapshot = struct {
@@ -106,10 +113,10 @@ pub const FilePanelIntent = union(enum) {
 
 ### M1: Core File Model
 
-- [ ] 扩展 `src/core/remote_file.zig`。
-- [ ] 定义 pane snapshot、capabilities、loading/error/unavailable 状态。
-- [ ] 定义 intent union。
-- [ ] `src/test_root.zig` 引入 remote file model。
+- [x] 扩展 `src/core/remote_file.zig`。
+- [x] 定义 pane snapshot、capabilities、loading/error/unavailable 状态。
+- [x] 定义 intent union。
+- [x] `src/test_root.zig` 引入 remote file model。
 
 验收：
 
@@ -118,11 +125,12 @@ pub const FilePanelIntent = union(enum) {
 
 ### M2: UI Snapshot Render
 
-- [ ] `file_panel.show()` 改为消费 `FilePanelSnapshot`。
-- [ ] 移除 widget 内硬编码 mock rows。
-- [ ] 实现 toolbar：refresh、up、mkdir、rename、delete、upload、download。
-- [ ] 实现 loading、empty、error、unavailable 空态。
-- [ ] 行双击目录产生 open intent，文件双击第一版只选中或 no-op。
+- [x] `file_panel.show()` 改为消费 `FilePanelSnapshot`。
+- [x] 移除 widget 内硬编码 mock rows。
+- [x] 移除顶部文本 toolbar；refresh 使用路径栏 icon button，其余操作进入右键菜单。
+- [x] 实现 loading、empty、error、unavailable 空态。
+- [x] 单击选中，双击目录产生 open intent。
+- [x] 支持 ctrl/cmd 多选。
 
 验收：
 
@@ -131,10 +139,10 @@ pub const FilePanelIntent = union(enum) {
 
 ### M3: App/Registry Mock Wiring
 
-- [ ] registry 暴露 `filePanelSnapshot(tab_id)`。
-- [ ] registry 暴露 `handleFilePanelIntent(tab_id, intent)`。
-- [ ] 第一版使用 mock snapshot 验证 UI，不接真实协议。
-- [ ] FTP tab 显示 file-only unavailable/mock 状态，不出现 terminal 或 SSH monitor 假信息。
+- [x] registry 暴露 `filePanelSnapshot(tab_id)`。
+- [x] registry 暴露 `handleFilePanelIntent(tab_id, intent)`。
+- [x] 第一版使用 mock snapshot 验证 UI，不接真实协议。
+- [x] FTP tab 显示 file-only unavailable/mock 状态，不出现 terminal 或 SSH monitor 假信息。
 
 验收：
 
@@ -143,16 +151,34 @@ pub const FilePanelIntent = union(enum) {
 
 ### M4: SFTP Read-Only Browser
 
-- [ ] SSH workspace runtime 打开 SFTP capability。
-- [ ] 实现 remote list/stat。
-- [ ] directory open、parent、refresh 更新 remote pane snapshot。
-- [ ] 错误映射成用户可读 summary。
+- [x] SSH workspace runtime 打开 SFTP capability。
+- [x] 实现 remote list。
+- [ ] 实现 remote stat。
+- [x] directory open、parent、refresh 更新 remote pane snapshot。
+- [x] 当前目录表按 folder 在前、file 在后排序。
+- [x] 错误映射成用户可读 summary。
 
 验收：
 
 - SSH tab 能浏览远端目录。
 - SFTP 失败不影响当前 terminal PTY。
 - UI 不接触 raw libssh2 handle。
+
+### M4.5: Remote Directory Tree Pane
+
+- [x] 左侧 pane 从本机 mock 文件列表切换为远端目录树。
+- [x] 树第一版由 worker 维护已访问/已展开目录缓存，不因右侧路径变化隐藏其他已知文件夹。
+- [x] 点击 tree node 打开对应远端路径。
+- [x] folder/file png icon 进入 file entry 和 tree node，并通过 tint 适配 theme。
+- [x] worker 维护目录树缓存，支持展开已访问目录和懒加载未访问目录。
+- [x] 支持 tree node 展开/收起状态，而不是只展示当前路径相关节点。
+- [ ] 将 tree snapshot 从 `FilePanelSnapshot.local` 兼容字段拆到独立数据结构。
+
+验收：
+
+- 左侧不再显示本机文件 mock。
+- 远端路径变化时，左侧能高亮当前目录，并展示当前目录的子文件夹。
+- tree 交互仍只发 intent，不直接调用协议层。
 
 ### M5: Mutations And Transfer
 

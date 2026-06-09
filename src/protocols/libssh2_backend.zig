@@ -3,6 +3,7 @@ const ssh = @import("ssh.zig");
 
 const c = @cImport({
     @cInclude("libssh2.h");
+    @cInclude("libssh2_sftp.h");
     @cInclude("netdb.h");
     @cInclude("sys/socket.h");
     @cInclude("time.h");
@@ -85,6 +86,13 @@ const ShellContext = struct {
     allocator: std.mem.Allocator,
     client: *ClientContext,
     channel: *c.LIBSSH2_CHANNEL,
+    closed: bool = false,
+};
+
+const SftpContext = struct {
+    allocator: std.mem.Allocator,
+    client: *ClientContext,
+    sftp: *c.LIBSSH2_SFTP,
     closed: bool = false,
 };
 
@@ -292,7 +300,29 @@ fn retryChannelOperation(self: *ClientContext, channel: *c.LIBSSH2_CHANNEL, comp
 }
 
 fn openSftp(context: *anyopaque) ssh.Error!ssh.Sftp {
-    _ = context;
+    const self: *ClientContext = @ptrCast(@alignCast(context));
+    var attempts: usize = 0;
+    while (attempts < 5000) : (attempts += 1) {
+        if (c.libssh2_sftp_init(self.session)) |sftp| {
+            const sftp_context = self.allocator.create(SftpContext) catch {
+                _ = c.libssh2_sftp_shutdown(sftp);
+                return ssh.Error.SftpUnavailable;
+            };
+            sftp_context.* = .{
+                .allocator = self.allocator,
+                .client = self,
+                .sftp = sftp,
+            };
+            return .{
+                .context = sftp_context,
+                .vtable = &sftp_vtable,
+            };
+        }
+        if (c.libssh2_session_last_errno(self.session) != c.LIBSSH2_ERROR_EAGAIN) {
+            return ssh.Error.SftpUnavailable;
+        }
+        sleepMs(1);
+    }
     return ssh.Error.SftpUnavailable;
 }
 
@@ -357,6 +387,136 @@ const client_vtable: ssh.Client.VTable = .{
     .openSftp = openSftp,
     .close = closeClient,
 };
+
+fn sftpList(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8) ssh.Error![]ssh.RemoteFileEntry {
+    const self: *SftpContext = @ptrCast(@alignCast(context));
+    if (self.closed) return ssh.Error.SftpUnavailable;
+
+    const path_z = allocator.dupeZ(u8, path) catch return ssh.Error.TransferFailed;
+    defer allocator.free(path_z);
+
+    const handle = openSftpDirWithRetry(self, path_z) catch return ssh.Error.TransferFailed;
+    defer _ = c.libssh2_sftp_closedir(handle);
+
+    var entries: std.ArrayList(ssh.RemoteFileEntry) = .empty;
+    errdefer freeRemoteEntries(allocator, entries.items);
+    errdefer entries.deinit(allocator);
+
+    var name_buffer: [512]u8 = undefined;
+    while (true) {
+        var attrs: c.LIBSSH2_SFTP_ATTRIBUTES = std.mem.zeroes(c.LIBSSH2_SFTP_ATTRIBUTES);
+        const rc = c.libssh2_sftp_readdir_ex(
+            handle,
+            @ptrCast(&name_buffer),
+            name_buffer.len,
+            null,
+            0,
+            &attrs,
+        );
+        if (rc > 0) {
+            const name = name_buffer[0..@as(usize, @intCast(rc))];
+            if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+            entries.append(allocator, .{
+                .name = allocator.dupe(u8, name) catch return ssh.Error.TransferFailed,
+                .kind = fileKindFromAttrs(attrs),
+                .size = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_SIZE) != 0) attrs.filesize else null,
+                .permissions = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_PERMISSIONS) != 0) @intCast(attrs.permissions) else null,
+                .modified_unix = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_ACMODTIME) != 0) @intCast(attrs.mtime) else null,
+                .uid = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_UIDGID) != 0) @intCast(attrs.uid) else null,
+                .gid = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_UIDGID) != 0) @intCast(attrs.gid) else null,
+            }) catch return ssh.Error.TransferFailed;
+            continue;
+        }
+        if (rc == 0) break;
+        if (rc == c.LIBSSH2_ERROR_EAGAIN) {
+            sleepMs(1);
+            continue;
+        }
+        return ssh.Error.TransferFailed;
+    }
+
+    return entries.toOwnedSlice(allocator) catch return ssh.Error.TransferFailed;
+}
+
+fn sftpReadFile(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8) ssh.Error![]u8 {
+    _ = context;
+    _ = allocator;
+    _ = path;
+    return ssh.Error.TransferFailed;
+}
+
+fn sftpWriteFile(context: *anyopaque, path: []const u8, bytes: []const u8) ssh.Error!void {
+    _ = context;
+    _ = path;
+    _ = bytes;
+    return ssh.Error.TransferFailed;
+}
+
+fn sftpRemove(context: *anyopaque, path: []const u8) ssh.Error!void {
+    _ = context;
+    _ = path;
+    return ssh.Error.TransferFailed;
+}
+
+fn sftpMkdir(context: *anyopaque, path: []const u8) ssh.Error!void {
+    _ = context;
+    _ = path;
+    return ssh.Error.TransferFailed;
+}
+
+fn sftpRename(context: *anyopaque, old_path: []const u8, new_path: []const u8) ssh.Error!void {
+    _ = context;
+    _ = old_path;
+    _ = new_path;
+    return ssh.Error.TransferFailed;
+}
+
+fn closeSftp(context: *anyopaque) void {
+    const self: *SftpContext = @ptrCast(@alignCast(context));
+    if (!self.closed) {
+        _ = c.libssh2_sftp_shutdown(self.sftp);
+        self.closed = true;
+    }
+    const allocator = self.allocator;
+    allocator.destroy(self);
+}
+
+const sftp_vtable: ssh.Sftp.VTable = .{
+    .list = sftpList,
+    .readFile = sftpReadFile,
+    .writeFile = sftpWriteFile,
+    .remove = sftpRemove,
+    .mkdir = sftpMkdir,
+    .rename = sftpRename,
+    .close = closeSftp,
+};
+
+fn openSftpDirWithRetry(self: *SftpContext, path: [:0]const u8) ssh.Error!*c.LIBSSH2_SFTP_HANDLE {
+    var attempts: usize = 0;
+    while (attempts < 5000) : (attempts += 1) {
+        if (c.libssh2_sftp_opendir(self.sftp, path.ptr)) |handle| return handle;
+        if (c.libssh2_session_last_errno(self.client.session) != c.LIBSSH2_ERROR_EAGAIN) {
+            return ssh.Error.TransferFailed;
+        }
+        sleepMs(1);
+    }
+    return ssh.Error.TransferFailed;
+}
+
+fn fileKindFromAttrs(attrs: c.LIBSSH2_SFTP_ATTRIBUTES) ssh.RemoteFileKind {
+    if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_PERMISSIONS) == 0) return .other;
+    const mode = attrs.permissions & c.LIBSSH2_SFTP_S_IFMT;
+    return switch (mode) {
+        c.LIBSSH2_SFTP_S_IFDIR => .directory,
+        c.LIBSSH2_SFTP_S_IFREG => .file,
+        c.LIBSSH2_SFTP_S_IFLNK => .symlink,
+        else => .other,
+    };
+}
+
+fn freeRemoteEntries(allocator: std.mem.Allocator, entries: []ssh.RemoteFileEntry) void {
+    for (entries) |entry| allocator.free(entry.name);
+}
 
 fn shellWrite(context: *anyopaque, bytes: []const u8) ssh.Error!usize {
     const self: *ShellContext = @ptrCast(@alignCast(context));
