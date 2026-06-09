@@ -25,6 +25,8 @@ const scrollbar_min_thumb_height: f32 = 24;
 const scrollbar_margin: f32 = 3;
 const scrollbar_idle_fade_delay_ns: i128 = 3 * std.time.ns_per_s;
 const scrollbar_idle_opacity: f32 = 0.35;
+const selection_auto_scroll_max_rows_per_frame: usize = 3;
+const selection_auto_scroll_min_rows_per_frame: f32 = 0.15;
 const ime_composition_capacity: usize = 128;
 const selection_background_mix: f32 = 0.42;
 const selection_background_darken: f32 = 0.72;
@@ -78,6 +80,7 @@ const TerminalViewport = struct {
     wheel_remainder: f32 = 0,
     scrollbar_grab_y: f32 = 0,
     last_scroll_interaction_ns: i128 = 0,
+    selection_auto_scroll_remainder: f32 = 0,
     selection: ?TerminalSelection = null,
     selecting: bool = false,
     last_click_point: ?TerminalPoint = null,
@@ -212,6 +215,7 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.S
         start_row = visibleStartRow(total_rows, rows, viewport.scroll_offset);
     }
     processTerminalSelection(app, tab, host.data(), viewport, crs, snapshot, start_row, rows, total_rows);
+    start_row = visibleStartRow(total_rows, rows, viewport.scroll_offset);
     const old_clip = dvui.clip(crs.r);
     defer dvui.clipSet(old_clip);
 
@@ -907,6 +911,7 @@ fn processTerminalSelection(
                     } else {
                         viewport.selection = .{ .anchor = point, .head = point };
                         viewport.selecting = true;
+                        viewport.selection_auto_scroll_remainder = 0;
                     }
                     event.handle(@src(), data);
                     dvui.focusWidget(data.id, null, event.num);
@@ -931,6 +936,7 @@ fn processTerminalSelection(
                     }
                     if (!mouse.button.pointer() or !viewport.selecting) continue;
                     viewport.selecting = false;
+                    viewport.selection_auto_scroll_remainder = 0;
                     event.handle(@src(), data);
                     dvui.captureMouse(null, event.num);
                     dvui.dragEnd();
@@ -964,10 +970,66 @@ fn processTerminalSelection(
             else => {},
         }
     }
+
+    autoScrollSelection(data, viewport, crs, snapshot, visible_rows, total_rows);
 }
 
 fn terminalMouseReportingActive(snapshot: terminal.Snapshot) bool {
     return snapshot.mouse_mode != .none;
+}
+
+fn autoScrollSelection(data: *dvui.WidgetData, viewport: *TerminalViewport, crs: dvui.RectScale, snapshot: terminal.Snapshot, visible_rows: usize, total_rows: usize) void {
+    if (!viewport.selecting or !dvui.captured(data.id)) return;
+    if (crs.r.empty() or visible_rows == 0 or total_rows <= visible_rows) return;
+
+    const mouse = dvui.currentWindow().mouse_pt;
+    var direction: i8 = 0;
+    var distance: f32 = 0;
+    if (mouse.y < crs.r.y) {
+        direction = 1;
+        distance = crs.r.y - mouse.y;
+    } else if (mouse.y > crs.r.y + crs.r.h) {
+        direction = -1;
+        distance = mouse.y - (crs.r.y + crs.r.h);
+    } else {
+        viewport.selection_auto_scroll_remainder = 0;
+        return;
+    }
+
+    const max_offset = total_rows - visible_rows;
+    const before = viewport.scroll_offset;
+    const rows = selectionAutoScrollRows(viewport, distance, crs.s);
+    if (rows == 0) {
+        dvui.refresh(null, @src(), data.id);
+        return;
+    }
+    if (direction > 0) {
+        viewport.scroll_offset = @min(max_offset, viewport.scroll_offset +| rows);
+    } else {
+        viewport.scroll_offset -|= rows;
+    }
+    if (viewport.scroll_offset == before) return;
+
+    noteScrollInteraction(viewport);
+    const start_row = visibleStartRow(total_rows, visible_rows, viewport.scroll_offset);
+    const point = terminalPointFromMouse(mouse, crs, snapshot, start_row, visible_rows, total_rows);
+    if (viewport.selection) |*selection| selection.head = point;
+    dvui.dragPreStart(mouse, .{ .cursor = .ibeam });
+    dvui.refresh(null, @src(), data.id);
+}
+
+fn selectionAutoScrollRows(viewport: *TerminalViewport, distance: f32, scale: f32) usize {
+    const row_height = terminal_line_height * scale;
+    if (row_height <= 0) return 1;
+    const distance_rows = distance / row_height;
+    const eased = @min(@as(f32, @floatFromInt(selection_auto_scroll_max_rows_per_frame)), selection_auto_scroll_min_rows_per_frame + distance_rows * 0.75) / 10;
+    viewport.selection_auto_scroll_remainder += eased;
+    const rows_float = @floor(viewport.selection_auto_scroll_remainder);
+    if (rows_float < 1) return 0;
+    const rows: usize = @intFromFloat(rows_float);
+    const capped = @min(selection_auto_scroll_max_rows_per_frame, rows);
+    viewport.selection_auto_scroll_remainder -= @as(f32, @floatFromInt(capped));
+    return capped;
 }
 
 fn terminalMouseButtonFromDvui(button: dvui.enums.Button) ?u8 {

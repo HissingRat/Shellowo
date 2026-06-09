@@ -106,6 +106,12 @@ pub const ShellOptions = struct {
     size: PtySize = .{ .cols = 100, .rows = 30 },
 };
 
+pub const ExecOptions = struct {
+    command: []const u8,
+    max_output_bytes: usize = 64 * 1024,
+    timeout_ms: u32 = 1_000,
+};
+
 pub const SessionState = enum {
     idle,
     connecting,
@@ -209,6 +215,7 @@ pub const Client = struct {
     pub const VTable = struct {
         state: *const fn (*anyopaque) SessionState,
         openShell: *const fn (*anyopaque, ShellOptions) Error!Shell,
+        exec: *const fn (*anyopaque, std.mem.Allocator, ExecOptions) Error![]u8,
         openSftp: *const fn (*anyopaque) Error!Sftp,
         close: *const fn (*anyopaque) void,
     };
@@ -219,6 +226,10 @@ pub const Client = struct {
 
     pub fn openShell(self: Client, options: ShellOptions) Error!Shell {
         return self.vtable.openShell(self.context, options);
+    }
+
+    pub fn exec(self: Client, allocator: std.mem.Allocator, options: ExecOptions) Error![]u8 {
+        return self.vtable.exec(self.context, allocator, options);
     }
 
     pub fn openSftp(self: Client) Error!Sftp {

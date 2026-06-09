@@ -1,5 +1,6 @@
 const std = @import("std");
 const profile = @import("../core/profile.zig");
+const status_panel = @import("../core/status_panel.zig");
 const terminal_slot = @import("../core/terminal_slot.zig");
 const ssh = @import("../protocols/ssh.zig");
 const terminal = @import("../terminal/terminal.zig");
@@ -13,6 +14,10 @@ pub const State = enum(u8) {
     stopped,
     failed,
 };
+
+const monitor_interval_ms = 500;
+const monitor_exec_timeout_ms = 1_000;
+const monitor_script = @embedFile("shellowo-ssh-status-script");
 
 const PtySlot = struct {
     id: terminal_slot.TerminalSlotId,
@@ -230,6 +235,9 @@ pub const SshWorkspaceWorker = struct {
     slots_lock: std.atomic.Mutex = .unlocked,
     slots: std.ArrayList(*PtySlot) = .empty,
     next_slot_id: terminal_slot.TerminalSlotId = 1,
+    monitor_lock: std.atomic.Mutex = .unlocked,
+    monitor_snapshot: status_panel.StatusPanelSnapshot = .{},
+    monitor_elapsed_ms: u32 = monitor_interval_ms,
     last_error: ?ssh_session.Error = null,
 
     pub fn create(allocator: std.mem.Allocator, connection: profile.ConnectionProfile, options: ssh_session.Options) !*SshWorkspaceWorker {
@@ -350,6 +358,15 @@ pub const SshWorkspaceWorker = struct {
         return slot.copySnapshot(allocator);
     }
 
+    pub fn statusPanelSnapshot(self: *SshWorkspaceWorker) status_panel.StatusPanelSnapshot {
+        self.lockMonitor();
+        defer self.unlockMonitor();
+        var snapshot = self.monitor_snapshot;
+        const base = self.connection.base();
+        if (base.host.len > 0) snapshot.monitor.setIp(base.host);
+        return snapshot;
+    }
+
     pub fn queueInput(self: *SshWorkspaceWorker, slot_id: terminal_slot.TerminalSlotId, bytes: []const u8) !void {
         const slot = self.slotById(slot_id) orelse return ssh_session.Error.ChannelClosed;
         try slot.queueInput(self.allocator, bytes);
@@ -398,7 +415,8 @@ pub const SshWorkspaceWorker = struct {
                 self.fail(err);
                 return;
             };
-            yieldThread();
+            self.pumpMonitor(client);
+            sleepMs(1);
         }
 
         self.setState(.stopping);
@@ -517,6 +535,53 @@ pub const SshWorkspaceWorker = struct {
         for (self.slots.items) |slot| slot.closeRuntime();
     }
 
+    fn pumpMonitor(self: *SshWorkspaceWorker, client: ssh.Client) void {
+        if (self.monitor_elapsed_ms < monitor_interval_ms) {
+            self.monitor_elapsed_ms += 1;
+            return;
+        }
+        self.monitor_elapsed_ms = 0;
+
+        const previous_network = blk: {
+            self.lockMonitor();
+            defer self.unlockMonitor();
+            break :blk self.monitor_snapshot.monitor.network;
+        };
+
+        const output = client.exec(self.allocator, .{
+            .command = monitor_script,
+            .timeout_ms = monitor_exec_timeout_ms,
+            .max_output_bytes = 32 * 1024,
+        }) catch |err| {
+            self.storeMonitorError(@errorName(err));
+            return;
+        };
+        defer self.allocator.free(output);
+
+        const parsed = status_panel.parseMonitorJson(output, previous_network) catch |err| {
+            self.storeMonitorError(@errorName(err));
+            return;
+        };
+
+        self.lockMonitor();
+        self.monitor_snapshot = .{ .monitor = parsed };
+        self.unlockMonitor();
+    }
+
+    fn storeMonitorError(self: *SshWorkspaceWorker, message: []const u8) void {
+        self.lockMonitor();
+        defer self.unlockMonitor();
+
+        if (self.monitor_snapshot.monitor.state == .ready) {
+            self.monitor_snapshot.monitor.state = .stale;
+        } else {
+            self.monitor_snapshot.monitor.state = .failed;
+        }
+        const len = @min(self.monitor_snapshot.monitor.error_summary.len, message.len);
+        if (len > 0) @memcpy(self.monitor_snapshot.monitor.error_summary[0..len], message[0..len]);
+        self.monitor_snapshot.monitor.error_len = len;
+    }
+
     fn slotById(self: *SshWorkspaceWorker, slot_id: terminal_slot.TerminalSlotId) ?*PtySlot {
         self.lockSlots();
         defer self.unlockSlots();
@@ -548,10 +613,26 @@ pub const SshWorkspaceWorker = struct {
     fn unlockSlots(self: *SshWorkspaceWorker) void {
         self.slots_lock.unlock();
     }
+
+    fn lockMonitor(self: *SshWorkspaceWorker) void {
+        while (!self.monitor_lock.tryLock()) yieldThread();
+    }
+
+    fn unlockMonitor(self: *SshWorkspaceWorker) void {
+        self.monitor_lock.unlock();
+    }
 };
 
 fn yieldThread() void {
     std.Thread.yield() catch {};
+}
+
+fn sleepMs(ms: c_long) void {
+    const request: std.c.timespec = .{
+        .sec = @divTrunc(ms, 1000),
+        .nsec = @rem(ms, 1000) * std.time.ns_per_ms,
+    };
+    _ = std.c.nanosleep(&request, null);
 }
 
 test "workspace worker owns one initial terminal slot" {

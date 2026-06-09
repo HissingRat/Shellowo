@@ -1,6 +1,7 @@
 const std = @import("std");
 const profile = @import("../core/profile.zig");
 const ssh = @import("../protocols/ssh.zig");
+const status_panel = @import("../core/status_panel.zig");
 const terminal_slot = @import("../core/terminal_slot.zig");
 const workspace = @import("../core/workspace.zig");
 const terminal = @import("../terminal/terminal.zig");
@@ -172,6 +173,11 @@ pub const MockSessionRegistry = struct {
         const worker = self.sshWorkspace(tab_id) orelse return null;
         const slot_id = self.activeTerminalSlotId(tab_id) orelse return null;
         return worker.copySnapshot(allocator, slot_id);
+    }
+
+    pub fn statusPanelSnapshot(self: *MockSessionRegistry, tab_id: u64) status_panel.StatusPanelSnapshot {
+        const worker = self.sshWorkspace(tab_id) orelse return status_panel.unavailable();
+        return worker.statusPanelSnapshot();
     }
 
     pub fn terminalSlots(self: *MockSessionRegistry, tab_id: u64, buffer: []terminal_slot.TerminalSlotSummary) []terminal_slot.TerminalSlotSummary {

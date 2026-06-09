@@ -296,6 +296,49 @@ fn openSftp(context: *anyopaque) ssh.Error!ssh.Sftp {
     return ssh.Error.SftpUnavailable;
 }
 
+fn exec(context: *anyopaque, allocator: std.mem.Allocator, options: ssh.ExecOptions) ssh.Error![]u8 {
+    const self: *ClientContext = @ptrCast(@alignCast(context));
+    const channel = openChannelWithRetry(self) catch return ssh.Error.ChannelOpenFailed;
+    defer _ = c.libssh2_channel_free(channel);
+
+    const command = self.allocator.dupeZ(u8, options.command) catch return ssh.Error.ChannelOpenFailed;
+    defer self.allocator.free(command);
+
+    try retryChannelOperation(self, channel, "exec", struct {
+        fn call(ch: *c.LIBSSH2_CHANNEL, cmd: [:0]const u8) c_int {
+            return c.libssh2_channel_process_startup(ch, "exec", 4, cmd.ptr, @intCast(cmd.len));
+        }
+    }.call, .{command});
+
+    c.libssh2_session_set_blocking(self.session, 0);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var waited_ms: u32 = 0;
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        if (waited_ms > options.timeout_ms) return ssh.Error.WouldBlock;
+        const rc = c.libssh2_channel_read_ex(channel, 0, @ptrCast(&buffer), buffer.len);
+        if (rc > 0) {
+            const len: usize = @intCast(rc);
+            if (out.items.len + len > options.max_output_bytes) return ssh.Error.TransferFailed;
+            out.appendSlice(allocator, buffer[0..len]) catch return ssh.Error.TransferFailed;
+            continue;
+        }
+        if (rc == c.LIBSSH2_ERROR_EAGAIN) {
+            if (c.libssh2_channel_eof(channel) != 0) break;
+            sleepMs(1);
+            waited_ms += 1;
+            continue;
+        }
+        if (rc < 0) return ssh.Error.ChannelClosed;
+        if (c.libssh2_channel_eof(channel) != 0) break;
+        sleepMs(1);
+        waited_ms += 1;
+    }
+    _ = c.libssh2_channel_close(channel);
+    return out.toOwnedSlice(allocator) catch return ssh.Error.TransferFailed;
+}
+
 fn closeClient(context: *anyopaque) void {
     const self: *ClientContext = @ptrCast(@alignCast(context));
     const allocator = self.allocator;
@@ -310,6 +353,7 @@ fn closeClient(context: *anyopaque) void {
 const client_vtable: ssh.Client.VTable = .{
     .state = clientState,
     .openShell = openShell,
+    .exec = exec,
     .openSftp = openSftp,
     .close = closeClient,
 };

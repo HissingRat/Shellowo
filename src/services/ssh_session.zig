@@ -356,6 +356,12 @@ fn fakeOpenSftp(context: *anyopaque) ssh.Error!ssh.Sftp {
     return ssh.Error.SftpUnavailable;
 }
 
+fn fakeExec(context: *anyopaque, allocator: std.mem.Allocator, options: ssh.ExecOptions) ssh.Error![]u8 {
+    _ = context;
+    _ = options;
+    return allocator.dupe(u8, "") catch return ssh.Error.TransferFailed;
+}
+
 fn fakeCloseClient(context: *anyopaque) void {
     _ = context;
 }
@@ -363,6 +369,7 @@ fn fakeCloseClient(context: *anyopaque) void {
 const fake_client_vtable: ssh.Client.VTable = .{
     .state = fakeClientState,
     .openShell = fakeOpenShell,
+    .exec = fakeExec,
     .openSftp = fakeOpenSftp,
     .close = fakeCloseClient,
 };

@@ -38,7 +38,7 @@ pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void
 
     switch (tab.layout) {
         .terminal_file => terminalFileWorkspace(app, tab, palette, layout),
-        .file_only => fileOnlyWorkspace(tab, palette, layout),
+        .file_only => fileOnlyWorkspace(app, tab, palette, layout),
     }
 }
 
@@ -50,7 +50,7 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     });
     defer shell.deinit();
 
-    status_panel.show(tab, palette, .{
+    status_panel.show(tab, app.sessions.statusPanelSnapshot(tab.id), palette, .{
         .width = layout.sidebar_width,
         .id_extra = 620,
     });
@@ -114,7 +114,7 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     transferStrip(palette, false, 670);
 }
 
-fn fileOnlyWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
+fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
     var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
         .padding = .all(0),
@@ -122,7 +122,7 @@ fn fileOnlyWorkspace(tab: workspace.WorkspaceTab, palette: theme.Palette, layout
     });
     defer shell.deinit();
 
-    status_panel.show(tab, palette, .{
+    status_panel.show(tab, app.sessions.statusPanelSnapshot(tab.id), palette, .{
         .width = layout.sidebar_width,
         .id_extra = 690,
     });

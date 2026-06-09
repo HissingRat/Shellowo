@@ -35,6 +35,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("shellowo-settings-icon", .{
         .root_source_file = b.path("assets/settings.png"),
     });
+    exe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
+        .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
+    });
 
     b.installArtifact(exe);
 
@@ -47,6 +50,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     attachNativeDeps(b, ssh_probe, native_deps);
+    ssh_probe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
+        .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
+    });
     b.installArtifact(ssh_probe);
 
     const run_step = b.step("run", "Run the app");
@@ -76,6 +82,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     attachNativeDeps(b, ssh_worker_probe, native_deps);
+    ssh_worker_probe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
+        .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
+    });
     b.installArtifact(ssh_worker_probe);
 
     const ssh_worker_probe_step = b.step("ssh-worker-probe", "Probe an SSH server through Shellow's worker-backed runtime");
@@ -96,6 +105,9 @@ pub fn build(b: *std.Build) void {
     });
     attachNativeDeps(b, tests, native_deps);
     tests.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+    tests.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
+        .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
+    });
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);

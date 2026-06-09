@@ -7,6 +7,8 @@ const screen = @import("ui/screen.zig");
 
 const zed_font_bytes = @embedFile("shellowo-zed-font");
 const cjk_font_bytes = @embedFile("shellowo-cjk-font");
+const min_idle_fps: i32 = 4;
+const min_idle_frame_interval_us: i32 = std.time.us_per_s / min_idle_fps;
 
 pub const dvui_app: dvui.App = .{
     .config = .{
@@ -51,7 +53,16 @@ fn appDeinit() void {
 }
 
 fn appFrame() !dvui.App.Result {
-    return screen.frame(&app_state.?);
+    const result = try screen.frame(&app_state.?);
+    maintainMinIdleRefreshRate();
+    return result;
+}
+
+fn maintainMinIdleRefreshRate() void {
+    const timer_id = dvui.currentWindow().data().id.update("shellowo_min_idle_refresh");
+    if (dvui.timerDoneOrNone(timer_id)) {
+        dvui.timer(timer_id, min_idle_frame_interval_us);
+    }
 }
 
 fn loadEmbeddedFonts(window: *dvui.Window) void {
