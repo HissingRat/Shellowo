@@ -14,7 +14,6 @@ const theme = @import("theme.zig");
 const default_sidebar_width: f32 = 190;
 const default_file_panel_height: f32 = 230;
 const default_local_file_width: f32 = 214;
-const transfer_height: f32 = 24;
 
 const min_sidebar_width: f32 = 150;
 const max_sidebar_width: f32 = 320;
@@ -110,13 +109,12 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     var local_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     if (file_panel.show(tab, palette, .{
+        .app = app,
         .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
         .height = layout.file_panel_height,
         .local_width = &layout.local_file_width,
         .id_extra = 660,
     })) |intent| app.handleFilePanelIntent(tab.id, intent);
-
-    transferStrip(palette, false, 670);
 }
 
 fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
@@ -150,13 +148,12 @@ fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Pale
     var local_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     if (file_panel.show(tab, palette, .{
+        .app = app,
         .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
         .height = null,
         .local_width = &layout.local_file_width,
         .id_extra = 710,
     })) |intent| app.handleFilePanelIntent(tab.id, intent);
-
-    transferStrip(palette, false, 720);
 }
 
 fn topSeparator(palette: theme.Palette, id_extra: usize) void {
@@ -170,34 +167,4 @@ fn topSeparator(palette: theme.Palette, id_extra: usize) void {
         .id_extra = id_extra,
     });
     defer line.deinit();
-}
-
-fn transferStrip(palette: theme.Palette, full_width: bool, id_extra: usize) void {
-    _ = full_width;
-    var strip = dvui.box(@src(), .{ .dir = .horizontal }, theme.panel(.{
-        .expand = .horizontal,
-        .min_size_content = .height(transfer_height),
-        .max_size_content = .height(transfer_height),
-        .padding = .{ .x = 10, .y = 0, .w = 10, .h = 0 },
-        .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.topbar_bg,
-        .color_border = palette.border_subtle,
-    }));
-    defer strip.deinit();
-
-    dvui.label(@src(), "Transfers", .{}, .{
-        .font = theme.textFont("Transfers", 10),
-        .color_text = palette.text_subtle,
-        .gravity_y = 0.5,
-        .id_extra = id_extra + 1,
-    });
-
-    dvui.label(@src(), "0 active tasks", .{}, .{
-        .font = theme.textFont("0 active tasks", 10),
-        .color_text = palette.muted_text,
-        .gravity_x = 1,
-        .gravity_y = 0.5,
-        .id_extra = id_extra + 2,
-    });
 }

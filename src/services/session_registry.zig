@@ -4,6 +4,7 @@ const remote_file = @import("../core/remote_file.zig");
 const ssh = @import("../protocols/ssh.zig");
 const status_panel = @import("../core/status_panel.zig");
 const terminal_slot = @import("../core/terminal_slot.zig");
+const transfer = @import("../core/transfer.zig");
 const workspace = @import("../core/workspace.zig");
 const terminal = @import("../terminal/terminal.zig");
 const ssh_session = @import("ssh_session.zig");
@@ -203,6 +204,22 @@ pub const MockSessionRegistry = struct {
         if (self.tabById(tab_id) == null) return ssh_session.Error.ChannelClosed;
         if (self.sshWorkspace(tab_id)) |worker| {
             try worker.queueFileIntent(intent);
+        }
+    }
+
+    pub fn transferProgress(self: *MockSessionRegistry, buffer: []transfer.TransferProgress) []transfer.TransferProgress {
+        var count: usize = 0;
+        for (self.ssh_workspaces.items) |slot| {
+            if (count >= buffer.len) break;
+            const written = slot.worker.transferProgress(buffer[count..]);
+            count += written.len;
+        }
+        return buffer[0..count];
+    }
+
+    pub fn cancelTransfer(self: *MockSessionRegistry, transfer_id: u64) void {
+        for (self.ssh_workspaces.items) |slot| {
+            slot.worker.requestCancelTransfer(transfer_id);
         }
     }
 

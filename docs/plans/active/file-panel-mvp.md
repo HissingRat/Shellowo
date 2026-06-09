@@ -182,14 +182,16 @@ pub const FilePanelIntent = union(enum) {
 
 ### M5: Mutations And Transfer
 
-- [ ] mkdir、rename、delete 接入 SFTP controller。
-- [ ] upload/download intent 创建 transfer task。
+- [x] New File、New Folder、Rename、Delete 接入右键菜单和 inline/modal UI。
+- [x] mkdir、rename、delete 接入 SFTP controller。
+- [x] 第一版 download 支持多选文件/文件夹，下载到程序目录旁 `owoDownloads/`。
+- [ ] upload/download intent 创建正式 transfer task。
 - [ ] transfer queue 提供进度 snapshot。
 - [ ] file panel 根据 transfer 状态禁用重复操作或显示 busy 摘要。
 
 验收：
 
-- 上传下载进入统一 transfer system。
+- 第一版文件 mutation 可用；上传下载后续进入统一 transfer system。
 - 取消/失败不破坏 pane 当前目录状态。
 
 ### M6: FTP Runtime

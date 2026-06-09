@@ -44,6 +44,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("shellowo-refresh-icon", .{
         .root_source_file = b.path("assets/refresh.png"),
     });
+    exe.root_module.addAnonymousImport("shellowo-close-icon", .{
+        .root_source_file = b.path("assets/close.png"),
+    });
     exe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
     });
@@ -125,6 +128,9 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addAnonymousImport("shellowo-refresh-icon", .{
         .root_source_file = b.path("assets/refresh.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-close-icon", .{
+        .root_source_file = b.path("assets/close.png"),
     });
 
     const test_step = b.step("test", "Run unit tests");

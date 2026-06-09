@@ -163,6 +163,7 @@ pub const Sftp = struct {
         readFile: *const fn (*anyopaque, std.mem.Allocator, []const u8) Error![]u8,
         writeFile: *const fn (*anyopaque, []const u8, []const u8) Error!void,
         remove: *const fn (*anyopaque, []const u8) Error!void,
+        removeDir: *const fn (*anyopaque, []const u8) Error!void,
         mkdir: *const fn (*anyopaque, []const u8) Error!void,
         rename: *const fn (*anyopaque, []const u8, []const u8) Error!void,
         close: *const fn (*anyopaque) void,
@@ -182,6 +183,10 @@ pub const Sftp = struct {
 
     pub fn remove(self: Sftp, path: []const u8) Error!void {
         return self.vtable.remove(self.context, path);
+    }
+
+    pub fn removeDir(self: Sftp, path: []const u8) Error!void {
+        return self.vtable.removeDir(self.context, path);
     }
 
     pub fn mkdir(self: Sftp, path: []const u8) Error!void {

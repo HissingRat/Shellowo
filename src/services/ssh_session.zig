@@ -26,6 +26,7 @@ pub const State = enum {
 pub const Options = struct {
     connector: ssh.Connector,
     terminal_factory: TerminalFactory,
+    io: ?std.Io = null,
     host_key_verifier: ?ssh.HostKeyVerifier = null,
     host_key_policy: ssh.HostKeyPolicy = .strict,
     shell_size: ssh.PtySize = .{ .cols = 100, .rows = 30 },

@@ -29,3 +29,8 @@ pub const TransferTask = struct {
     progress: f32,
 };
 
+pub const TransferProgress = struct {
+    id: u64,
+    status: TransferStatus,
+    progress: f32,
+};

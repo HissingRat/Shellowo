@@ -88,6 +88,13 @@ pub const FileEntryTarget = struct {
     pane: FilePaneTarget,
     path: []const u8,
     name: []const u8,
+    kind: ?RemoteFileKind = null,
+};
+
+pub const FileCreateFileIntent = struct {
+    pane: FilePaneTarget,
+    parent_path: []const u8,
+    name: []const u8,
 };
 
 pub const FileCreateDirectoryIntent = struct {
@@ -107,6 +114,19 @@ pub const FileTransferIntent = struct {
     local_path: []const u8,
     remote_path: []const u8,
     name: []const u8,
+    transfer_id: ?u64 = null,
+};
+
+pub const FileBatchEntry = struct {
+    name: []const u8,
+    kind: RemoteFileKind,
+};
+
+pub const FileBatchTransferIntent = struct {
+    local_path: []const u8,
+    remote_path: []const u8,
+    entries: []const FileBatchEntry,
+    transfer_id: ?u64 = null,
 };
 
 pub const FileSelectIntent = struct {
@@ -120,11 +140,13 @@ pub const FilePanelIntent = union(enum) {
     refresh: FilePaneTarget,
     go_parent: FilePaneTarget,
     open: FileEntryTarget,
+    create_file: FileCreateFileIntent,
     create_directory: FileCreateDirectoryIntent,
     rename: FileRenameIntent,
     delete: FileEntryTarget,
     upload: FileTransferIntent,
     download: FileTransferIntent,
+    download_many: FileBatchTransferIntent,
 };
 
 test "file pane snapshot reports ready empty state" {

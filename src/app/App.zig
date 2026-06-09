@@ -27,6 +27,7 @@ sessions: session_registry.MockSessionRegistry,
 ssh_backend: libssh2_backend.Backend,
 terminal_backend: libvterm_backend.Backend,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
+next_transfer_id: u64 = 1,
 selected_profile_id: ?u64 = null,
 draft: profile.ProfileDraft = .{},
 show_config: bool = false,
@@ -55,7 +56,6 @@ pub fn initMemory(allocator: std.mem.Allocator) !App {
     app.draft.reset(.ssh);
     try app.profiles.seedDefaults();
     app.selectFirstProfile();
-    try app.seedTransfers();
     return app;
 }
 
@@ -78,7 +78,6 @@ pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
         try app.profiles.saveToDisk(io, profiles_path);
     }
     app.selectFirstProfile();
-    try app.seedTransfers();
     return app;
 }
 
@@ -142,6 +141,7 @@ pub fn toggleTheme(self: *App) void {
 pub fn beginFrame(self: *App) void {
     self.frame_index +%= 1;
     self.sessions.pollWorkers();
+    self.syncTransferProgress();
 }
 
 pub fn saveDraft(self: *App) void {
@@ -340,21 +340,106 @@ pub fn filePanelSnapshot(self: *App, tab_id: u64, local_buffer: []remote_file.Re
 }
 
 pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePanelIntent) void {
-    self.sessions.handleFilePanelIntent(tab_id, intent) catch {
+    var queued_intent = intent;
+    const transfer_id = self.recordFileTransfer(&queued_intent) catch {
+        self.message = "Could not create transfer task";
+        return;
+    };
+    self.sessions.handleFilePanelIntent(tab_id, queued_intent) catch {
+        if (transfer_id) |id| self.removeTransfer(id);
         self.message = "File action is not available yet";
         return;
     };
     self.message = fileIntentMessage(intent);
 }
 
-fn seedTransfers(self: *App) !void {
+pub fn cancelTransfer(self: *App, transfer_id: u64) void {
+    self.sessions.cancelTransfer(transfer_id);
+    self.removeTransfer(transfer_id);
+    self.message = "Transfer canceled";
+}
+
+fn syncTransferProgress(self: *App) void {
+    var buffer: [128]transfer.TransferProgress = undefined;
+    const updates = self.sessions.transferProgress(&buffer);
+    for (updates) |update| {
+        const idx = self.transferIndex(update.id) orelse continue;
+        if (update.status == .completed or update.status == .canceled) {
+            self.removeTransferAt(idx);
+            continue;
+        }
+        self.transfers.items[idx].status = update.status;
+        self.transfers.items[idx].progress = update.progress;
+    }
+}
+
+fn recordFileTransfer(self: *App, intent: *remote_file.FilePanelIntent) !?u64 {
+    switch (intent.*) {
+        .download => |*download| {
+            const id = try self.appendNamedTransfer(.download, download.name);
+            download.transfer_id = id;
+            return id;
+        },
+        .download_many => |*download_many| {
+            if (download_many.entries.len == 1) {
+                const id = try self.appendNamedTransfer(.download, download_many.entries[0].name);
+                download_many.transfer_id = id;
+                return id;
+            } else {
+                var title_buf: [64]u8 = undefined;
+                const title = try std.fmt.bufPrint(&title_buf, "Download {d} items", .{download_many.entries.len});
+                const id = try self.appendTransferTitle(.download, title);
+                download_many.transfer_id = id;
+                return id;
+            }
+        },
+        else => return null,
+    }
+}
+
+fn appendNamedTransfer(self: *App, direction: transfer.TransferDirection, name: []const u8) !u64 {
+    const action = switch (direction) {
+        .download => "Download",
+        .upload => "Upload",
+    };
+    const title = try std.fmt.allocPrint(self.allocator, "{s} '{s}'", .{ action, name });
+    return self.appendOwnedTransferTitle(direction, title);
+}
+
+fn appendTransferTitle(self: *App, direction: transfer.TransferDirection, title_text: []const u8) !u64 {
+    const title = try self.allocator.dupe(u8, title_text);
+    return self.appendOwnedTransferTitle(direction, title);
+}
+
+fn appendOwnedTransferTitle(self: *App, direction: transfer.TransferDirection, title: []const u8) !u64 {
+    errdefer self.allocator.free(title);
+    const id = self.next_transfer_id;
     try self.transfers.append(self.allocator, .{
-        .id = 1,
-        .title = try self.allocator.dupe(u8, "No active transfers"),
-        .direction = .download,
-        .status = .pending,
+        .id = id,
+        .title = title,
+        .direction = direction,
+        .status = .running,
         .progress = 0,
     });
+    self.next_transfer_id += 1;
+    return id;
+}
+
+fn transferIndex(self: *const App, transfer_id: u64) ?usize {
+    for (self.transfers.items, 0..) |task, idx| {
+        if (task.id == transfer_id) return idx;
+    }
+    return null;
+}
+
+fn removeTransfer(self: *App, transfer_id: u64) void {
+    const idx = self.transferIndex(transfer_id) orelse return;
+    self.removeTransferAt(idx);
+}
+
+fn removeTransferAt(self: *App, idx: usize) void {
+    self.allocator.free(self.transfers.items[idx].title);
+    _ = self.transfers.orderedRemove(idx);
 }
 
 fn selectFirstProfile(self: *App) void {
@@ -381,6 +466,7 @@ pub fn sshRuntimeOptions(self: *App) ssh_session.Options {
     return .{
         .connector = self.ssh_backend.connector(),
         .terminal_factory = terminalFactory(&self.terminal_backend),
+        .io = self.io,
         .host_key_verifier = self.known_hosts.verifier(),
         .host_key_policy = .trust_on_first_use,
     };
@@ -400,11 +486,12 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
         .refresh => "Refreshing files",
         .go_parent => "Opening parent folder",
         .open => "Opening folder",
-        .create_directory => "Create folder is planned",
-        .rename => "Rename is planned",
-        .delete => "Delete is planned",
+        .create_file => "Creating file",
+        .create_directory => "Creating folder",
+        .rename => "Renaming file",
+        .delete => "Deleting file",
         .upload => "Upload is planned",
-        .download => "Download is planned",
+        .download, .download_many => "Downloading file",
     };
 }
 
