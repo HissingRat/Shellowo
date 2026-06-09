@@ -2,6 +2,7 @@ comptime {
     _ = @import("app/App.zig");
     _ = @import("app/keybindings.zig");
     _ = @import("core/profile.zig");
+    _ = @import("core/remote_file.zig");
     _ = @import("core/terminal_slot.zig");
     _ = @import("protocols/libssh2_backend.zig");
     _ = @import("protocols/ssh.zig");

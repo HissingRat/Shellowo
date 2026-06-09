@@ -1,0 +1,188 @@
+# File Panel MVP Roadmap
+
+## 背景
+
+Shellow 现在已经有 `src/ui/workspace/file_panel.zig`，但它仍是写死 rows 的 DVUI mock panel。下一阶段要把它升级成 FinalShell 风格的文件工作区：SSH workspace 下方显示 SFTP 文件面板，FTP workspace 使用 file-only 文件工作区。
+
+当前必须继续遵守既有边界：
+
+- SSH/SFTP 与 FTP controller/runtime 分离。
+- UI 不直接拥有协议 client 或 raw backend handle。
+- 文件传输必须进入统一 transfer system。
+- 文件 UI 可以共享数据形状和交互模型，但不能强行共享 session runtime。
+
+## 目标
+
+- `file_panel` 只消费 runtime-independent snapshot。
+- `file_panel` 只发出 intent，不直接执行 SFTP/FTP/local filesystem 操作。
+- SSH workspace 支持 terminal + remote SFTP panel。
+- FTP workspace 复用文件 UI，但走独立 FTP runtime。
+- local/remote 双栏布局先稳定下来，为上传下载做准备。
+- 上传、下载、删除、重命名等操作有明确 busy/error/disabled 状态。
+
+## 非目标
+
+- 第一阶段不完成完整 FTP runtime。
+- 不把 SFTP 文件传输塞进 terminal shell byte stream。
+- 不在 DVUI widget 内直接调用 `libssh2`、socket、filesystem watcher 或 FTP parser。
+- 不在 file panel 内维护 transfer progress；进度来自 transfer snapshot。
+- 不做远程编辑器、双远端同步、权限编辑高级弹窗。
+
+## 边界
+
+```txt
+DVUI file_panel
+  -> FilePanelSnapshot / FilePanelIntent
+    -> App / Session Registry
+      -> SSH workspace runtime -> SFTP controller -> libssh2 backend
+      -> FTP workspace runtime -> FTP controller
+      -> local file service
+        -> transfer queue
+```
+
+职责：
+
+- `src/ui/workspace/file_panel.zig`
+  - 渲染 toolbar、路径栏、local/remote panes、table rows、空态和错误态。
+  - 将用户动作转换成 `FilePanelIntent`。
+  - 不保存协议状态，不计算传输进度。
+- `src/core/remote_file.zig`
+  - 定义 `RemoteFileEntry`、`FilePanelSnapshot`、`FilePanelIntent` 和 capability 数据形状。
+  - 可被 SFTP、FTP、local service 和 UI 共享。
+- `src/services/session_registry.zig`
+  - 根据 tab id 暴露 file snapshot。
+  - 根据 tab id 分发 file intent 到对应 runtime。
+- SSH workspace runtime
+  - 管理 SFTP capability 生命周期。
+  - 把 SFTP list/stat/mkdir/rename/delete 映射到 core file snapshot/result。
+- FTP workspace runtime
+  - 后续单独实现 file-only session。
+  - 不复用 SSH/SFTP runtime 类型。
+- Transfer system
+  - 接收 upload/download intent，创建 transfer task。
+  - file panel 只显示任务入口和来自 transfer snapshot 的摘要。
+
+## 数据模型草案
+
+第一版放在 `src/core/remote_file.zig`：
+
+```zig
+pub const RemoteFileEntry = struct {
+    name: []const u8,
+    kind: RemoteFileKind,
+    size: ?u64 = null,
+    permissions: ?u32 = null,
+    modified_unix: ?i64 = null,
+};
+
+pub const FilePanelSnapshot = struct {
+    local: FilePaneSnapshot,
+    remote: FilePaneSnapshot,
+};
+
+pub const FilePaneSnapshot = struct {
+    location: FileLocation,
+    path: []const u8,
+    state: FilePaneState,
+    entries: []const RemoteFileEntry,
+    selected_name: ?[]const u8 = null,
+    error_summary: ?[]const u8 = null,
+    capabilities: FilePaneCapabilities = .{},
+};
+
+pub const FilePanelIntent = union(enum) {
+    refresh: FilePaneTarget,
+    open: FileEntryTarget,
+    go_parent: FilePaneTarget,
+    create_directory: FileCreateDirectoryIntent,
+    rename: FileRenameIntent,
+    delete: FileEntryTarget,
+    upload: FileTransferIntent,
+    download: FileTransferIntent,
+};
+```
+
+## 阶段计划
+
+### M1: Core File Model
+
+- [ ] 扩展 `src/core/remote_file.zig`。
+- [ ] 定义 pane snapshot、capabilities、loading/error/unavailable 状态。
+- [ ] 定义 intent union。
+- [ ] `src/test_root.zig` 引入 remote file model。
+
+验收：
+
+- core 类型不依赖 DVUI、SSH、FTP 或 App。
+- `zig build test` 通过。
+
+### M2: UI Snapshot Render
+
+- [ ] `file_panel.show()` 改为消费 `FilePanelSnapshot`。
+- [ ] 移除 widget 内硬编码 mock rows。
+- [ ] 实现 toolbar：refresh、up、mkdir、rename、delete、upload、download。
+- [ ] 实现 loading、empty、error、unavailable 空态。
+- [ ] 行双击目录产生 open intent，文件双击第一版只选中或 no-op。
+
+验收：
+
+- SSH 和 FTP workspace 都能显示稳定文件 panel。
+- 没有 snapshot 时显示 unavailable，不显示假远端数据。
+
+### M3: App/Registry Mock Wiring
+
+- [ ] registry 暴露 `filePanelSnapshot(tab_id)`。
+- [ ] registry 暴露 `handleFilePanelIntent(tab_id, intent)`。
+- [ ] 第一版使用 mock snapshot 验证 UI，不接真实协议。
+- [ ] FTP tab 显示 file-only unavailable/mock 状态，不出现 terminal 或 SSH monitor 假信息。
+
+验收：
+
+- UI 交互路径从 widget 到 registry 跑通。
+- intent handler 可记录或更新本地 mock state。
+
+### M4: SFTP Read-Only Browser
+
+- [ ] SSH workspace runtime 打开 SFTP capability。
+- [ ] 实现 remote list/stat。
+- [ ] directory open、parent、refresh 更新 remote pane snapshot。
+- [ ] 错误映射成用户可读 summary。
+
+验收：
+
+- SSH tab 能浏览远端目录。
+- SFTP 失败不影响当前 terminal PTY。
+- UI 不接触 raw libssh2 handle。
+
+### M5: Mutations And Transfer
+
+- [ ] mkdir、rename、delete 接入 SFTP controller。
+- [ ] upload/download intent 创建 transfer task。
+- [ ] transfer queue 提供进度 snapshot。
+- [ ] file panel 根据 transfer 状态禁用重复操作或显示 busy 摘要。
+
+验收：
+
+- 上传下载进入统一 transfer system。
+- 取消/失败不破坏 pane 当前目录状态。
+
+### M6: FTP Runtime
+
+- [ ] 定义独立 FTP controller/runtime。
+- [ ] FTP workspace 使用同一 `FilePanelSnapshot` 数据形状。
+- [ ] FTP list/mkdir/rename/delete/upload/download 按独立 controller 接入。
+
+验收：
+
+- FTP tab 是 file-only 工作区。
+- FTP 不复用 SSH/SFTP runtime 类型。
+
+## 第一轮代码范围
+
+本轮只做 M1：
+
+- 扩展 `src/core/remote_file.zig`。
+- 引入 `src/test_root.zig`。
+- 跑 `zig build test`。
+
+完成后再进入 M2，把 `file_panel` 从 mock rows 改成 snapshot-driven widget。

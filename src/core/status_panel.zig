@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const max_disks = 4;
 pub const max_processes = 5;
-pub const max_network_points = 48;
+pub const max_network_points = 512;
 
 pub const MonitorState = enum {
     unavailable,
