@@ -8,21 +8,18 @@ const ssh_session_worker = @import("services/ssh_session_worker.zig");
 const libvterm_backend = @import("terminal/libvterm_backend.zig");
 const terminal = @import("terminal/terminal.zig");
 
+const Io = std.Io;
+
 pub fn main(init: std.process.Init.Minimal) !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer _ = debug_allocator.deinit();
     const allocator = debug_allocator.allocator();
 
-    var arg_it = std.process.Args.Iterator.init(init.args);
-    var args: [5][]const u8 = undefined;
-    var arg_count: usize = 0;
-    while (arg_it.next()) |arg| {
-        if (arg_count < args.len) args[arg_count] = arg;
-        arg_count += 1;
-    }
+    const argv = try init.args.toSlice(allocator);
+    defer allocator.free(argv);
 
-    if (arg_count != 5) {
-        std.debug.print("usage: {s} host port username password\n", .{args[0]});
+    if (argv.len != 5) {
+        std.debug.print("usage: {s} host port username password\n", .{argv[0]});
         return error.InvalidArguments;
     }
 
@@ -39,10 +36,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var draft = profile.ProfileDraft{};
     draft.reset(.ssh);
     profile.setBuffer(&draft.name, "Worker Probe");
-    profile.setBuffer(&draft.host, args[1]);
-    draft.port = try std.fmt.parseInt(u16, args[2], 10);
-    profile.setBuffer(&draft.username, args[3]);
-    profile.setBuffer(&draft.password, args[4]);
+    profile.setBuffer(&draft.host, argv[1]);
+    draft.port = try std.fmt.parseInt(u16, argv[2], 10);
+    profile.setBuffer(&draft.username, argv[3]);
+    profile.setBuffer(&draft.password, argv[4]);
 
     const connection = try draft.toProfile(allocator, 1);
     defer connection.deinit(allocator);
@@ -127,9 +124,16 @@ fn flattenSnapshot(snapshot: terminal.Snapshot, buffer: []u8) []const u8 {
 }
 
 fn sleepMs(ms: c_long) void {
-    const request: std.c.timespec = .{
-        .sec = @divTrunc(ms, 1000),
-        .nsec = @rem(ms, 1000) * std.time.ns_per_ms,
-    };
-    _ = std.c.nanosleep(&request, null);
+    var threaded: Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    io.sleep(.fromMilliseconds(ms), .awake) catch {};
 }
+
+// fn sleepMs(ms: c_long) void {
+//     const request: std.c.timespec = .{
+//         .sec = @divTrunc(ms, 1000),
+//         .nsec = @rem(ms, 1000) * std.time.ns_per_ms,
+//     };
+//     _ = std.c.nanosleep(&request, null);
+// }

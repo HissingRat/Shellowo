@@ -4,28 +4,25 @@ const known_hosts_store = @import("security/known_hosts.zig");
 const libssh2_backend = @import("protocols/libssh2_backend.zig");
 const ssh = @import("protocols/ssh.zig");
 
+const Io = std.Io;
+
 pub fn main(init: std.process.Init.Minimal) !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer _ = debug_allocator.deinit();
     const allocator = debug_allocator.allocator();
 
-    var arg_it = std.process.Args.Iterator.init(init.args);
-    var args: [5][]const u8 = undefined;
-    var arg_count: usize = 0;
-    while (arg_it.next()) |arg| {
-        if (arg_count < args.len) args[arg_count] = arg;
-        arg_count += 1;
-    }
+    const argv = try init.args.toSlice(allocator);
+    defer allocator.free(argv);
 
-    if (arg_count != 5) {
-        std.debug.print("usage: {s} host port username password\n", .{args[0]});
+    if (argv.len != 5) {
+        std.debug.print("usage: {s} host port username password\n", .{argv[0]});
         return error.InvalidArguments;
     }
 
-    const host = args[1];
-    const port = try std.fmt.parseInt(u16, args[2], 10);
-    const username = args[3];
-    const password = args[4];
+    const host = argv[1];
+    const port = try std.fmt.parseInt(u16, argv[2], 10);
+    const username = argv[3];
+    const password = argv[4];
 
     try libssh2_backend.init();
     defer libssh2_backend.deinit();
@@ -88,9 +85,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 }
 
 fn sleepMs(ms: c_long) void {
-    const request: std.c.timespec = .{
-        .sec = @divTrunc(ms, 1000),
-        .nsec = @rem(ms, 1000) * std.time.ns_per_ms,
-    };
-    _ = std.c.nanosleep(&request, null);
+    var threaded: Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    io.sleep(.fromMilliseconds(ms), .awake) catch {};
 }

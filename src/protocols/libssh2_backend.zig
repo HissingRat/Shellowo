@@ -1,14 +1,26 @@
 const std = @import("std");
 const ssh = @import("ssh.zig");
 
+const builtin = @import("builtin");
+const Io = std.Io;
+
 const c = @cImport({
     @cInclude("libssh2.h");
     @cInclude("libssh2_sftp.h");
-    @cInclude("netdb.h");
-    @cInclude("sys/socket.h");
-    @cInclude("time.h");
-    @cInclude("unistd.h");
+
+    if (builtin.os.tag == .windows) {
+        @cInclude("winsock2.h");
+        @cInclude("ws2tcpip.h");
+        @cInclude("windows.h");
+    } else {
+        @cInclude("netdb.h");
+        @cInclude("sys/socket.h");
+        @cInclude("time.h");
+        @cInclude("unistd.h");
+    }
 });
+
+const Socket = c.libssh2_socket_t;
 
 /// libssh2 integration belongs here.
 ///
@@ -34,7 +46,7 @@ pub const Backend = struct {
         defer allocator.free(service);
 
         const fd = connectSocketWithRetry(host, service, options.endpoint) catch return ssh.Error.ConnectionFailed;
-        errdefer _ = c.close(fd);
+        errdefer _ = closeSocket(fd);
         std.log.debug("libssh2 connect socket ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
         std.log.debug("libssh2 session init begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
@@ -77,7 +89,7 @@ const connector_vtable: ssh.Connector.VTable = .{
 
 const ClientContext = struct {
     allocator: std.mem.Allocator,
-    fd: c_int,
+    fd: Socket,
     session: *c.LIBSSH2_SESSION,
     state: ssh.SessionState,
 };
@@ -96,7 +108,7 @@ const SftpContext = struct {
     closed: bool = false,
 };
 
-fn connectSocketWithRetry(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoint) !c_int {
+fn connectSocketWithRetry(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoint) !Socket {
     const attempts = 4;
     for (0..attempts) |attempt| {
         std.log.debug("libssh2 connect socket begin host={s} port={d} attempt={d}", .{
@@ -113,7 +125,7 @@ fn connectSocketWithRetry(host: [:0]const u8, service: [:0]const u8, endpoint: s
     return error.ConnectFailed;
 }
 
-fn connectSocket(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoint) !c_int {
+fn connectSocket(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoint) !Socket {
     var hints: c.addrinfo = std.mem.zeroes(c.addrinfo);
     hints.ai_family = c.AF_UNSPEC;
     hints.ai_socktype = c.SOCK_STREAM;
@@ -129,7 +141,7 @@ fn connectSocket(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoi
     var node = result;
     while (node) |addr| : (node = addr.ai_next) {
         const fd = c.socket(addr.ai_family, addr.ai_socktype, addr.ai_protocol);
-        if (fd < 0) {
+        if (fd == invalidSocket()) {
             std.log.debug("libssh2 socket failed host={s} port={d} errno={s}", .{ endpoint.host, endpoint.port, @tagName(std.c.errno(fd)) });
             continue;
         }
@@ -140,19 +152,26 @@ fn connectSocket(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoi
             addr.ai_family,
             @tagName(std.c.errno(-1)),
         });
-        _ = c.close(fd);
+        _ = closeSocket(fd);
     }
 
     return error.ConnectFailed;
 }
 
 fn sleepMs(ms: c_long) void {
-    const request: c.timespec = .{
-        .tv_sec = @divTrunc(ms, 1000),
-        .tv_nsec = @rem(ms, 1000) * std.time.ns_per_ms,
-    };
-    _ = c.nanosleep(&request, null);
+    var threaded: Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    io.sleep(.fromMilliseconds(ms), .awake) catch {};
 }
+
+// fn sleepMs(ms: c_long) void {
+//     const request: c.timespec = .{
+//         .tv_sec = @divTrunc(ms, 1000),
+//         .tv_nsec = @rem(ms, 1000) * std.time.ns_per_ms,
+//     };
+//     _ = c.nanosleep(&request, null);
+// }
 
 fn yieldThread() void {
     std.Thread.yield() catch {};
@@ -375,7 +394,7 @@ fn closeClient(context: *anyopaque) void {
     self.state = .closing;
     _ = c.libssh2_session_disconnect(self.session, "Shellow session closed");
     _ = c.libssh2_session_free(self.session);
-    _ = c.close(self.fd);
+    _ = closeSocket(self.fd);
     self.state = .closed;
     allocator.destroy(self);
 }
@@ -664,20 +683,44 @@ const shell_vtable: ssh.Shell.VTable = .{
     .close = shellClose,
 };
 
-fn mapByteCount(rc: c_long) ssh.Error!usize {
+fn mapByteCount(rc: isize) ssh.Error!usize {
     if (rc >= 0) return @intCast(rc);
     if (rc == c.LIBSSH2_ERROR_EAGAIN) return ssh.Error.WouldBlock;
     return ssh.Error.ChannelClosed;
 }
 
 pub fn init() ssh.Error!void {
+    if (builtin.os.tag == .windows) {
+        var data: c.WSADATA = undefined;
+        if (c.WSAStartup(0x0202, &data) != 0) {
+            return ssh.Error.ConnectionFailed;
+        }
+    }
+
     if (c.libssh2_init(0) != 0) {
+        if (builtin.os.tag == .windows) _ = c.WSACleanup();
         return ssh.Error.ConnectionFailed;
     }
 }
 
 pub fn deinit() void {
     c.libssh2_exit();
+}
+
+fn closeSocket(sock: Socket) c_int {
+    if (builtin.os.tag == .windows) {
+        return c.closesocket(sock);
+    } else {
+        return c.close(sock);
+    }
+}
+
+fn invalidSocket() Socket {
+    if (builtin.os.tag == .windows) {
+        return c.INVALID_SOCKET;
+    } else {
+        return -1;
+    }
 }
 
 test "backend exposes the stable ssh connector shape" {

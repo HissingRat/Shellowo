@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const profile = @import("../core/profile.zig");
 const remote_file = @import("../core/remote_file.zig");
 const status_panel = @import("../core/status_panel.zig");
@@ -579,7 +580,7 @@ pub const SshWorkspaceWorker = struct {
             .auth = auth,
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
-            .timeout_ms = self.options.timeout_ms,
+            .timeout_ms = @intCast(self.options.timeout_ms),
         }) catch |err| {
             self.fail(err);
             return;
@@ -620,7 +621,7 @@ pub const SshWorkspaceWorker = struct {
             .auth = auth,
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
-            .timeout_ms = self.options.timeout_ms,
+            .timeout_ms = @intCast(self.options.timeout_ms),
         }) catch |err| {
             self.storeFileError(@errorName(err));
             return;
@@ -993,7 +994,7 @@ pub const SshWorkspaceWorker = struct {
             .auth = auth,
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
-            .timeout_ms = self.options.timeout_ms,
+            .timeout_ms = @intCast(self.options.timeout_ms),
         });
         errdefer client.close();
         const sftp = try client.openSftp();
@@ -1877,11 +1878,10 @@ fn yieldThread() void {
 }
 
 fn sleepMs(ms: c_long) void {
-    const request: std.c.timespec = .{
-        .sec = @divTrunc(ms, 1000),
-        .nsec = @rem(ms, 1000) * std.time.ns_per_ms,
-    };
-    _ = std.c.nanosleep(&request, null);
+    var threaded: Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    io.sleep(.fromMilliseconds(ms), .awake) catch {};
 }
 
 test "workspace worker owns one initial terminal slot" {

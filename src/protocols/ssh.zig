@@ -94,7 +94,7 @@ pub const ConnectOptions = struct {
     auth: Auth,
     host_key_policy: HostKeyPolicy = .strict,
     host_key_verifier: ?HostKeyVerifier = null,
-    timeout_ms: u32 = 15_000,
+    timeout_ms: i32 = 15_000,
 };
 
 pub const PtySize = struct {

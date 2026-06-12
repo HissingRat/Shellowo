@@ -85,7 +85,7 @@ pub const SshSession = struct {
             .auth = auth,
             .host_key_policy = options.host_key_policy,
             .host_key_verifier = options.host_key_verifier,
-            .timeout_ms = options.timeout_ms,
+            .timeout_ms = @intCast(options.timeout_ms),
         }) catch |err| {
             std.log.debug("ssh session connect failed host={s} port={d} err={s}", .{
                 endpoint.host,

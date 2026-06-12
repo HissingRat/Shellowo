@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const max_disks = 4;
 pub const max_processes = 5;
@@ -217,7 +218,33 @@ fn normalizedSampleMs(sample_ms: u64) u64 {
     return if (sample_ms == 0) 1000 else sample_ms;
 }
 
+const FileTime = extern struct {
+    dwLowDateTime: u32,
+    dwHighDateTime: u32,
+};
+
+extern "kernel32" fn GetSystemTimeAsFileTime(
+    lpSystemTimeAsFileTime: *FileTime,
+) void;
+
 fn currentUnixMs() u64 {
+    if (builtin.os.tag == .windows) {
+        var ft: FileTime = undefined;
+        GetSystemTimeAsFileTime(&ft);
+
+        const filetime_100ns =
+            (@as(u64, ft.dwHighDateTime) << 32) | @as(u64, ft.dwLowDateTime);
+
+        const windows_to_unix_100ns: u64 = 116444736000000000;
+        if (filetime_100ns <= windows_to_unix_100ns) return 0;
+
+        return (filetime_100ns - windows_to_unix_100ns) / 10_000;
+    } else {
+        return posixCurrentUnixMs();
+    }
+}
+
+fn posixCurrentUnixMs() u64 {
     if (@TypeOf(std.c.CLOCK) == void) return 0;
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
@@ -225,6 +252,15 @@ fn currentUnixMs() u64 {
     const nanos: u64 = @intCast(@max(0, ts.nsec));
     return seconds * std.time.ms_per_s + nanos / std.time.ns_per_ms;
 }
+
+// fn currentUnixMs() u64 {
+//     if (@TypeOf(std.c.CLOCK) == void) return 0;
+//     var ts: std.c.timespec = undefined;
+//     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
+//     const seconds: u64 = @intCast(@max(0, ts.sec));
+//     const nanos: u64 = @intCast(@max(0, ts.nsec));
+//     return seconds * std.time.ms_per_s + nanos / std.time.ns_per_ms;
+// }
 
 const StatusJson = struct {
     schema: []const u8,
