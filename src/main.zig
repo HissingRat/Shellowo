@@ -6,6 +6,8 @@ const ui_theme = @import("ui/theme.zig");
 const screen = @import("ui/screen.zig");
 
 const zed_font_bytes = @embedFile("shellowo-zed-font");
+const zed_font_italic_bytes = @embedFile("shellowo-zed-italic-font");
+const zed_font_bold_bytes = @embedFile("shellowo-zed-bold-font");
 const cjk_font_bytes = @embedFile("shellowo-cjk-font");
 const min_idle_fps: i32 = 4;
 const min_idle_frame_interval_us: i32 = std.time.us_per_s / min_idle_fps;
@@ -71,6 +73,8 @@ fn loadEmbeddedFonts(window: *dvui.Window) void {
     window.addFont(ui_theme.zed_font_family, zed_font_bytes, null) catch {
         zed_loaded = false;
     };
+    addFontSource(window, ui_theme.zed_font_family, zed_font_bold_bytes, .bold, .normal) catch {};
+    addFontSource(window, ui_theme.zed_font_family, zed_font_italic_bytes, .normal, .italic) catch {};
 
     var current_theme = window.theme;
     const primary_family = if (zed_loaded) ui_theme.zed_font_family else ui_theme.cjk_font_family;
@@ -79,4 +83,19 @@ fn loadEmbeddedFonts(window: *dvui.Window) void {
     current_theme.font_title = current_theme.font_title.withFamily(primary_family).withWeight(.normal).withSize(ui_theme.font_sizes.title);
     current_theme.font_mono = current_theme.font_mono.withFamily(primary_family).withSize(ui_theme.font_sizes.body);
     window.themeSet(current_theme);
+}
+
+fn addFontSource(
+    window: *dvui.Window,
+    family: []const u8,
+    ttf_bytes: []const u8,
+    weight: dvui.Font.Weight,
+    style: dvui.Font.Style,
+) std.mem.Allocator.Error!void {
+    try window.fonts.database.append(window.gpa, .{
+        .family = dvui.Font.array(family),
+        .weight = weight,
+        .style = style,
+        .bytes = ttf_bytes,
+    });
 }

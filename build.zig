@@ -26,6 +26,12 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("shellowo-zed-font", .{
         .root_source_file = b.path("assets/fonts/zed-mono-extended.ttf"),
     });
+    exe.root_module.addAnonymousImport("shellowo-zed-italic-font", .{
+        .root_source_file = b.path("assets/fonts/zed-mono-extendeditalic.ttf"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-zed-bold-font", .{
+        .root_source_file = b.path("assets/fonts/zed-mono-extendedbold.ttf"),
+    });
     exe.root_module.addAnonymousImport("shellowo-cjk-font", .{
         .root_source_file = b.path("assets/fonts/NotoSansCJKsc-Medium.otf"),
     });

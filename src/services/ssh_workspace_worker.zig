@@ -585,6 +585,7 @@ pub const SshWorkspaceWorker = struct {
             return;
         };
         defer client.close();
+        defer self.closeAllSlots();
 
         self.setState(.connected);
         var buffer: [8192]u8 = undefined;
@@ -599,7 +600,6 @@ pub const SshWorkspaceWorker = struct {
         }
 
         self.setState(.stopping);
-        self.closeAllSlots();
         self.setState(.stopped);
     }
 
