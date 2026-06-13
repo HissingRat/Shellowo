@@ -9,6 +9,9 @@ const workspace_view = @import("workspace_view.zig");
 
 const server_icon_bytes = @embedFile("shellowo-server-icon");
 const settings_icon_bytes = @embedFile("shellowo-settings-icon");
+const folder_icon_bytes = @embedFile("shellowo-folder-icon");
+const sun_icon_bytes = @embedFile("shellowo-sun-icon");
+const moon_icon_bytes = @embedFile("shellowo-moon-icon");
 
 const TabAction = enum {
     none,
@@ -27,6 +30,23 @@ const IconTextButtonResult = struct {
     clicked: bool,
     hovered: bool,
 };
+
+const IconButtonInfo = struct {
+    clicked: bool,
+    rect: dvui.Rect.Physical,
+};
+
+const TopBarState = struct {
+    settings_open: bool = false,
+    settings_opened_frame: u64 = 0,
+    settings_button_rect: dvui.Rect.Physical = .{},
+    theme_switch_animating: bool = false,
+    theme_switch_from_light: bool = false,
+    theme_switch_to_light: bool = false,
+    theme_switch_started_ns: i128 = 0,
+};
+
+const theme_switch_anim_ns: i128 = 180 * std.time.ns_per_ms;
 
 fn maybeButton(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options, palette: theme.Palette, style: theme.ButtonStyle, enabled: bool) bool {
     if (enabled) {
@@ -243,6 +263,8 @@ fn iconButtonPlaceholder(src: std.builtin.SourceLocation, width: f32, height: f3
 
 pub fn frame(app: *App) !dvui.App.Result {
     app.beginFrame();
+    const window_rect = dvui.windowRect();
+    app.observeWindowSize(window_rect.w, window_rect.h);
     const palette = theme.Palette.forMode(app.theme_mode);
 
     var root = dvui.box(@src(), .{ .dir = .vertical }, theme.app(.{
@@ -261,6 +283,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
     const bar_height: f32 = 32;
     const button_height: f32 = 26;
     const close_size: f32 = 18;
+    const settings_button_size: f32 = 28;
     const controls_enabled = !app.configVisible();
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, theme.topbar(.{
         .expand = .horizontal,
@@ -269,6 +292,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
         .padding = .{ .x = 12, .y = 0, .w = 12, .h = 0 },
     }, palette));
     defer bar.deinit();
+    const state = dvui.dataGetPtrDefault(null, bar.data().id, "top-bar-state", TopBarState, .{});
 
     topBarTitle(app.currentTitle(), bar_height, palette);
 
@@ -296,16 +320,354 @@ fn topBar(app: *App, palette: theme.Palette) void {
         }
     }
 
-    if (maybeButton(@src(), app.theme_mode.label(), .{
+    const settings_button = topBarSettingsButton(settings_icon_bytes, "settings.png", .{
         .gravity_x = 1,
         .gravity_y = 0.5,
-        .min_size_content = .{ .w = 58, .h = button_height },
-        .padding = .{ .x = 6, .y = 1.5, .w = 6, .h = 0 },
+        .min_size_content = .{ .w = settings_button_size, .h = button_height },
+        .max_size_content = .{ .w = settings_button_size, .h = button_height },
+        .padding = .{ .x = 4, .y = 3, .w = 4, .h = 3 },
         .corner_radius = .all(5),
         .id_extra = 2,
-    }, palette, .{ .variant = .ghost, .font_size = theme.font_sizes.tab }, controls_enabled)) {
-        app.toggleTheme();
+    }, palette, controls_enabled, 302);
+    state.settings_button_rect = settings_button.rect;
+    if (settings_button.clicked) {
+        state.settings_open = !state.settings_open;
+        state.settings_opened_frame = app.frame_index;
     }
+
+    if (state.settings_open) {
+        settingsPopup(app, state, palette, 900);
+    }
+}
+
+fn topBarSettingsButton(bytes: []const u8, name: []const u8, opts: dvui.Options, palette: theme.Palette, enabled: bool, id_base: usize) IconButtonInfo {
+    var bw: dvui.ButtonWidget = undefined;
+    var options = theme.buttonOptions(opts, palette, .{ .variant = .ghost, .font_size = theme.font_sizes.tab });
+    if (!enabled) {
+        options = options.override(.{
+            .role = .none,
+            .tab_index = 0,
+        });
+    }
+
+    bw.init(@src(), .{ .draw_focus = false }, options);
+    if (enabled) bw.processEvents();
+    bw.drawBackground();
+
+    themedPng(@src(), bytes, name, settings_icon_size, bw.style().color(.text), id_base);
+
+    const rect = bw.data().rectScale().r;
+    const clicked = enabled and bw.clicked();
+    bw.drawFocus();
+    bw.deinit();
+    return .{ .clicked = clicked, .rect = rect };
+}
+
+fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {
+    const window_rect = dvui.windowRect();
+    const popup_w: f32 = 430;
+    const popup_h: f32 = 78;
+    const rect: dvui.Rect.Natural = .{
+        .x = @max(12, window_rect.w - popup_w - 12),
+        .y = 40,
+        .w = popup_w,
+        .h = popup_h,
+    };
+    var win: dvui.FloatingWidget = undefined;
+    win.init(@src(), .{}, theme.panel(.{
+        .rect = .cast(rect),
+        .min_size_content = .{ .w = rect.w, .h = rect.h },
+        .max_size_content = .{ .w = rect.w, .h = rect.h },
+        .padding = .{ .x = 10, .y = 5, .w = 10, .h = 5 },
+        .border = .all(1),
+        .corner_radius = .all(5),
+        .id_extra = id_extra,
+    }, palette).override(.{
+        .color_fill = palette.surface_bg,
+        .color_border = palette.border,
+    }));
+    defer win.deinit();
+
+    if (app.frame_index != state.settings_opened_frame and outsideSettingsPopupClick(win.data().rectScale().r, state.settings_button_rect)) {
+        state.settings_open = false;
+    }
+
+    settingThemeRow(app, state, palette, id_extra + 10);
+    settingDownloadRow(app, popup_w, palette, id_extra + 40);
+}
+
+fn settingThemeRow(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .height(24),
+        .max_size_content = .height(24),
+        .padding = .all(0),
+        .id_extra = id_extra,
+    });
+    defer row.deinit();
+
+    settingLabel("Theme", 86, palette, id_extra + 1);
+    themeToggleSwitch(app, state, palette, id_extra + 2);
+}
+
+fn settingDownloadRow(app: *App, max_width: f32, palette: theme.Palette, id_extra: usize) void {
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .height(26),
+        .max_size_content = .height(26),
+        .padding = .all(0),
+        .margin = .{ .y = 7 },
+        .id_extra = id_extra,
+    });
+    defer row.deinit();
+
+    // settingLabel("Download", 86, palette, id_extra + 1);
+    if (folderPathButton(palette, id_extra + 2)) {
+        const arena = dvui.currentWindow().arena();
+        const selected = dvui.dialogNativeFolderSelect(arena, .{ .title = "Download Folder" }) catch null;
+        if (selected) |path| app.setDownloadPath(path);
+    }
+
+    pathValue(app.config.download_path, max_width - 50, palette, id_extra + 4);
+}
+
+fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
+    const button_w: f32 = 28;
+    const button_h: f32 = 28;
+    const icon_size: f32 = 18;
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = button_w, .h = button_h },
+        .max_size_content = .{ .w = button_w, .h = button_h },
+        .padding = .all(0),
+        .corner_radius = .all(4),
+        .id_extra = id_extra,
+        .margin = .all(0),
+    }, palette, .{ .variant = .ghost, .font_size = 9 }).override(.{
+        .color_fill = palette.surface_hover,
+        .color_fill_hover = palette.surface_active,
+        .color_fill_press = palette.active_bg,
+    }));
+    bw.processEvents();
+    bw.drawBackground();
+
+    const crs = bw.data().contentRectScale();
+    const size = icon_size * crs.s;
+    const icon_rect: dvui.Rect.Physical = .{
+        .x = crs.r.x + @round((crs.r.w - size) / 2),
+        .y = crs.r.y + @round((crs.r.h - size) / 2),
+        .w = size,
+        .h = size,
+    };
+    renderPng(folder_icon_bytes, "folder.png", .{ .r = icon_rect, .s = crs.s }, palette.accent);
+
+    const clicked = bw.clicked();
+    bw.drawFocus();
+    bw.deinit();
+    return clicked;
+}
+
+fn settingLabel(text: []const u8, width: f32, palette: theme.Palette, id_extra: usize) void {
+    dvui.label(@src(), "{s}:", .{text}, .{
+        .font = theme.textFont(text, 11),
+        .color_text = palette.text,
+        .gravity_y = 0.5,
+        .min_size_content = .width(width),
+        .max_size_content = .width(width),
+        .padding = .all(0),
+        .id_extra = id_extra,
+    });
+}
+
+fn themeToggleSwitch(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {
+    const switch_w: f32 = 46;
+    const switch_h: f32 = 22;
+    const knob_d: f32 = 21;
+    const icon_d: f32 = 15;
+
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = switch_w, .h = switch_h },
+        .max_size_content = .{ .w = switch_w, .h = switch_h },
+        .padding = .all(0),
+        .margin = .all(0),
+        .corner_radius = .all(switch_h / 2),
+        .id_extra = id_extra,
+    }, palette, .{ .variant = .ghost, .font_size = 9 }).override(.{
+        .color_fill = dvui.Color.transparent,
+        .color_fill_hover = dvui.Color.transparent,
+        .color_fill_press = dvui.Color.transparent,
+        .color_border = dvui.Color.transparent,
+    }));
+    bw.processEvents();
+
+    if (bw.clicked()) {
+        const from_light = app.theme_mode == .light;
+        const to_light = !from_light;
+        state.theme_switch_from_light = from_light;
+        state.theme_switch_to_light = to_light;
+        state.theme_switch_started_ns = dvui.frameTimeNS();
+        state.theme_switch_animating = true;
+        app.setThemeMode(if (to_light) .light else .dark);
+    }
+
+    const crs = bw.data().contentRectScale();
+    const track_rect = crs.r;
+    const radius = dvui.Rect.Physical.all(track_rect.h / 2);
+    const active = app.theme_mode == .light;
+    const t = themeSwitchProgress(state);
+    const knob_pos = if (state.theme_switch_animating)
+        std.math.lerp(if (state.theme_switch_from_light) @as(f32, 1) else @as(f32, 0), if (state.theme_switch_to_light) @as(f32, 1) else @as(f32, 0), t)
+    else if (active) @as(f32, 1) else @as(f32, 0);
+    const track_color = if (active) theme.c(0x2f, 0x7d, 0xff) else palette.surface_active;
+    const border_color = if (active) theme.c(0x75, 0xa8, 0xff) else palette.border;
+    track_rect.fill(radius, .{ .color = track_color, .fade = 1.0 });
+    track_rect.stroke(radius, .{ .thickness = 1 * crs.s, .color = border_color });
+
+    const knob_margin = 0.5 * crs.s;
+    const knob_size = knob_d * crs.s;
+    const knob_left = track_rect.x + knob_margin;
+    const knob_right = track_rect.x + track_rect.w - knob_size - knob_margin;
+    const knob_x = std.math.lerp(knob_left, knob_right, knob_pos);
+    const knob_rect: dvui.Rect.Physical = .{
+        .x = knob_x,
+        .y = track_rect.y + @round((track_rect.h - knob_size) / 2),
+        .w = knob_size,
+        .h = knob_size,
+    };
+    knob_rect.fill(dvui.Rect.Physical.all(knob_size / 2), .{ .color = theme.c(0xf2, 0xf4, 0xf7), .fade = 1.0 });
+    knob_rect.stroke(dvui.Rect.Physical.all(knob_size / 2), .{ .thickness = 1 * crs.s, .color = palette.border });
+    renderThemeSwitchIcons(state, active, knob_rect, icon_d * crs.s);
+
+    bw.drawFocus();
+    bw.deinit();
+}
+
+fn themeSwitchProgress(state: *TopBarState) f32 {
+    if (!state.theme_switch_animating) return 1;
+    const elapsed = dvui.frameTimeNS() - state.theme_switch_started_ns;
+    if (elapsed >= theme_switch_anim_ns) {
+        state.theme_switch_animating = false;
+        return 1;
+    }
+    dvui.refresh(null, @src(), dvui.currentWindow().data().id.update("theme_switch_animation"));
+    const raw = @as(f32, @floatFromInt(@max(0, elapsed))) / @as(f32, @floatFromInt(theme_switch_anim_ns));
+    return smoothStep(@min(1, raw));
+}
+
+fn renderThemeSwitchIcons(state: *const TopBarState, active_light: bool, knob_rect: dvui.Rect.Physical, icon_size: f32) void {
+    const icon_rect: dvui.Rect.Physical = .{
+        .x = knob_rect.x + @round((knob_rect.w - icon_size) / 2),
+        .y = knob_rect.y + @round((knob_rect.h - icon_size) / 2),
+        .w = icon_size,
+        .h = icon_size,
+    };
+    const icon_rs: dvui.RectScale = .{ .r = icon_rect, .s = dvui.windowRectScale().s };
+
+    if (state.theme_switch_animating) {
+        const t = themeSwitchProgressConst(state);
+        const from_sun = state.theme_switch_from_light;
+        const to_sun = state.theme_switch_to_light;
+        renderSwitchIcon(if (from_sun) sun_icon_bytes else moon_icon_bytes, if (from_sun) "sun.png" else "moon.png", icon_rs, switchIconColor(from_sun).opacity(1 - t));
+        renderSwitchIcon(if (to_sun) sun_icon_bytes else moon_icon_bytes, if (to_sun) "sun.png" else "moon.png", icon_rs, switchIconColor(to_sun).opacity(t));
+        return;
+    }
+
+    renderSwitchIcon(if (active_light) sun_icon_bytes else moon_icon_bytes, if (active_light) "sun.png" else "moon.png", icon_rs, switchIconColor(active_light));
+}
+
+fn switchIconColor(sun: bool) dvui.Color {
+    return if (sun) theme.c(0xf3, 0xa9, 0x16) else theme.c(0x1f, 0x2b, 0x3a);
+}
+
+fn themeSwitchProgressConst(state: *const TopBarState) f32 {
+    if (!state.theme_switch_animating) return 1;
+    const elapsed = dvui.frameTimeNS() - state.theme_switch_started_ns;
+    const raw = @as(f32, @floatFromInt(@max(0, elapsed))) / @as(f32, @floatFromInt(theme_switch_anim_ns));
+    return smoothStep(@min(1, raw));
+}
+
+fn renderSwitchIcon(bytes: []const u8, name: []const u8, rs: dvui.RectScale, color: dvui.Color) void {
+    const source: dvui.ImageSource = .{ .imageFile = .{
+        .bytes = bytes,
+        .name = name,
+        .interpolation = .linear,
+    } };
+    dvui.renderImage(source, rs, .{ .colormod = color }) catch {};
+}
+
+fn smoothStep(t: f32) f32 {
+    return t * t * (3 - 2 * t);
+}
+
+fn outsideSettingsPopupClick(menu_rect: dvui.Rect.Physical, settings_button_rect: dvui.Rect.Physical) bool {
+    for (dvui.events()) |*event| {
+        if (event.evt != .mouse or event.evt.mouse.action != .press) continue;
+        if (settings_button_rect.contains(event.evt.mouse.p)) return false;
+        if (!menu_rect.contains(event.evt.mouse.p)) return true;
+    }
+    return false;
+}
+
+fn pathValue(path: []const u8, width: f32, palette: theme.Palette, id_extra: usize) void {
+    var slot = dvui.box(@src(), .{}, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = width, .h = 26 },
+        .max_size_content = .{ .w = width, .h = 26 },
+        .padding = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+        .id_extra = id_extra,
+    });
+    defer slot.deinit();
+
+    const crs = slot.data().contentRectScale();
+    var path_buf: [160]u8 = undefined;
+    const font = theme.textFont(path, 9);
+    const display_path = foldedPathForWidth(path, &path_buf, width - 8, font);
+    const text_size = font.textSize(display_path);
+    const text_height = text_size.h * crs.s;
+    const old_clip = dvui.clip(crs.r);
+    defer dvui.clipSet(old_clip);
+    dvui.renderText(.{
+        .font = font,
+        .text = display_path,
+        .rs = crs,
+        .p = .{
+            .x = crs.r.x,
+            .y = crs.r.y + @round((crs.r.h - text_height) / 2),
+        },
+        .color = palette.muted_text,
+    }) catch {};
+}
+
+fn foldedPathForWidth(path: []const u8, buf: []u8, width: f32, font: dvui.Font) []const u8 {
+    if (font.textSize(path).w <= width) return path;
+    const tail = std.fs.path.basename(path);
+    if (tail.len == 0) return path;
+
+    var prefix_len: usize = @min(path.len, 28);
+    var tail_len: usize = @min(tail.len, 40);
+    const min_prefix_len: usize = @min(path.len, 6);
+    const min_tail_len: usize = @min(tail.len, 8);
+
+    while (prefix_len >= min_prefix_len or tail_len >= min_tail_len) {
+        const candidate = std.fmt.bufPrint(buf, "{s}..../{s}", .{
+            path[0..prefix_len],
+            tail[tail.len - tail_len ..],
+        }) catch return path;
+        if (font.textSize(candidate).w <= width) return candidate;
+
+        if (prefix_len > min_prefix_len) {
+            prefix_len -= 1;
+        } else if (tail_len > min_tail_len) {
+            tail_len -= 1;
+        } else {
+            break;
+        }
+    }
+
+    return std.fmt.bufPrint(buf, ".../{s}", .{tail[tail.len - min_tail_len ..]}) catch path;
 }
 
 fn topBarTitle(title: []const u8, bar_height: f32, palette: theme.Palette) void {
@@ -694,8 +1056,8 @@ fn connectionRow(app: *App, item: profile.ConnectionProfile, row_idx: usize, pal
         if (maybeIconButton(@src(), settings_icon_bytes, "settings.png", .{
             .gravity_x = 1,
             .gravity_y = 0.5,
-            .min_size_content = .{ .w = settings_size, .h = connection_row_height },
-            .max_size_content = .{ .w = settings_size, .h = connection_row_height },
+            .min_size_content = .{ .w = settings_size, .h = settings_size },
+            .max_size_content = .{ .w = settings_size, .h = settings_size },
             .padding = .all(0),
             .margin = .{ .x = gap },
             .corner_radius = .all(5),
@@ -707,7 +1069,7 @@ fn connectionRow(app: *App, item: profile.ConnectionProfile, row_idx: usize, pal
             app.editProfile(b.id);
         }
     } else {
-        iconButtonPlaceholder(@src(), settings_size, connection_row_height, gap, 70_000 + row_idx);
+        iconButtonPlaceholder(@src(), settings_size, settings_size, gap, 70_000 + row_idx);
     }
 }
 

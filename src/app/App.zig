@@ -1,4 +1,6 @@
 const std = @import("std");
+const app_config = @import("config.zig");
+const native_event = @import("native_event.zig");
 const profile = @import("../core/profile.zig");
 const remote_file = @import("../core/remote_file.zig");
 const transfer = @import("../core/transfer.zig");
@@ -21,12 +23,18 @@ const GroupExpansion = struct {
 
 allocator: std.mem.Allocator,
 io: ?std.Io = null,
+config: app_config.Config,
 profiles: profile_repository.MemoryProfileRepository,
 known_hosts: known_hosts_store.KnownHosts,
 sessions: session_registry.MockSessionRegistry,
 ssh_backend: libssh2_backend.Backend,
 terminal_backend: libvterm_backend.Backend,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
+native_events: std.ArrayList(native_event.NativeEvent) = .empty,
+file_drag_active: bool = false,
+file_drag_point: native_event.Point = .{},
+file_drop_target_active: bool = false,
+file_drop_target_rect: native_event.Rect = .{},
 next_transfer_id: u64 = 1,
 selected_profile_id: ?u64 = null,
 draft: profile.ProfileDraft = .{},
@@ -44,14 +52,18 @@ const profiles_path = "data/profiles.json";
 const known_hosts_path = "data/known_hosts.json";
 
 pub fn initMemory(allocator: std.mem.Allocator) !App {
+    var config = try app_config.Config.load(allocator, null);
+    errdefer config.deinit();
     var app = App{
         .allocator = allocator,
+        .config = config,
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
         .known_hosts = known_hosts_store.KnownHosts.init(allocator),
         .sessions = session_registry.MockSessionRegistry.init(allocator),
         .ssh_backend = .{ .allocator = allocator },
         .terminal_backend = .{ .allocator = allocator },
     };
+    app.theme_mode = app.config.theme_mode;
     app.known_hosts.trust_missing = true;
     app.draft.reset(.ssh);
     try app.profiles.seedDefaults();
@@ -60,15 +72,19 @@ pub fn initMemory(allocator: std.mem.Allocator) !App {
 }
 
 pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
+    var config = try app_config.Config.load(allocator, io);
+    errdefer config.deinit();
     var app = App{
         .allocator = allocator,
         .io = io,
+        .config = config,
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
         .known_hosts = known_hosts_store.KnownHosts.init(allocator),
         .sessions = session_registry.MockSessionRegistry.init(allocator),
         .ssh_backend = .{ .allocator = allocator },
         .terminal_backend = .{ .allocator = allocator },
     };
+    app.theme_mode = app.config.theme_mode;
     app.known_hosts.trust_missing = true;
     app.draft.reset(.ssh);
     try app.profiles.loadFromDisk(io, profiles_path);
@@ -82,6 +98,8 @@ pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
 }
 
 pub fn deinit(self: *App) void {
+    self.config.theme_mode = self.theme_mode;
+    self.persistConfig();
     for (self.group_expansions.items) |entry| {
         self.allocator.free(entry.name);
     }
@@ -94,6 +112,61 @@ pub fn deinit(self: *App) void {
         self.allocator.free(task.title);
     }
     self.transfers.deinit(self.allocator);
+    self.clearNativeEvents();
+    self.native_events.deinit(self.allocator);
+    self.config.deinit();
+}
+
+pub fn pushFileDrop(self: *App, path: []const u8, x: f32, y: f32) !void {
+    self.updateFileDrag(x, y);
+    const owned_path = try self.allocator.dupe(u8, path);
+    errdefer self.allocator.free(owned_path);
+    try self.native_events.append(self.allocator, .{ .file_drop = .{
+        .path = owned_path,
+        .x = x,
+        .y = y,
+    } });
+}
+
+pub fn beginNativeFrame(self: *App) void {
+    self.file_drop_target_active = false;
+}
+
+pub fn beginFileDrag(self: *App) void {
+    self.file_drag_active = true;
+}
+
+pub fn updateFileDrag(self: *App, x: f32, y: f32) void {
+    self.file_drag_active = true;
+    self.file_drag_point = .{ .x = x, .y = y };
+}
+
+pub fn endFileDrag(self: *App) void {
+    self.file_drag_active = false;
+}
+
+pub fn fileDragPoint(self: *const App) ?native_event.Point {
+    if (!self.file_drag_active) return null;
+    return self.file_drag_point;
+}
+
+pub fn registerFileDropTarget(self: *App, rect: native_event.Rect) void {
+    self.file_drop_target_active = true;
+    self.file_drop_target_rect = rect;
+}
+
+pub fn canAcceptFileDrop(self: *const App, x: f32, y: f32) bool {
+    if (!self.file_drop_target_active) return false;
+    return self.file_drop_target_rect.contains(.{ .x = x, .y = y });
+}
+
+pub fn nativeEvents(self: *const App) []const native_event.NativeEvent {
+    return self.native_events.items;
+}
+
+pub fn clearNativeEvents(self: *App) void {
+    for (self.native_events.items) |event| native_event.deinitEvent(self.allocator, event);
+    self.native_events.clearRetainingCapacity();
 }
 
 pub fn selectProfile(self: *App, id: u64) void {
@@ -132,16 +205,39 @@ pub fn goHome(self: *App) void {
 }
 
 pub fn toggleTheme(self: *App) void {
-    self.theme_mode = switch (self.theme_mode) {
+    self.setThemeMode(switch (self.theme_mode) {
         .dark => .light,
         .light => .dark,
+    });
+}
+
+pub fn setThemeMode(self: *App, mode: ui_theme.ThemeMode) void {
+    self.theme_mode = mode;
+    self.config.theme_mode = self.theme_mode;
+    self.persistConfig();
+}
+
+pub fn setDownloadPath(self: *App, path: []const u8) void {
+    if (path.len == 0) return;
+    const owned = self.allocator.dupe(u8, path) catch {
+        self.message = "Could not update download path";
+        return;
     };
+    self.allocator.free(self.config.download_path);
+    self.config.download_path = owned;
+    self.persistConfig();
 }
 
 pub fn beginFrame(self: *App) void {
     self.frame_index +%= 1;
     self.sessions.pollWorkers();
     self.syncTransferProgress();
+}
+
+pub fn observeWindowSize(self: *App, width: f32, height: f32) void {
+    if (!std.math.isFinite(width) or !std.math.isFinite(height)) return;
+    if (width <= 0 or height <= 0) return;
+    self.config.window_size = .{ .w = width, .h = height };
 }
 
 pub fn saveDraft(self: *App) void {
@@ -359,6 +455,10 @@ pub fn cancelTransfer(self: *App, transfer_id: u64) void {
     self.message = "Transfer canceled";
 }
 
+pub fn dismissTransfer(self: *App, transfer_id: u64) void {
+    self.removeTransfer(transfer_id);
+}
+
 fn syncTransferProgress(self: *App) void {
     var buffer: [128]transfer.TransferProgress = undefined;
     const updates = self.sessions.transferProgress(&buffer);
@@ -375,6 +475,24 @@ fn syncTransferProgress(self: *App) void {
 
 fn recordFileTransfer(self: *App, intent: *remote_file.FilePanelIntent) !?u64 {
     switch (intent.*) {
+        .upload => |*upload| {
+            const id = try self.appendNamedTransfer(.upload, upload.name);
+            upload.transfer_id = id;
+            return id;
+        },
+        .upload_many => |*upload_many| {
+            if (upload_many.entries.len == 1) {
+                const id = try self.appendNamedTransfer(.upload, upload_many.entries[0].name);
+                upload_many.transfer_id = id;
+                return id;
+            } else {
+                var title_buf: [64]u8 = undefined;
+                const title = try std.fmt.bufPrint(&title_buf, "Upload {d} items", .{upload_many.entries.len});
+                const id = try self.appendTransferTitle(.upload, title);
+                upload_many.transfer_id = id;
+                return id;
+            }
+        },
         .download => |*download| {
             const id = try self.appendNamedTransfer(.download, download.name);
             download.transfer_id = id;
@@ -455,6 +573,12 @@ fn persistProfiles(self: *App) void {
     };
 }
 
+fn persistConfig(self: *App) void {
+    self.config.save(self.io) catch {
+        self.message = "Config saved in memory, but disk write failed";
+    };
+}
+
 pub fn persistKnownHosts(self: *App) void {
     const io = self.io orelse return;
     self.known_hosts.saveToDisk(io, known_hosts_path) catch {
@@ -469,6 +593,7 @@ pub fn sshRuntimeOptions(self: *App) ssh_session.Options {
         .io = self.io,
         .host_key_verifier = self.known_hosts.verifier(),
         .host_key_policy = .trust_on_first_use,
+        .download_path = self.config.download_path,
     };
 }
 
@@ -490,7 +615,7 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
         .create_directory => "Creating folder",
         .rename => "Renaming file",
         .delete => "Deleting file",
-        .upload => "Upload is planned",
+        .upload, .upload_many => "Uploading file",
         .download, .download_many => "Downloading file",
     };
 }

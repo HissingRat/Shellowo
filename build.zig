@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.stack_size = stack_size;
+    exe.root_module.addWin32ResourceFile(.{
+        .file = b.path("assets/shellowo.rc"),
+        .include_paths = &.{b.path("assets")},
+    });
     attachNativeDeps(b, exe, native_deps);
 
     const dvui_dep = b.dependency("dvui", .{
@@ -53,6 +57,12 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("shellowo-close-icon", .{
         .root_source_file = b.path("assets/close.png"),
     });
+    exe.root_module.addAnonymousImport("shellowo-sun-icon", .{
+        .root_source_file = b.path("assets/sun.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-moon-icon", .{
+        .root_source_file = b.path("assets/moon.png"),
+    });
     exe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
     });
@@ -71,7 +81,6 @@ pub fn build(b: *std.Build) void {
     ssh_probe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
     });
-    b.installArtifact(ssh_probe);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -86,7 +95,6 @@ pub fn build(b: *std.Build) void {
     const ssh_probe_step = b.step("ssh-probe", "Probe an SSH server through Shellow's libssh2 backend");
     const ssh_probe_cmd = b.addRunArtifact(ssh_probe);
     ssh_probe_step.dependOn(&ssh_probe_cmd.step);
-    ssh_probe_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         ssh_probe_cmd.addArgs(args);
     }
@@ -103,12 +111,10 @@ pub fn build(b: *std.Build) void {
     ssh_worker_probe.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
     });
-    b.installArtifact(ssh_worker_probe);
 
     const ssh_worker_probe_step = b.step("ssh-worker-probe", "Probe an SSH server through Shellow's worker-backed runtime");
     const ssh_worker_probe_cmd = b.addRunArtifact(ssh_worker_probe);
     ssh_worker_probe_step.dependOn(&ssh_worker_probe_cmd.step);
-    ssh_worker_probe_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         ssh_worker_probe_cmd.addArgs(args);
     }
@@ -137,6 +143,12 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addAnonymousImport("shellowo-close-icon", .{
         .root_source_file = b.path("assets/close.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-sun-icon", .{
+        .root_source_file = b.path("assets/sun.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-moon-icon", .{
+        .root_source_file = b.path("assets/moon.png"),
     });
 
     const test_step = b.step("test", "Run unit tests");

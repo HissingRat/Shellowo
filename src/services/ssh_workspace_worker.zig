@@ -832,6 +832,8 @@ pub const SshWorkspaceWorker = struct {
             intents.deinit(self.allocator);
         }
 
+        if (intents.items.len > 0) self.clearFileError();
+
         for (intents.items) |intent| {
             switch (intent) {
                 .refresh => self.file_refresh_requested.store(true, .release),
@@ -901,7 +903,18 @@ pub const SshWorkspaceWorker = struct {
                         self.storeFileNotice("Download failed");
                     };
                 },
-                .upload => {},
+                .upload => |transfer| {
+                    self.spawnDownloadIntent(intent) catch {
+                        self.markTransferFinished(transfer.transfer_id, .failed);
+                        self.storeFileNotice("Upload failed");
+                    };
+                },
+                .upload_many => |transfer| {
+                    self.spawnDownloadIntent(intent) catch {
+                        self.markTransferFinished(transfer.transfer_id, .failed);
+                        self.storeFileNotice("Upload failed");
+                    };
+                },
             }
         }
     }
@@ -936,6 +949,8 @@ pub const SshWorkspaceWorker = struct {
         defer self.freeFileIntent(intent);
 
         const transfer_id = switch (intent) {
+            .upload => |transfer| transfer.transfer_id,
+            .upload_many => |transfer| transfer.transfer_id,
             .download => |transfer| transfer.transfer_id,
             .download_many => |transfer| transfer.transfer_id,
             else => null,
@@ -956,6 +971,26 @@ pub const SshWorkspaceWorker = struct {
         defer sftp.sftp.close();
 
         switch (intent) {
+            .upload => |transfer| {
+                self.uploadLocalEntry(sftp.sftp, transfer.local_path, transfer.name, transfer.remote_path, transfer.transfer_id) catch |err| {
+                    if (err == error.Canceled) {
+                        self.markTransferFinished(transfer.transfer_id, .canceled);
+                    } else {
+                        self.markTransferFinished(transfer.transfer_id, .failed);
+                        self.storeFileNotice("Upload failed");
+                    }
+                };
+            },
+            .upload_many => |transfer| {
+                self.uploadLocalEntries(sftp.sftp, transfer) catch |err| {
+                    if (err == error.Canceled) {
+                        self.markTransferFinished(transfer.transfer_id, .canceled);
+                    } else {
+                        self.markTransferFinished(transfer.transfer_id, .failed);
+                        self.storeFileNotice("Upload failed");
+                    }
+                };
+            },
             .download => |transfer| {
                 self.downloadRemoteEntry(sftp.sftp, transfer.remote_path, transfer.name, .file, transfer.transfer_id) catch |err| {
                     if (err == error.Canceled) {
@@ -1153,10 +1188,97 @@ pub const SshWorkspaceWorker = struct {
 
     fn downloadBasePath(self: *SshWorkspaceWorker, requested: []const u8) ![]u8 {
         if (requested.len > 0) return self.allocator.dupe(u8, requested);
+        if (self.options.download_path.len > 0) return self.allocator.dupe(u8, self.options.download_path);
         const io = self.options.io orelse return error.IoUnavailable;
         var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
         const len = try std.process.executableDirPath(io, &exe_buf);
         return std.fs.path.join(self.allocator, &.{ exe_buf[0..len], "owoDownloads" });
+    }
+
+    fn uploadLocalEntries(self: *SshWorkspaceWorker, sftp: ssh.Sftp, transfer: remote_file.FileBatchTransferIntent) !void {
+        var progress = DownloadProgress{
+            .id = transfer.transfer_id,
+            .total = @max(transfer.entries.len, 1),
+        };
+        self.markTransferProgress(transfer.transfer_id, .running, 0);
+        for (transfer.entries) |entry| {
+            try self.uploadLocalEntryToBase(sftp, transfer.local_path, entry.name, transfer.remote_path, &progress);
+        }
+        self.markTransferFinished(transfer.transfer_id, .completed);
+        self.invalidatePathCaches(transfer.remote_path);
+        self.file_refresh_requested.store(true, .release);
+    }
+
+    fn uploadLocalEntry(self: *SshWorkspaceWorker, sftp: ssh.Sftp, local_path: []const u8, name: []const u8, remote_path: []const u8, transfer_id: ?u64) !void {
+        var progress = DownloadProgress{
+            .id = transfer_id,
+            .total = 1,
+        };
+        self.markTransferProgress(transfer_id, .running, 0);
+        try self.uploadLocalEntryToBase(sftp, local_path, name, remote_path, &progress);
+        self.markTransferFinished(transfer_id, .completed);
+        self.invalidatePathCaches(remote_path);
+        self.file_refresh_requested.store(true, .release);
+    }
+
+    fn uploadLocalEntryToBase(self: *SshWorkspaceWorker, sftp: ssh.Sftp, local_base: []const u8, name: []const u8, remote_path: []const u8, progress: *DownloadProgress) !void {
+        const local_full = try std.fs.path.join(self.allocator, &.{ local_base, name });
+        defer self.allocator.free(local_full);
+        const remote_full = try joinRemotePath(self.allocator, remote_path, name);
+        defer self.allocator.free(remote_full);
+        try self.uploadLocalPath(sftp, local_full, remote_full, progress);
+    }
+
+    fn uploadLocalPath(self: *SshWorkspaceWorker, sftp: ssh.Sftp, local_path: []const u8, remote_path: []const u8, progress: *DownloadProgress) !void {
+        const io = self.options.io orelse return error.IoUnavailable;
+        try self.checkTransferCanceled(progress.id);
+
+        if (self.openLocalDir(local_path)) |dir| {
+            var local_dir = dir;
+            defer local_dir.close(io);
+            sftp.mkdir(remote_path) catch {};
+            self.bumpDownloadProgress(progress);
+
+            var walker = try local_dir.walk(self.allocator);
+            defer walker.deinit();
+            while (try walker.next(io)) |entry| {
+                try self.checkTransferCanceled(progress.id);
+                progress.total += 1;
+                const child_local = try std.fs.path.join(self.allocator, &.{ local_path, entry.path });
+                defer self.allocator.free(child_local);
+                const child_remote = try joinRemotePath(self.allocator, remote_path, entry.path);
+                defer self.allocator.free(child_remote);
+                switch (entry.kind) {
+                    .directory => {
+                        sftp.mkdir(child_remote) catch {};
+                        self.bumpDownloadProgress(progress);
+                    },
+                    .file => try self.uploadLocalFile(sftp, child_local, child_remote, progress),
+                    else => self.bumpDownloadProgress(progress),
+                }
+            }
+            return;
+        } else |_| {}
+
+        try self.uploadLocalFile(sftp, local_path, remote_path, progress);
+    }
+
+    fn uploadLocalFile(self: *SshWorkspaceWorker, sftp: ssh.Sftp, local_path: []const u8, remote_path: []const u8, progress: *DownloadProgress) !void {
+        const io = self.options.io orelse return error.IoUnavailable;
+        try self.checkTransferCanceled(progress.id);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, local_path, self.allocator, .limited(std.math.maxInt(usize)));
+        defer self.allocator.free(bytes);
+        try self.checkTransferCanceled(progress.id);
+        try sftp.writeFile(remote_path, bytes);
+        self.bumpDownloadProgress(progress);
+    }
+
+    fn openLocalDir(self: *SshWorkspaceWorker, local_path: []const u8) !std.Io.Dir {
+        const io = self.options.io orelse return error.IoUnavailable;
+        if (std.fs.path.isAbsolute(local_path)) {
+            return std.Io.Dir.openDirAbsolute(io, local_path, .{ .iterate = true });
+        }
+        return std.Io.Dir.cwd().openDir(io, local_path, .{ .iterate = true });
     }
 
     fn storeTreeEntries(self: *SshWorkspaceWorker, path: []const u8, entries: []remote_file.RemoteFileEntry) void {
@@ -1441,6 +1563,12 @@ pub const SshWorkspaceWorker = struct {
         self.storeFileErrorLocked(message);
     }
 
+    fn clearFileError(self: *SshWorkspaceWorker) void {
+        self.lockFile();
+        defer self.unlockFile();
+        self.file_error_len = 0;
+    }
+
     fn requestFileRefresh(self: *SshWorkspaceWorker) void {
         self.file_refresh_requested.store(true, .release);
     }
@@ -1696,6 +1824,7 @@ pub const SshWorkspaceWorker = struct {
             } },
             .delete => |target| .{ .delete = try self.cloneEntryTarget(target) },
             .upload => |transfer| .{ .upload = try self.cloneTransferIntent(transfer) },
+            .upload_many => |transfer| .{ .upload_many = try self.cloneBatchTransferIntent(transfer) },
             .download => |transfer| .{ .download = try self.cloneTransferIntent(transfer) },
             .download_many => |transfer| .{ .download_many = try self.cloneBatchTransferIntent(transfer) },
         };
@@ -1754,6 +1883,7 @@ pub const SshWorkspaceWorker = struct {
             },
             .delete => |target| self.freeEntryTarget(target),
             .upload => |transfer| self.freeTransferIntent(transfer),
+            .upload_many => |transfer| self.freeBatchTransferIntent(transfer),
             .download => |transfer| self.freeTransferIntent(transfer),
             .download_many => |transfer| self.freeBatchTransferIntent(transfer),
         }

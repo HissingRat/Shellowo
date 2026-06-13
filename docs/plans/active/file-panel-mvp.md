@@ -188,6 +188,8 @@ pub const FilePanelIntent = union(enum) {
 - [ ] upload/download intent 创建正式 transfer task。
 - [ ] transfer queue 提供进度 snapshot。
 - [ ] file panel 根据 transfer 状态禁用重复操作或显示 busy 摘要。
+- [ ] 评估并实现从 file panel 拖出远端文件/文件夹到本机文件管理器；优先 macOS file promise，Windows/Linux 后续走平台 drag source 适配。
+- [x] 下载默认目录进入 `owoConfig.json`，默认仍为程序目录旁 `owoDownloads/`。
 
 验收：
 

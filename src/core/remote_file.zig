@@ -145,6 +145,7 @@ pub const FilePanelIntent = union(enum) {
     rename: FileRenameIntent,
     delete: FileEntryTarget,
     upload: FileTransferIntent,
+    upload_many: FileBatchTransferIntent,
     download: FileTransferIntent,
     download_many: FileBatchTransferIntent,
 };

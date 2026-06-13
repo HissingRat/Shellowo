@@ -30,6 +30,7 @@ pub const Options = struct {
     host_key_verifier: ?ssh.HostKeyVerifier = null,
     host_key_policy: ssh.HostKeyPolicy = .strict,
     shell_size: ssh.PtySize = .{ .cols = 100, .rows = 30 },
+    download_path: []const u8 = "",
     timeout_ms: u32 = 15_000,
 };
 

@@ -2,6 +2,8 @@ const std = @import("std");
 const dvui = @import("dvui");
 
 const App = @import("../../app/App.zig");
+const app_config = @import("../../app/config.zig");
+const native_event = @import("../../app/native_event.zig");
 const remote_file = @import("../../core/remote_file.zig");
 const transfer = @import("../../core/transfer.zig");
 const workspace = @import("../../core/workspace.zig");
@@ -17,6 +19,7 @@ pub const Options = struct {
     snapshot: remote_file.FilePanelSnapshot,
     height: ?f32,
     local_width: *f32,
+    columns: *app_config.FileColumnWidths,
     id_extra: usize,
 };
 
@@ -46,6 +49,9 @@ const max_selected_entries: usize = 48;
 const max_selected_name_len: usize = 256;
 const edit_name_max_len: usize = 256;
 const toast_visible_ns: i128 = 2 * std.time.ns_per_s;
+const toast_fade_ns: i128 = 180 * std.time.ns_per_ms;
+const toast_tooltip_offset: dvui.Point.Natural = .{ .x = 12, .y = 14 };
+const toast_tooltip_max_width: f32 = 280;
 const transfer_popup_max_height: f32 = 200;
 const transfer_popup_min_width: f32 = 280;
 const transfer_popup_max_width: f32 = 760;
@@ -53,17 +59,15 @@ const transfer_popup_pad_x: f32 = 2;
 const transfer_popup_pad_y: f32 = 1;
 const transfer_task_row_height: f32 = 64;
 const transfer_close_button_size: f32 = 14;
+const drop_tooltip_width: f32 = 58;
+const drop_tooltip_height: f32 = 22;
+const drop_tooltip_offset: dvui.Point.Natural = .{ .x = 14, .y = 16 };
 
-const ColumnWidths = struct {
-    name: f32 = 220,
-    size: f32 = 76,
-    modified: f32 = 130,
-    perm: f32 = 86,
-    owner: f32 = 100,
-};
+const ColumnWidths = app_config.FileColumnWidths;
 
 const PaneLayoutState = struct {
     columns: ColumnWidths = .{},
+    columns_initialized: bool = false,
     last_click_pane: PaneKind = .remote,
     last_click_name: [256]u8 = undefined,
     last_click_name_len: usize = 0,
@@ -186,8 +190,14 @@ const PaneLayoutState = struct {
     }
 
     fn observeToast(self: *PaneLayoutState, message: ?[]const u8) void {
-        const value = message orelse return;
-        if (value.len == 0) return;
+        const value = message orelse {
+            self.clearToastGate();
+            return;
+        };
+        if (value.len == 0) {
+            self.clearToastGate();
+            return;
+        }
         if (std.mem.eql(u8, self.dismissedToast(), value)) return;
         if (std.mem.eql(u8, self.toastMessage(), value)) return;
         const len = @min(self.toast_message.len, value.len);
@@ -202,6 +212,10 @@ const PaneLayoutState = struct {
         if (len > 0) @memcpy(self.dismissed_toast[0..len], message[0..len]);
         self.dismissed_toast_len = len;
         self.toast_message_len = 0;
+    }
+
+    fn clearToastGate(self: *PaneLayoutState) void {
+        self.dismissed_toast_len = 0;
     }
 
     fn toastMessage(self: *const PaneLayoutState) []const u8 {
@@ -245,8 +259,10 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
     defer split.deinit();
 
     filePane(.local, palette, .{
+        .app = opts.app,
         .snapshot = opts.snapshot.local,
         .width = opts.local_width.*,
+        .columns = opts.columns,
         .id_extra = opts.id_extra + 30,
     }, &intent);
     resize.handle(palette, .{
@@ -257,8 +273,10 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
         .id_extra = opts.id_extra + 40,
     });
     filePane(.remote, palette, .{
+        .app = opts.app,
         .snapshot = opts.snapshot.remote,
         .width = null,
+        .columns = opts.columns,
         .id_extra = opts.id_extra + 50,
     }, &intent);
     return intent;
@@ -390,7 +408,11 @@ fn transferPopup(app: *App, palette: theme.Palette, state: *PathBarState, id_ext
     } else {
         for (tasks, 0..) |task, idx| {
             if (transferTaskRow(task, popup_width, palette, id_extra + 10 + idx * 8)) |transfer_id| {
-                app.cancelTransfer(transfer_id);
+                if (task.status == .pending or task.status == .running) {
+                    app.cancelTransfer(transfer_id);
+                } else {
+                    app.dismissTransfer(transfer_id);
+                }
             }
         }
     }
@@ -456,7 +478,6 @@ fn transferTaskRow(task: transfer.TransferTask, popup_width: f32, palette: theme
     defer row.deinit();
     var canceled_id: ?u64 = null;
 
-    const can_cancel = task.status == .pending or task.status == .running;
     {
         var title_line = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
@@ -477,7 +498,7 @@ fn transferTaskRow(task: transfer.TransferTask, popup_width: f32, palette: theme
             .id_extra = id_extra + 2,
         });
 
-        if (transferCloseButton(can_cancel, palette, id_extra + 3)) {
+        if (transferCloseButton(palette, id_extra + 3)) {
             canceled_id = task.id;
         }
     }
@@ -538,32 +559,24 @@ fn transferTaskRow(task: transfer.TransferTask, popup_width: f32, palette: theme
     return canceled_id;
 }
 
-fn transferCloseButton(enabled: bool, palette: theme.Palette, id_extra: usize) bool {
+fn transferCloseButton(palette: theme.Palette, id_extra: usize) bool {
     var bw: dvui.ButtonWidget = undefined;
-    var options = theme.buttonOptions(.{
+    const options = theme.buttonOptions(.{
         .min_size_content = .{ .w = transfer_close_button_size, .h = transfer_close_button_size },
         .max_size_content = .{ .w = transfer_close_button_size, .h = transfer_close_button_size },
         .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
         .corner_radius = .all(2),
         .id_extra = id_extra,
     }, palette, .{ .variant = .ghost, .font_size = 9 });
-    if (!enabled) {
-        options = options.override(.{
-            .color_fill_hover = dvui.Color.transparent,
-            .color_fill_press = dvui.Color.transparent,
-            .tab_index = 0,
-            .role = .none,
-        });
-    }
 
     bw.init(@src(), .{ .draw_focus = false }, options);
-    if (enabled) bw.processEvents();
+    bw.processEvents();
     bw.drawBackground();
 
-    const color = if (enabled) bw.style().color(.text) else palette.text_subtle;
+    const color = bw.style().color(.text);
     renderThemedPng(close_icon_bytes, "close.png", bw.data().contentRectScale(), color);
 
-    const clicked = enabled and bw.clicked();
+    const clicked = bw.clicked();
     bw.drawFocus();
     bw.deinit();
     return clicked;
@@ -593,8 +606,10 @@ fn outsideTransferPopupClick(menu_rect: dvui.Rect.Physical) bool {
 const PaneKind = enum { local, remote };
 const TreeRowAction = enum { none, toggle, row_click };
 const PaneOptions = struct {
+    app: *App,
     snapshot: remote_file.FilePaneSnapshot,
     width: ?f32,
+    columns: *ColumnWidths,
     id_extra: usize,
 };
 
@@ -617,16 +632,22 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     }));
     defer pane.deinit();
     const layout = dvui.dataGetPtrDefault(null, pane.data().id, "file-pane-layout", PaneLayoutState, .{});
+    if (!layout.columns_initialized) {
+        layout.columns = opts.columns.*;
+        layout.columns_initialized = true;
+    }
 
     if (kind == .local) { //清理
         treeRows(opts.snapshot, layout, palette, opts.id_extra + 20, intent);
         return;
     }
     layout.observeToast(opts.snapshot.error_summary);
-    failureToast(layout, palette, opts.id_extra + 6); //TODO: 去掉
+    failureTooltip(layout, palette, opts.id_extra + 6);
     tableHeader(layout, palette, opts.id_extra + 10);
-    fileRows(kind, opts.snapshot, layout, palette, opts.id_extra + 30, intent);
+    opts.columns.* = layout.columns;
+    fileRows(kind, opts.app, opts.snapshot, layout, palette, opts.id_extra + 30, intent);
     deleteConfirmModal(opts.snapshot, layout, palette, opts.id_extra + 5000, intent);
+    if (intent.* != null) layout.clearToastGate();
 }
 
 fn tableHeader(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize) void {
@@ -653,7 +674,7 @@ fn tableHeader(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize
     drawColumnSeparators(row.data().contentRectScale(), columns, palette);
 }
 
-fn fileRows(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
@@ -670,6 +691,7 @@ fn fileRows(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, layout: *Pan
     });
     defer scroll.deinit();
 
+    const drop_rect = scroll.data().contentRectScale().r;
     switch (snapshot.state) {
         .unavailable => {
             emptyRow(snapshot.error_summary orelse "File runtime is not available.", palette, id_extra);
@@ -685,6 +707,10 @@ fn fileRows(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, layout: *Pan
         },
         .ready => {},
     }
+
+    registerDropTarget(kind, app, snapshot, drop_rect);
+    renderDropTooltip(kind, app, snapshot, palette, id_extra + 7000);
+    handleDroppedUploads(kind, app, snapshot, drop_rect, intent);
 
     if (layout.edit_mode == .new_file or layout.edit_mode == .new_folder) {
         editFileRow(snapshot, layout, palette, id_extra + 3, intent);
@@ -1030,6 +1056,152 @@ fn downloadIntent(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutSta
     } };
 }
 
+fn uploadFilesIntent(snapshot: remote_file.FilePaneSnapshot) ?remote_file.FilePanelIntent {
+    const arena = dvui.currentWindow().arena();
+    const paths = dvui.dialogNativeFileOpenMultiple(arena, .{ .title = "Upload Files" }) catch return null;
+    const selected = paths orelse return null;
+    if (selected.len == 0) return null;
+
+    const first_dir = std.fs.path.dirname(selected[0]) orelse "";
+    if (selected.len == 1) {
+        return .{ .upload = .{
+            .local_path = first_dir,
+            .remote_path = snapshot.path,
+            .name = std.fs.path.basename(selected[0]),
+        } };
+    }
+
+    const entries = arena.alloc(remote_file.FileBatchEntry, selected.len) catch return null;
+    for (selected, 0..) |path, idx| {
+        entries[idx] = .{
+            .name = std.fs.path.basename(path),
+            .kind = .file,
+        };
+    }
+    return .{ .upload_many = .{
+        .local_path = first_dir,
+        .remote_path = snapshot.path,
+        .entries = entries,
+    } };
+}
+
+fn uploadFolderIntent(snapshot: remote_file.FilePaneSnapshot) ?remote_file.FilePanelIntent {
+    const arena = dvui.currentWindow().arena();
+    const path = dvui.dialogNativeFolderSelect(arena, .{ .title = "Upload Folder" }) catch return null;
+    const selected = path orelse return null;
+    return .{ .upload = .{
+        .local_path = std.fs.path.dirname(selected) orelse "",
+        .remote_path = snapshot.path,
+        .name = std.fs.path.basename(selected),
+    } };
+}
+
+fn droppedUploadIntent(snapshot: remote_file.FilePaneSnapshot, path: []const u8) ?remote_file.FilePanelIntent {
+    const name = std.fs.path.basename(path);
+    if (name.len == 0) return null;
+    return .{ .upload = .{
+        .local_path = std.fs.path.dirname(path) orelse "",
+        .remote_path = snapshot.path,
+        .name = name,
+    } };
+}
+
+fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.FilePaneSnapshot, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
+    if (intent.* != null or kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
+    var paths: [max_selected_entries][]const u8 = undefined;
+    var count: usize = 0;
+    for (app.nativeEvents()) |event| {
+        switch (event) {
+            .file_drop => |drop| {
+                if (!rect.contains(.{ .x = drop.x, .y = drop.y })) continue;
+                if (count < paths.len) {
+                    paths[count] = drop.path;
+                    count += 1;
+                }
+            },
+        }
+    }
+    if (count == 0) return;
+    if (count == 1) {
+        intent.* = droppedUploadIntent(snapshot, paths[0]);
+        return;
+    }
+
+    const first_dir = std.fs.path.dirname(paths[0]) orelse "";
+    for (paths[1..count]) |path| {
+        const dir = std.fs.path.dirname(path) orelse "";
+        if (!std.mem.eql(u8, dir, first_dir)) {
+            intent.* = droppedUploadIntent(snapshot, paths[0]);
+            return;
+        }
+    }
+
+    const arena = dvui.currentWindow().arena();
+    const entries = arena.alloc(remote_file.FileBatchEntry, count) catch {
+        intent.* = droppedUploadIntent(snapshot, paths[0]);
+        return;
+    };
+    for (paths[0..count], 0..) |path, idx| {
+        entries[idx] = .{
+            .name = std.fs.path.basename(path),
+            .kind = .file,
+        };
+    }
+    intent.* = .{ .upload_many = .{
+        .local_path = first_dir,
+        .remote_path = snapshot.path,
+        .entries = entries,
+    } };
+}
+
+fn registerDropTarget(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, rect: dvui.Rect.Physical) void {
+    if (kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
+    app.registerFileDropTarget(.{
+        .x = rect.x,
+        .y = rect.y,
+        .w = rect.w,
+        .h = rect.h,
+    });
+}
+
+fn renderDropTooltip(kind: PaneKind, app: *const App, snapshot: remote_file.FilePaneSnapshot, palette: theme.Palette, id_extra: usize) void {
+    if (kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
+    const point = app.fileDragPoint() orelse return;
+    if (!app.canAcceptFileDrop(point.x, point.y)) return;
+    const natural_point = dvui.windowRectScale().pointFromPhysical(.{ .x = point.x, .y = point.y });
+    var tooltip_rect = dvui.Rect.Natural{
+        .x = natural_point.x + drop_tooltip_offset.x,
+        .y = natural_point.y + drop_tooltip_offset.y,
+        .w = drop_tooltip_width,
+        .h = drop_tooltip_height,
+    };
+    tooltip_rect = dvui.placeOnScreen(dvui.windowRect(), .{}, .none, tooltip_rect);
+
+    var tooltip: dvui.FloatingWidget = undefined;
+    tooltip.init(@src(), .{ .mouse_events = false }, theme.panel(.{
+        .rect = .cast(tooltip_rect),
+        .min_size_content = .{ .w = drop_tooltip_width, .h = drop_tooltip_height },
+        .max_size_content = .{ .w = drop_tooltip_width, .h = drop_tooltip_height },
+        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
+        .corner_radius = .all(4),
+        .id_extra = id_extra,
+    }, palette).override(.{
+        .color_fill = palette.surface_active.opacity(0.86),
+        .color_border = palette.border.opacity(0.72),
+        .color_text = palette.text,
+    }));
+    defer tooltip.deinit();
+
+    dvui.label(@src(), "Upload", .{}, .{
+        .font = theme.textFont("Upload", 9),
+        .color_text = palette.text,
+        .gravity_y = 0.5,
+        .id_extra = id_extra + 1,
+        .padding = .all(0),
+        .margin = .all(0),
+    });
+}
+
 fn selectedEntriesForAction(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, fallback: remote_file.RemoteFileEntry) usize {
     if (layout.selected_count == 0 or !layout.isSelected(fallback.name)) {
         layout.action_entries[0] = .{ .name = fallback.name, .kind = fallback.kind };
@@ -1136,37 +1308,64 @@ fn outsideDeleteConfirmClick(menu_rect: dvui.Rect.Physical) bool {
     return false;
 }
 
-fn failureToast(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize) void {
+fn failureTooltip(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize) void {
     if (layout.toast_message_len == 0) return;
-    if (dvui.frameTimeNS() - layout.toast_started_ns > toast_visible_ns) {
+    const elapsed = dvui.frameTimeNS() - layout.toast_started_ns;
+    if (elapsed > toast_visible_ns) {
         layout.dismissToast();
         return;
     }
 
-    for (dvui.events()) |*event| {
-        if (event.evt == .mouse and event.evt.mouse.action == .press) {
-            layout.dismissToast();
-            return;
-        }
-    }
-
-    var toast = dvui.box(@src(), .{}, theme.panel(.{
-        .min_size_content = .height(22),
-        .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
-        .corner_radius = .all(3),
-        .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.surface_active,
-        .color_border = palette.border,
-    }));
-    defer toast.deinit();
+    const alpha = toastAlpha(elapsed);
+    if (alpha <= 0) return;
+    dvui.refresh(null, @src(), dvui.currentWindow().data().id.update("file_failure_tooltip"));
 
     const message = layout.toastMessage();
-    dvui.label(@src(), "{s}", .{message}, .{
-        .font = theme.textFont(message, 9),
-        .color_text = palette.text,
-        .id_extra = id_extra + 1,
-    });
+    const font = theme.textFont(message, 9);
+    const text_size = font.textSize(message);
+    const natural_mouse = dvui.windowRectScale().pointFromPhysical(dvui.currentWindow().mouse_pt);
+    var rect = dvui.Rect.Natural{
+        .x = natural_mouse.x + toast_tooltip_offset.x,
+        .y = natural_mouse.y + toast_tooltip_offset.y,
+        .w = @min(toast_tooltip_max_width, text_size.w + 8),
+        .h = text_size.h + 2,
+    };
+    rect = dvui.placeOnScreen(dvui.windowRect(), .{}, .none, rect);
+
+    var tooltip: dvui.FloatingTooltipWidget = undefined;
+    tooltip.init(@src(), .{
+        .active_rect = dvui.windowRectPixels(),
+        .position = .absolute,
+        .interactive = false,
+    }, theme.panel(.{
+        .rect = .cast(rect),
+        .min_size_content = .{ .w = rect.w, .h = rect.h },
+        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
+        .corner_radius = .all(4),
+        .id_extra = id_extra,
+    }, palette).override(.{
+        .color_fill = palette.surface_active.opacity(0.82 * alpha),
+        .color_border = palette.border.opacity(0.65 * alpha),
+        .color_text = palette.text.opacity(alpha),
+    }));
+    defer tooltip.deinit();
+
+    if (tooltip.shown()) {
+        dvui.label(@src(), "{s}", .{message}, .{
+            .font = font,
+            .color_text = palette.text.opacity(alpha),
+            .id_extra = id_extra + 1,
+            .margin = .all(0),
+            .padding = .all(0),
+        });
+    }
+}
+
+fn toastAlpha(elapsed: i128) f32 {
+    const remaining = toast_visible_ns - elapsed;
+    const ramp_ns = @min(@min(elapsed, remaining), toast_fade_ns);
+    if (ramp_ns <= 0) return 0;
+    return @min(1.0, @as(f32, @floatFromInt(ramp_ns)) / @as(f32, @floatFromInt(toast_fade_ns)));
 }
 
 fn registerEntryClick(layout: *PaneLayoutState, pane: PaneKind, name: []const u8) u8 {
@@ -1273,10 +1472,17 @@ fn entryContextMenu(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, entr
         intent.* = downloadIntent(snapshot, layout, entry);
         menu.close();
     }
+    if (fileContextMenuItem("Upload", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 7)) |_| {
+        intent.* = uploadFilesIntent(snapshot);
+        menu.close();
+    }
+    if (fileContextMenuItem("Upload Folder", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 8)) |_| {
+        intent.* = uploadFolderIntent(snapshot);
+        menu.close();
+    }
 }
 
 fn blankContextMenu(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
-    _ = intent;
     if (rect.empty()) return;
 
     const context = dvui.context(@src(), .{ .rect = rect }, .{ .id_extra = id_extra });
@@ -1293,6 +1499,14 @@ fn blankContextMenu(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutS
     }
     if (fileContextMenuItem("New Folder", can_mutate and snapshot.capabilities.can_create_directory, palette, id_extra + 3)) |_| {
         layout.startCreate(.new_folder);
+        menu.close();
+    }
+    if (fileContextMenuItem("Upload", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 4)) |_| {
+        intent.* = uploadFilesIntent(snapshot);
+        menu.close();
+    }
+    if (fileContextMenuItem("Upload Folder", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 5)) |_| {
+        intent.* = uploadFolderIntent(snapshot);
         menu.close();
     }
 }

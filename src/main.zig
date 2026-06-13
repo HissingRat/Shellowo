@@ -2,6 +2,7 @@ const std = @import("std");
 const dvui = @import("dvui");
 const App = @import("app/App.zig");
 const libssh2_backend = @import("protocols/libssh2_backend.zig");
+const sdl_app = @import("platform/sdl_app.zig");
 const ui_theme = @import("ui/theme.zig");
 const screen = @import("ui/screen.zig");
 
@@ -25,7 +26,7 @@ pub const dvui_app: dvui.App = .{
     .frameFn = appFrame,
 };
 
-pub const main = dvui.App.main;
+pub const main = sdl_app.main;
 pub const panic = dvui.App.panic;
 pub const std_options: std.Options = .{
     .log_level = .warn,
@@ -55,9 +56,47 @@ fn appDeinit() void {
 }
 
 fn appFrame() !dvui.App.Result {
+    app_state.?.beginNativeFrame();
     const result = try screen.frame(&app_state.?);
+    app_state.?.clearNativeEvents();
     maintainMinIdleRefreshRate();
     return result;
+}
+
+pub fn shellowoPushFileDrop(path: []const u8, x: f32, y: f32) void {
+    if (app_state) |*app| {
+        app.pushFileDrop(path, x, y) catch {
+            app.message = "File drop failed";
+        };
+    }
+}
+
+pub fn shellowoBeginFileDrag() void {
+    if (app_state) |*app| {
+        app.beginFileDrag();
+    }
+}
+
+pub fn shellowoUpdateFileDrag(x: f32, y: f32) void {
+    if (app_state) |*app| {
+        app.updateFileDrag(x, y);
+    }
+}
+
+pub fn shellowoEndFileDrag() void {
+    if (app_state) |*app| {
+        app.endFileDrag();
+    }
+}
+
+pub fn shellowoInitialWindowSize() ?dvui.Size {
+    if (app_state) |*app| {
+        return .{
+            .w = app.config.window_size.w,
+            .h = app.config.window_size.h,
+        };
+    }
+    return null;
 }
 
 fn maintainMinIdleRefreshRate() void {

@@ -11,21 +11,11 @@ const terminal_slot = @import("../core/terminal_slot.zig");
 const terminal_slot_bar = @import("workspace/terminal_slot_bar.zig");
 const theme = @import("theme.zig");
 
-const default_sidebar_width: f32 = 190;
-const default_file_panel_height: f32 = 230;
-const default_local_file_width: f32 = 214;
-
 const min_sidebar_width: f32 = 150;
 const max_sidebar_width: f32 = 320;
 const min_file_panel_height: f32 = 150;
 const max_file_panel_height: f32 = 430;
 const max_file_panel_rows: usize = 256;
-
-const LayoutState = struct {
-    sidebar_width: f32 = default_sidebar_width,
-    file_panel_height: f32 = default_file_panel_height,
-    local_file_width: f32 = default_local_file_width,
-};
 
 pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void {
     var stage = dvui.box(@src(), .{ .dir = .vertical }, theme.app(.{
@@ -35,15 +25,14 @@ pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void
     }, palette));
     defer stage.deinit();
 
-    const layout = dvui.dataGetPtrDefault(null, stage.data().id, "layout", LayoutState, .{});
-
     switch (tab.layout) {
-        .terminal_file => terminalFileWorkspace(app, tab, palette, layout),
-        .file_only => fileOnlyWorkspace(app, tab, palette, layout),
+        .terminal_file => terminalFileWorkspace(app, tab, palette),
+        .file_only => fileOnlyWorkspace(app, tab, palette),
     }
 }
 
-fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
+fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void {
+    const layout = &app.config.workspace;
     var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
         .padding = .all(0),
@@ -113,11 +102,13 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
         .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
         .height = layout.file_panel_height,
         .local_width = &layout.local_file_width,
+        .columns = &app.config.file_columns,
         .id_extra = 660,
     })) |intent| app.handleFilePanelIntent(tab.id, intent);
 }
 
-fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, layout: *LayoutState) void {
+fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void {
+    const layout = &app.config.workspace;
     var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
         .padding = .all(0),
@@ -152,6 +143,7 @@ fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Pale
         .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
         .height = null,
         .local_width = &layout.local_file_width,
+        .columns = &app.config.file_columns,
         .id_extra = 710,
     })) |intent| app.handleFilePanelIntent(tab.id, intent);
 }
