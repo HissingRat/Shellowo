@@ -7,6 +7,7 @@ pub const Error = error{
     HostKeyUnknown,
     HostKeyChanged,
     ConnectionFailed,
+    ConnectionCanceled,
     AuthenticationFailed,
     ChannelOpenFailed,
     ChannelClosed,
@@ -67,6 +68,19 @@ pub const ConnectProgressReporter = struct {
     }
 };
 
+pub const CancelToken = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        canceled: *const fn (*anyopaque) bool,
+    };
+
+    pub fn canceled(self: CancelToken) bool {
+        return self.vtable.canceled(self.context);
+    }
+};
+
 pub const HostKeyAlgorithm = enum {
     unknown,
     rsa,
@@ -119,6 +133,7 @@ pub const ConnectOptions = struct {
     host_key_policy: HostKeyPolicy = .strict,
     host_key_verifier: ?HostKeyVerifier = null,
     progress_reporter: ?ConnectProgressReporter = null,
+    cancel_token: ?CancelToken = null,
     timeout_ms: i32 = 15_000,
 };
 

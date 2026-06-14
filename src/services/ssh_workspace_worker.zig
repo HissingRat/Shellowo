@@ -276,6 +276,8 @@ pub const SshWorkspaceWorker = struct {
     thread: ?std.Thread = null,
     file_thread: ?std.Thread = null,
     download_threads: std.ArrayList(DownloadThread) = .empty,
+    thread_done: std.atomic.Value(bool) = .init(true),
+    file_thread_done: std.atomic.Value(bool) = .init(true),
     state_raw: std.atomic.Value(u8) = .init(@intFromEnum(State.idle)),
     stop_requested: std.atomic.Value(bool) = .init(false),
     slots_lock: std.atomic.Mutex = .unlocked,
@@ -326,6 +328,10 @@ pub const SshWorkspaceWorker = struct {
     pub fn destroy(self: *SshWorkspaceWorker) void {
         self.requestStop();
         self.join();
+        self.destroyStorage();
+    }
+
+    fn destroyStorage(self: *SshWorkspaceWorker) void {
         self.lockSlots();
         for (self.slots.items) |slot| slot.destroy(self.allocator);
         self.slots.deinit(self.allocator);
@@ -350,8 +356,14 @@ pub const SshWorkspaceWorker = struct {
     pub fn start(self: *SshWorkspaceWorker) !void {
         if (self.thread != null) return;
         self.setState(.starting);
-        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        self.thread_done.store(false, .release);
+        self.thread = std.Thread.spawn(.{}, run, .{self}) catch |err| {
+            self.thread_done.store(true, .release);
+            return err;
+        };
+        self.file_thread_done.store(false, .release);
         self.file_thread = std.Thread.spawn(.{}, runFiles, .{self}) catch |err| {
+            self.file_thread_done.store(true, .release);
             self.requestStop();
             self.join();
             return err;
@@ -376,6 +388,35 @@ pub const SshWorkspaceWorker = struct {
             self.allocator.destroy(download_thread.done);
         }
         self.download_threads.clearRetainingCapacity();
+    }
+
+    pub fn requestRetire(self: *SshWorkspaceWorker) void {
+        self.requestStop();
+    }
+
+    pub fn reapFinishedThreads(self: *SshWorkspaceWorker) void {
+        if (self.thread) |thread| {
+            if (self.thread_done.load(.acquire)) {
+                thread.join();
+                self.thread = null;
+            }
+        }
+        if (self.file_thread) |thread| {
+            if (self.file_thread_done.load(.acquire)) {
+                thread.join();
+                self.file_thread = null;
+            }
+        }
+        if (self.file_thread == null) self.reapDownloadThreads();
+    }
+
+    pub fn canDestroyWithoutBlocking(self: *const SshWorkspaceWorker) bool {
+        if (self.thread != null and !self.thread_done.load(.acquire)) return false;
+        if (self.file_thread != null and !self.file_thread_done.load(.acquire)) return false;
+        for (self.download_threads.items) |download_thread| {
+            if (!download_thread.done.load(.acquire)) return false;
+        }
+        return true;
     }
 
     pub fn state(self: *const SshWorkspaceWorker) State {
@@ -580,6 +621,7 @@ pub const SshWorkspaceWorker = struct {
     }
 
     fn run(self: *SshWorkspaceWorker) void {
+        defer self.thread_done.store(true, .release);
         const ssh_profile = self.connection;
         const endpoint = ssh.Endpoint{ .host = ssh_profile.base.host, .port = ssh_profile.base.port };
         const auth = ssh_session.authFromProfile(ssh_profile) catch |err| {
@@ -594,6 +636,7 @@ pub const SshWorkspaceWorker = struct {
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
             .progress_reporter = self.progressReporter(),
+            .cancel_token = self.cancelToken(),
             .timeout_ms = @intCast(self.options.timeout_ms),
         }) catch |err| {
             self.fail(err);
@@ -619,6 +662,7 @@ pub const SshWorkspaceWorker = struct {
     }
 
     fn runFiles(self: *SshWorkspaceWorker) void {
+        defer self.file_thread_done.store(true, .release);
         const ssh_profile = self.connection;
         if (!ssh_profile.sftp_enabled) {
             self.storeFileError("SFTP disabled for this profile");
@@ -635,6 +679,7 @@ pub const SshWorkspaceWorker = struct {
             .auth = auth,
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
+            .cancel_token = self.cancelToken(),
             .timeout_ms = @intCast(self.options.timeout_ms),
         }) catch |err| {
             self.storeFileError(@errorName(err));
@@ -1045,6 +1090,7 @@ pub const SshWorkspaceWorker = struct {
             .auth = auth,
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
+            .cancel_token = self.cancelToken(),
             .timeout_ms = @intCast(self.options.timeout_ms),
         });
         errdefer client.close();
@@ -1626,9 +1672,18 @@ pub const SshWorkspaceWorker = struct {
         return .{ .context = self, .vtable = &progress_vtable };
     }
 
+    fn cancelToken(self: *SshWorkspaceWorker) ssh.CancelToken {
+        return .{ .context = self, .vtable = &cancel_token_vtable };
+    }
+
     fn reportProgress(context: *anyopaque, stage: ssh.ConnectStage) void {
         const self: *SshWorkspaceWorker = @ptrCast(@alignCast(context));
         self.setState(stateFromConnectStage(stage));
+    }
+
+    fn canceled(context: *anyopaque) bool {
+        const self: *SshWorkspaceWorker = @ptrCast(@alignCast(context));
+        return self.stop_requested.load(.acquire);
     }
 
     fn fail(self: *SshWorkspaceWorker, err: ssh_session.Error) void {
@@ -2018,6 +2073,7 @@ fn directoryEntryExists(entries: []const remote_file.RemoteFileEntry, name: []co
 }
 
 const progress_vtable: ssh.ConnectProgressReporter.VTable = .{ .report = SshWorkspaceWorker.reportProgress };
+const cancel_token_vtable: ssh.CancelToken.VTable = .{ .canceled = SshWorkspaceWorker.canceled };
 
 fn stateFromConnectStage(stage: ssh.ConnectStage) State {
     return switch (stage) {

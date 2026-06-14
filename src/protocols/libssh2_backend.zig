@@ -13,6 +13,7 @@ const c = @cImport({
         @cInclude("ws2tcpip.h");
         @cInclude("windows.h");
     } else {
+        @cInclude("fcntl.h");
         @cInclude("netdb.h");
         @cInclude("sys/socket.h");
         @cInclude("time.h");
@@ -40,36 +41,45 @@ pub const Backend = struct {
     fn connect(context: *anyopaque, allocator: std.mem.Allocator, options: ssh.ConnectOptions) ssh.Error!ssh.Client {
         _ = context;
 
+        try checkCanceled(options);
         reportProgress(options, .resolving);
         const host = allocator.dupeZ(u8, options.endpoint.host) catch return ssh.Error.ConnectionFailed;
         defer allocator.free(host);
         const service = std.fmt.allocPrintSentinel(allocator, "{d}", .{options.endpoint.port}, 0) catch return ssh.Error.ConnectionFailed;
         defer allocator.free(service);
 
+        try checkCanceled(options);
         reportProgress(options, .connecting);
-        const fd = connectSocketWithRetry(host, service, options.endpoint) catch return ssh.Error.ConnectionFailed;
+        const fd = try connectSocketWithRetry(host, service, options);
         errdefer _ = closeSocket(fd);
         std.log.debug("libssh2 connect socket ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
+        try checkCanceled(options);
         std.log.debug("libssh2 session init begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
         const session = c.libssh2_session_init_ex(null, null, null, null) orelse return ssh.Error.ConnectionFailed;
         errdefer _ = c.libssh2_session_free(session);
-        c.libssh2_session_set_blocking(session, 1);
+        c.libssh2_session_set_blocking(session, 0);
         c.libssh2_session_set_timeout(session, options.timeout_ms);
         std.log.debug("libssh2 handshake begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
-        if (c.libssh2_session_handshake(session, fd) != 0) return ssh.Error.ConnectionFailed;
+        try retrySessionOperation(session, options, ssh.Error.ConnectionFailed, struct {
+            fn call(s: *c.LIBSSH2_SESSION, socket: Socket) c_int {
+                return c.libssh2_session_handshake(s, socket);
+            }
+        }.call, .{fd});
         std.log.debug("libssh2 handshake ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
+        try checkCanceled(options);
         reportProgress(options, .verifying_host_key);
         std.log.debug("libssh2 host key verify begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
         const host_key = readHostKey(session) catch return ssh.Error.InvalidHostKey;
         try verifyHostKey(options, host_key);
         std.log.debug("libssh2 host key verify ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
+        try checkCanceled(options);
         reportProgress(options, .authenticating);
         std.log.debug("libssh2 auth begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
-        authenticate(session, allocator, options.auth) catch |err| return err;
+        authenticate(session, allocator, options) catch |err| return err;
         std.log.debug("libssh2 auth ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
         const client = allocator.create(ClientContext) catch return ssh.Error.ConnectionFailed;
@@ -89,6 +99,12 @@ pub const Backend = struct {
 
 fn reportProgress(options: ssh.ConnectOptions, stage: ssh.ConnectStage) void {
     if (options.progress_reporter) |reporter| reporter.report(stage);
+}
+
+fn checkCanceled(options: ssh.ConnectOptions) ssh.Error!void {
+    if (options.cancel_token) |token| {
+        if (token.canceled()) return ssh.Error.ConnectionCanceled;
+    }
 }
 
 const connector_vtable: ssh.Connector.VTable = .{
@@ -116,54 +132,131 @@ const SftpContext = struct {
     closed: bool = false,
 };
 
-fn connectSocketWithRetry(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoint) !Socket {
+fn connectSocketWithRetry(host: [:0]const u8, service: [:0]const u8, options: ssh.ConnectOptions) ssh.Error!Socket {
     const attempts = 4;
     for (0..attempts) |attempt| {
+        try checkCanceled(options);
         std.log.debug("libssh2 connect socket begin host={s} port={d} attempt={d}", .{
-            endpoint.host,
-            endpoint.port,
+            options.endpoint.host,
+            options.endpoint.port,
             attempt + 1,
         });
-        return connectSocket(host, service, endpoint) catch |err| {
+        return connectSocket(host, service, options) catch |err| {
             if (attempt + 1 == attempts) return err;
-            sleepMs(150);
+            try sleepMsCancelable(150, options);
             continue;
         };
     }
-    return error.ConnectFailed;
+    return ssh.Error.ConnectionFailed;
 }
 
-fn connectSocket(host: [:0]const u8, service: [:0]const u8, endpoint: ssh.Endpoint) !Socket {
+fn connectSocket(host: [:0]const u8, service: [:0]const u8, options: ssh.ConnectOptions) ssh.Error!Socket {
+    const endpoint = options.endpoint;
     var hints: c.addrinfo = std.mem.zeroes(c.addrinfo);
     hints.ai_family = c.AF_UNSPEC;
     hints.ai_socktype = c.SOCK_STREAM;
 
+    try checkCanceled(options);
     var result: ?*c.addrinfo = null;
     const gai_rc = c.getaddrinfo(host.ptr, service.ptr, &hints, &result);
     if (gai_rc != 0) {
         std.log.debug("libssh2 getaddrinfo failed host={s} port={d} rc={d}", .{ endpoint.host, endpoint.port, gai_rc });
-        return error.ConnectFailed;
+        return ssh.Error.ConnectionFailed;
     }
     defer c.freeaddrinfo(result);
 
     var node = result;
     while (node) |addr| : (node = addr.ai_next) {
+        try checkCanceled(options);
         const fd = c.socket(addr.ai_family, addr.ai_socktype, addr.ai_protocol);
         if (fd == invalidSocket()) {
             std.log.debug("libssh2 socket failed host={s} port={d} errno={s}", .{ endpoint.host, endpoint.port, @tagName(std.c.errno(fd)) });
             continue;
         }
-        if (c.connect(fd, addr.ai_addr, @intCast(addr.ai_addrlen)) == 0) return fd;
+        connectSocketFd(fd, addr, options) catch |err| {
+            std.log.debug("libssh2 socket connect failed host={s} port={d} family={d} err={s}", .{
+                endpoint.host,
+                endpoint.port,
+                addr.ai_family,
+                @errorName(err),
+            });
+            _ = closeSocket(fd);
+            if (err == ssh.Error.ConnectionCanceled) return err;
+            continue;
+        };
+        return fd;
+    }
+
+    return ssh.Error.ConnectionFailed;
+}
+
+fn connectSocketFd(fd: Socket, addr: *c.addrinfo, options: ssh.ConnectOptions) ssh.Error!void {
+    if (builtin.os.tag == .windows) {
+        if (c.connect(fd, addr.ai_addr, @intCast(addr.ai_addrlen)) == 0) return;
         std.log.debug("libssh2 socket connect failed host={s} port={d} family={d} errno={s}", .{
-            endpoint.host,
-            endpoint.port,
+            options.endpoint.host,
+            options.endpoint.port,
             addr.ai_family,
             @tagName(std.c.errno(-1)),
         });
-        _ = closeSocket(fd);
+        return ssh.Error.ConnectionFailed;
     }
 
-    return error.ConnectFailed;
+    const original_flags = c.fcntl(fd, c.F_GETFL, @as(c_int, 0));
+    if (original_flags < 0) return ssh.Error.ConnectionFailed;
+    if (c.fcntl(fd, c.F_SETFL, original_flags | c.O_NONBLOCK) < 0) return ssh.Error.ConnectionFailed;
+    errdefer _ = c.fcntl(fd, c.F_SETFL, original_flags);
+
+    if (c.connect(fd, addr.ai_addr, @intCast(addr.ai_addrlen)) == 0) {
+        if (c.fcntl(fd, c.F_SETFL, original_flags) < 0) return ssh.Error.ConnectionFailed;
+        return;
+    }
+
+    const errno = std.c.errno(-1);
+    switch (errno) {
+        .INPROGRESS, .ALREADY, .AGAIN => {},
+        .ISCONN => {
+            if (c.fcntl(fd, c.F_SETFL, original_flags) < 0) return ssh.Error.ConnectionFailed;
+            return;
+        },
+        else => return ssh.Error.ConnectionFailed,
+    }
+
+    var waited_ms: i32 = 0;
+    const timeout_ms = @max(options.timeout_ms, 1);
+    while (waited_ms < timeout_ms) {
+        try checkCanceled(options);
+        var pollfds = [_]std.posix.pollfd{.{
+            .fd = fd,
+            .events = std.posix.POLL.OUT,
+            .revents = 0,
+        }};
+        const rc = std.posix.poll(&pollfds, 50) catch return ssh.Error.ConnectionFailed;
+        waited_ms += 50;
+        if (rc == 0) continue;
+        if ((pollfds[0].revents & (std.posix.POLL.OUT | std.posix.POLL.ERR | std.posix.POLL.HUP)) == 0) continue;
+
+        var socket_error: c_int = 0;
+        var socket_error_len: c.socklen_t = @sizeOf(c_int);
+        if (c.getsockopt(fd, c.SOL_SOCKET, c.SO_ERROR, @ptrCast(&socket_error), &socket_error_len) != 0) {
+            return ssh.Error.ConnectionFailed;
+        }
+        if (socket_error != 0) return ssh.Error.ConnectionFailed;
+        if (c.fcntl(fd, c.F_SETFL, original_flags) < 0) return ssh.Error.ConnectionFailed;
+        return;
+    }
+
+    return ssh.Error.ConnectionFailed;
+}
+
+fn sleepMsCancelable(ms: u32, options: ssh.ConnectOptions) ssh.Error!void {
+    var slept: u32 = 0;
+    while (slept < ms) {
+        try checkCanceled(options);
+        const step = @min(@as(u32, 25), ms - slept);
+        sleepMs(@intCast(step));
+        slept += step;
+    }
 }
 
 fn sleepMs(ms: c_long) void {
@@ -185,17 +278,41 @@ fn yieldThread() void {
     std.Thread.yield() catch {};
 }
 
-fn authenticate(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, auth: ssh.Auth) ssh.Error!void {
-    switch (auth) {
+fn retrySessionOperation(
+    session: *c.LIBSSH2_SESSION,
+    options: ssh.ConnectOptions,
+    fail_error: ssh.Error,
+    comptime func: anytype,
+    args: anytype,
+) ssh.Error!void {
+    var waited_ms: i32 = 0;
+    const timeout_ms = @max(options.timeout_ms, 1);
+    while (waited_ms < timeout_ms) {
+        try checkCanceled(options);
+        const rc = @call(.auto, func, .{session} ++ args);
+        if (rc == 0) return;
+        if (rc != c.LIBSSH2_ERROR_EAGAIN and c.libssh2_session_last_errno(session) != c.LIBSSH2_ERROR_EAGAIN) {
+            return fail_error;
+        }
+        sleepMs(1);
+        waited_ms += 1;
+    }
+    return fail_error;
+}
+
+fn authenticate(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, options: ssh.ConnectOptions) ssh.Error!void {
+    switch (options.auth) {
         .password => |password| {
             const username = allocator.dupeZ(u8, password.username) catch return ssh.Error.AuthenticationFailed;
             defer allocator.free(username);
             const secret = allocator.dupeZ(u8, password.password) catch return ssh.Error.AuthenticationFailed;
             defer allocator.free(secret);
 
-            if (c.libssh2_userauth_password_ex(session, username.ptr, @intCast(username.len), secret.ptr, @intCast(secret.len), null) != 0) {
-                return ssh.Error.AuthenticationFailed;
-            }
+            try retrySessionOperation(session, options, ssh.Error.AuthenticationFailed, struct {
+                fn call(s: *c.LIBSSH2_SESSION, user: [:0]const u8, pw: [:0]const u8) c_int {
+                    return c.libssh2_userauth_password_ex(s, user.ptr, @intCast(user.len), pw.ptr, @intCast(pw.len), null);
+                }
+            }.call, .{ username, secret });
         },
         .private_key => |private_key| {
             const username = allocator.dupeZ(u8, private_key.username) catch return ssh.Error.AuthenticationFailed;
@@ -205,32 +322,47 @@ fn authenticate(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, auth:
             const passphrase = if (private_key.passphrase) |value| allocator.dupeZ(u8, value) catch return ssh.Error.AuthenticationFailed else null;
             defer if (passphrase) |value| allocator.free(value);
 
-            if (c.libssh2_userauth_publickey_fromfile(session, username.ptr, null, key_path.ptr, if (passphrase) |value| value.ptr else null) != 0) {
-                return ssh.Error.AuthenticationFailed;
-            }
+            try retrySessionOperation(session, options, ssh.Error.AuthenticationFailed, struct {
+                fn call(s: *c.LIBSSH2_SESSION, user: [:0]const u8, path: [:0]const u8, phrase: ?[:0]const u8) c_int {
+                    return c.libssh2_userauth_publickey_fromfile(s, user.ptr, null, path.ptr, if (phrase) |value| value.ptr else null);
+                }
+            }.call, .{ username, key_path, passphrase });
         },
-        .agent => |agent| try authenticateAgent(session, allocator, agent.username),
+        .agent => |agent| try authenticateAgent(session, allocator, options, agent.username),
     }
 }
 
-fn authenticateAgent(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, username_bytes: []const u8) ssh.Error!void {
+fn authenticateAgent(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, options: ssh.ConnectOptions, username_bytes: []const u8) ssh.Error!void {
     if (username_bytes.len == 0) return ssh.Error.AuthenticationFailed;
     const username = allocator.dupeZ(u8, username_bytes) catch return ssh.Error.AuthenticationFailed;
     defer allocator.free(username);
 
+    try checkCanceled(options);
     const agent = c.libssh2_agent_init(session) orelse return ssh.Error.AuthenticationFailed;
     defer c.libssh2_agent_free(agent);
 
+    try checkCanceled(options);
     if (c.libssh2_agent_connect(agent) != 0) return ssh.Error.AuthenticationFailed;
     defer _ = c.libssh2_agent_disconnect(agent);
 
+    try checkCanceled(options);
     if (c.libssh2_agent_list_identities(agent) != 0) return ssh.Error.AuthenticationFailed;
 
     var identity: ?*c.struct_libssh2_agent_publickey = null;
     var previous: ?*c.struct_libssh2_agent_publickey = null;
     while (c.libssh2_agent_get_identity(agent, &identity, previous) == 0) {
+        try checkCanceled(options);
         if (identity) |candidate| {
-            if (c.libssh2_agent_userauth(agent, username.ptr, candidate) == 0) return;
+            var waited_ms: i32 = 0;
+            const timeout_ms = @max(options.timeout_ms, 1);
+            while (waited_ms < timeout_ms) {
+                try checkCanceled(options);
+                const rc = c.libssh2_agent_userauth(agent, username.ptr, candidate);
+                if (rc == 0) return;
+                if (rc != c.LIBSSH2_ERROR_EAGAIN and c.libssh2_session_last_errno(session) != c.LIBSSH2_ERROR_EAGAIN) break;
+                sleepMs(1);
+                waited_ms += 1;
+            }
             previous = candidate;
         } else {
             break;

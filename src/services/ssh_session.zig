@@ -85,6 +85,7 @@ pub const SshSession = struct {
             .host_key_policy = options.host_key_policy,
             .host_key_verifier = options.host_key_verifier,
             .progress_reporter = self.progressReporter(),
+            .cancel_token = null,
             .timeout_ms = @intCast(options.timeout_ms),
         };
         const client = options.connector.connect(self.allocator, connect_options) catch |err| {

@@ -30,6 +30,7 @@ pub const MockSessionRegistry = struct {
     tabs: std.ArrayList(workspace.WorkspaceTab) = .empty,
     ssh_sessions: std.ArrayList(SshRuntimeSlot) = .empty,
     ssh_workspaces: std.ArrayList(SshWorkspaceRuntimeSlot) = .empty,
+    retired_ssh_workspaces: std.ArrayList(*ssh_workspace_worker.SshWorkspaceWorker) = .empty,
     active_terminal_slots: std.ArrayList(ActiveTerminalSlot) = .empty,
     next_id: u64 = 1,
     active_tab_id: ?u64 = null,
@@ -43,6 +44,10 @@ pub const MockSessionRegistry = struct {
             slot.worker.destroy();
         }
         self.ssh_workspaces.deinit(self.allocator);
+        for (self.retired_ssh_workspaces.items) |worker| {
+            worker.destroy();
+        }
+        self.retired_ssh_workspaces.deinit(self.allocator);
         self.active_terminal_slots.deinit(self.allocator);
         for (self.ssh_sessions.items) |*slot| {
             slot.session.deinit();
@@ -107,6 +112,7 @@ pub const MockSessionRegistry = struct {
     }
 
     pub fn pollWorkers(self: *MockSessionRegistry) void {
+        self.reapRetiredWorkspaces();
         for (self.tabs.items) |tab| {
             const worker = self.sshWorkspace(tab.id) orelse {
                 self.setTabStatus(tab.id, .closed);
@@ -138,8 +144,11 @@ pub const MockSessionRegistry = struct {
 
     pub fn closeTab(self: *MockSessionRegistry, id: u64) void {
         if (self.sshWorkspaceIndex(id)) |worker_idx| {
-            self.ssh_workspaces.items[worker_idx].worker.destroy();
-            _ = self.ssh_workspaces.orderedRemove(worker_idx);
+            const slot = self.ssh_workspaces.orderedRemove(worker_idx);
+            slot.worker.requestRetire();
+            self.retired_ssh_workspaces.append(self.allocator, slot.worker) catch {
+                slot.worker.destroy();
+            };
         }
 
         if (self.activeTerminalSlotIndex(id)) |active_idx| {
@@ -385,6 +394,20 @@ pub const MockSessionRegistry = struct {
             if (active.tab_id == tab_id) return idx;
         }
         return null;
+    }
+
+    fn reapRetiredWorkspaces(self: *MockSessionRegistry) void {
+        var idx: usize = 0;
+        while (idx < self.retired_ssh_workspaces.items.len) {
+            const worker = self.retired_ssh_workspaces.items[idx];
+            worker.reapFinishedThreads();
+            if (!worker.canDestroyWithoutBlocking()) {
+                idx += 1;
+                continue;
+            }
+            worker.destroy();
+            _ = self.retired_ssh_workspaces.orderedRemove(idx);
+        }
     }
 };
 
