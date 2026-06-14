@@ -56,8 +56,8 @@ DVUI file_panel
 
 说明：
 
-- `FilePanelSnapshot.local` 当前作为兼容字段承载左侧目录树快照，不代表真实本机文件服务。
-- `RemoteFileEntry.full_path/depth/expanded` 是第一版 tree metadata；长期应拆成独立 `FileTreeSnapshot`，避免 table entry 与 tree node 语义混在一起。
+- `FilePanelSnapshot.tree` 承载左侧远端目录树快照；`FilePanelSnapshot.remote` 承载右侧当前远端目录表。
+- `RemoteFileEntry.full_path/depth/expanded` 是第一版 tree node metadata；后续如果 tree 交互继续变复杂，可以再拆出独立 `FileTreeEntry`。
 
 ## 数据模型草案
 
@@ -78,7 +78,7 @@ pub const RemoteFileEntry = struct {
 };
 
 pub const FilePanelSnapshot = struct {
-    local: FilePaneSnapshot,
+    tree: FileTreeSnapshot,
     remote: FilePaneSnapshot,
 };
 
@@ -170,7 +170,7 @@ pub const FilePanelIntent = union(enum) {
 - [x] folder/file png icon 进入 file entry 和 tree node，并通过 tint 适配 theme。
 - [x] worker 维护目录树缓存，支持展开已访问目录和懒加载未访问目录。
 - [x] 支持 tree node 展开/收起状态，而不是只展示当前路径相关节点。
-- [ ] 将 tree snapshot 从 `FilePanelSnapshot.local` 兼容字段拆到独立数据结构。
+- [x] 将 tree snapshot 从 `FilePanelSnapshot.local` 兼容字段拆到独立数据结构。
 
 验收：
 
@@ -198,5 +198,4 @@ pub const FilePanelIntent = union(enum) {
 
 当前 `file_panel` 主线已经推进到 M5，后续优先收敛：
 
-- 将左侧 tree snapshot 从 `FilePanelSnapshot.local` 兼容字段拆到独立数据结构。
 - 根据 transfer 状态补重复操作禁用或 busy 摘要。

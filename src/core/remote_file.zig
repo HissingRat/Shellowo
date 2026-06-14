@@ -78,8 +78,23 @@ pub const FilePaneSnapshot = struct {
     }
 };
 
+pub const FileTreeSnapshot = struct {
+    path: []const u8 = "",
+    state: FilePaneState = .unavailable,
+    entries: []const RemoteFileEntry = &.{},
+    error_summary: ?[]const u8 = null,
+
+    pub fn isBusy(self: FileTreeSnapshot) bool {
+        return self.state == .loading;
+    }
+
+    pub fn isEmpty(self: FileTreeSnapshot) bool {
+        return self.state == .ready and self.entries.len == 0;
+    }
+};
+
 pub const FilePanelSnapshot = struct {
-    local: FilePaneSnapshot = .{ .location = .local },
+    tree: FileTreeSnapshot = .{},
     remote: FilePaneSnapshot = .{ .location = .sftp },
 };
 

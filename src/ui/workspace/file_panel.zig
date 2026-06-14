@@ -258,9 +258,10 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
     });
     defer split.deinit();
 
-    filePane(.local, palette, .{
+    filePane(.tree, palette, .{
         .app = opts.app,
-        .snapshot = opts.snapshot.local,
+        .tree = opts.snapshot.tree,
+        .snapshot = .{ .location = .sftp },
         .width = opts.local_width.*,
         .columns = opts.columns,
         .id_extra = opts.id_extra + 30,
@@ -603,10 +604,11 @@ fn outsideTransferPopupClick(menu_rect: dvui.Rect.Physical) bool {
     return false;
 }
 
-const PaneKind = enum { local, remote };
+const PaneKind = enum { tree, remote };
 const TreeRowAction = enum { none, toggle, row_click };
 const PaneOptions = struct {
     app: *App,
+    tree: remote_file.FileTreeSnapshot = .{},
     snapshot: remote_file.FilePaneSnapshot,
     width: ?f32,
     columns: *ColumnWidths,
@@ -637,8 +639,8 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
         layout.columns_initialized = true;
     }
 
-    if (kind == .local) { //清理
-        treeRows(opts.snapshot, layout, palette, opts.id_extra + 20, intent);
+    if (kind == .tree) {
+        treeRows(opts.tree, layout, palette, opts.id_extra + 20, intent);
         return;
     }
     layout.observeToast(opts.snapshot.error_summary);
@@ -729,7 +731,7 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
     blankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), row_count), palette, id_extra + 500, intent);
 }
 
-fn treeRows(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn treeRows(snapshot: remote_file.FileTreeSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
@@ -768,7 +770,7 @@ fn treeRows(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, pa
     }
 }
 
-fn treeRow(snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     const selected = treeEntrySelected(snapshot.path, entry);
     var row = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
@@ -801,7 +803,7 @@ fn treeRow(snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFile
             .name = "",
         } },
         .row_click => {
-            if (registerEntryClick(layout, .local, path) >= 2) {
+            if (registerEntryClick(layout, .tree, path) >= 2) {
                 intent.* = .{ .toggle_tree = .{
                     .pane = .remote,
                     .path = path,
@@ -1664,7 +1666,7 @@ fn treeEntrySelected(current_path: []const u8, entry: remote_file.RemoteFileEntr
 
 fn paneTarget(kind: PaneKind) remote_file.FilePaneTarget {
     return switch (kind) {
-        .local => .local,
+        .tree => .remote,
         .remote => .remote,
     };
 }

@@ -527,19 +527,16 @@ pub const SshWorkspaceWorker = struct {
         };
     }
 
-    pub fn fileTreeSnapshot(self: *SshWorkspaceWorker, buffer: []remote_file.RemoteFileEntry) remote_file.FilePaneSnapshot {
+    pub fn fileTreeSnapshot(self: *SshWorkspaceWorker, buffer: []remote_file.RemoteFileEntry) remote_file.FileTreeSnapshot {
         self.lockFile();
         defer self.unlockFile();
 
         const count = self.copyVisibleTreeLocked(buffer);
         return .{
-            .location = .sftp,
             .path = self.filePathLocked(),
             .state = if (count > 0) .ready else self.file_state,
             .entries = buffer[0..count],
-            .selected_name = null,
             .error_summary = self.fileErrorLocked(),
-            .capabilities = self.fileCapabilitiesLocked(),
         };
     }
 

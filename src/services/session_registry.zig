@@ -193,17 +193,17 @@ pub const MockSessionRegistry = struct {
         return worker.statusPanelSnapshot();
     }
 
-    pub fn filePanelSnapshot(self: *MockSessionRegistry, tab_id: u64, local_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
+    pub fn filePanelSnapshot(self: *MockSessionRegistry, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
         const tab = self.tabById(tab_id) orelse return .{};
         if (self.sshWorkspace(tab_id)) |worker| {
             return .{
-                .local = worker.fileTreeSnapshot(local_buffer),
+                .tree = worker.fileTreeSnapshot(tree_buffer),
                 .remote = worker.filePanelSnapshot(remote_buffer),
             };
         }
         const remote = mockSftpPane(tab.status);
-        const local = remoteTreePane(remote, local_buffer);
-        return .{ .local = local, .remote = remote };
+        const tree = remoteTreeSnapshot(remote, tree_buffer);
+        return .{ .tree = tree, .remote = remote };
     }
 
     pub fn handleFilePanelIntent(self: *MockSessionRegistry, tab_id: u64, intent: remote_file.FilePanelIntent) !void {
@@ -452,7 +452,7 @@ fn mockSftpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
     };
 }
 
-fn remoteTreePane(remote: remote_file.FilePaneSnapshot, buffer: []remote_file.RemoteFileEntry) remote_file.FilePaneSnapshot {
+fn remoteTreeSnapshot(remote: remote_file.FilePaneSnapshot, buffer: []remote_file.RemoteFileEntry) remote_file.FileTreeSnapshot {
     var count: usize = 0;
     if (buffer.len > 0) {
         buffer[count] = .{
@@ -481,13 +481,10 @@ fn remoteTreePane(remote: remote_file.FilePaneSnapshot, buffer: []remote_file.Re
     }
 
     return .{
-        .location = remote.location,
         .path = remote.path,
         .state = remote.state,
         .entries = buffer[0..count],
-        .selected_name = remote.selected_name,
         .error_summary = remote.error_summary,
-        .capabilities = remote.capabilities,
     };
 }
 

@@ -92,11 +92,11 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
         .id_extra = 650,
     });
 
-    var local_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
+    var tree_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     if (file_panel.show(tab, palette, .{
         .app = app,
-        .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
+        .snapshot = app.filePanelSnapshot(tab.id, &tree_entries, &remote_entries),
         .height = layout.file_panel_height,
         .local_width = &layout.local_file_width,
         .columns = &app.config.file_columns,

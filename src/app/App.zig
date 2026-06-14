@@ -569,8 +569,8 @@ pub fn reconnectTab(self: *App, tab_id: u64) void {
     self.openProfile(tab.profile_id);
 }
 
-pub fn filePanelSnapshot(self: *App, tab_id: u64, local_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
-    return self.sessions.filePanelSnapshot(tab_id, local_buffer, remote_buffer);
+pub fn filePanelSnapshot(self: *App, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
+    return self.sessions.filePanelSnapshot(tab_id, tree_buffer, remote_buffer);
 }
 
 pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePanelIntent) void {
