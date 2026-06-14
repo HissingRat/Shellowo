@@ -23,7 +23,7 @@ pub const Endpoint = struct {
 pub const Auth = union(enum) {
     password: PasswordAuth,
     private_key: PrivateKeyAuth,
-    agent,
+    agent: AgentAuth,
 };
 
 pub const PasswordAuth = struct {
@@ -37,10 +37,34 @@ pub const PrivateKeyAuth = struct {
     passphrase: ?[]const u8 = null,
 };
 
+pub const AgentAuth = struct {
+    username: []const u8,
+};
+
 pub const HostKeyPolicy = union(enum) {
     strict,
     trust_on_first_use,
     insecure_accept_any,
+};
+
+pub const ConnectStage = enum {
+    resolving,
+    connecting,
+    verifying_host_key,
+    authenticating,
+};
+
+pub const ConnectProgressReporter = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        report: *const fn (*anyopaque, ConnectStage) void,
+    };
+
+    pub fn report(self: ConnectProgressReporter, stage: ConnectStage) void {
+        self.vtable.report(self.context, stage);
+    }
 };
 
 pub const HostKeyAlgorithm = enum {
@@ -94,6 +118,7 @@ pub const ConnectOptions = struct {
     auth: Auth,
     host_key_policy: HostKeyPolicy = .strict,
     host_key_verifier: ?HostKeyVerifier = null,
+    progress_reporter: ?ConnectProgressReporter = null,
     timeout_ms: i32 = 15_000,
 };
 
@@ -258,7 +283,7 @@ test "default shell options use xterm compatible terminal" {
 test "connect options keep host key policy explicit" {
     const opts = ConnectOptions{
         .endpoint = .{ .host = "example.test" },
-        .auth = .{ .agent = {} },
+        .auth = .{ .agent = .{ .username = "dev" } },
     };
 
     try std.testing.expectEqualStrings("example.test", opts.endpoint.host);

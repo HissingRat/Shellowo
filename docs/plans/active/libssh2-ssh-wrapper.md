@@ -18,7 +18,6 @@ Shellow 需要 SSH shell 和 SFTP 文件能力。`libssh2` 适合作为底层库
 
 - 不在第一步完成真实 libssh2 链接。
 - 密码或 passphrase 可以按用户选择持久化，但必须通过 Shellow-owned profile repository/security 边界，不在协议 wrapper、UI 或日志中明文散落。
-- 不把 FTP 混进 SSH/SFTP wrapper。
 
 ## 当前落点
 
@@ -55,7 +54,7 @@ DVUI terminal/file widgets
    - [x] handshake。
    - [x] host key check。
    - [x] password/private key auth。
-   - [ ] agent auth。
+   - [x] agent auth。
 
 4. 实现 shell
    - [x] open session channel。

@@ -32,7 +32,7 @@
 - 当前 vendor 版本：`third_party/libssh2-1.11.1`。
 - 当前 crypto backend 候选：`third_party/mbedtls-3.6.6`。
 - 当前 Zig build 已编译 `shellow_mbedcrypto` 与 `shellow_libssh2` 静态库，并通过 `libssh2_init/libssh2_exit` smoke test。
-- `src/protocols/libssh2_backend.zig` 已具备第一版阻塞式 connect/auth/shell channel wrapper，并在认证前提取 host key SHA256 fingerprint 交给 Shellow verifier；known_hosts strict/TOFU 存储已接入，agent auth、SFTP 仍需继续实现。
+- `src/protocols/libssh2_backend.zig` 已具备第一版阻塞式 connect/auth/shell channel wrapper，并在认证前提取 host key SHA256 fingerprint 交给 Shellow verifier；known_hosts strict/TOFU 存储与 missing host key 确认路径已接入；password/private key/agent auth 已接入；SFTP list/read/write/mkdir/remove/rename 已接入。
 - `zig build ssh-probe -- host port username password` 可通过 Shellow libssh2 backend 做真实 SSH connect/auth/open shell/write/read smoke test。
 - Zig 原生 SSH/SFTP 库暂不作为主路线。
 - 外部 `ssh` 进程桥接仅可作为诊断或临时验证手段，不进入正式运行时。
@@ -97,33 +97,13 @@
 | `src/terminal/libvterm_shim.c` | C shim，负责把 libvterm bitfield cell/color 数据转成 Zig 可直接消费的 plain struct。 |
 | `third_party/libvterm-0.3.3` | vendored libvterm 0.3.3 source。 |
 
-## 5. 计划评估：FTP / FTPS
-
-当前方向：
-
-- FTP 优先级下调到 SSH terminal 和 SFTP MVP 之后。
-- 第一版倾向自研最小 FTP client，保持 Shellow 自有 API。
-- C 库绑定和 `libcurl` 只作为后续兼容性/FTPS 压力增大时的评估项。
-
-准入标准：
-
-- 支持 list/upload/download/delete/rename/mkdir
-- 可选 FTPS
-- 连接错误和传输错误可明确分类
-
-维护原则：
-
-- FTP controller 与 SSH/SFTP controller 分离。
-- FTP workspace 使用 `file_only` 布局。
-- FTP 生产代码只调用 Shellow 自有 FTP API，不直接散落 socket/protocol 细节到 UI/session。
-- FTPS 暂缓，不阻塞 SSH terminal MVP。
-
-## 6. 计划评估：本地存储
+## 5. 计划评估：本地存储
 
 早期策略：
 
 - profile 元数据使用本地文件。
 - 用户选择持久化的敏感信息可以进入 profile 存储，但必须通过 profile repository/security 层处理，不在 UI、日志或普通业务对象里明文散落。
+- `src/security/profile_vault.zig` 提供可选 Master Password profile vault：Argon2id KDF、XChaCha20-Poly1305 AEAD、随机 salt/nonce 写入 vault JSON；`src/services/profile_repository.zig` 负责兼容明文 profile array 与 encrypted vault。
 - settings、layout、recent sessions 可以先用 JSON 或 Zig 结构化序列化。
 
 后续评估：
@@ -132,7 +112,7 @@
 - 平台安全存储
 - 加密文件存储
 
-## 7. 新依赖准入规则
+## 6. 新依赖准入规则
 
 新增或替换第三方项目时，至少补齐：
 

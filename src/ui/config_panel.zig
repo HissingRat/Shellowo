@@ -1,40 +1,37 @@
 const dvui = @import("dvui");
-const App = @import("../app/App.zig");
 const profile = @import("../core/profile.zig");
+const App = @import("../app/App.zig");
 const theme = @import("theme.zig");
 
 const panel_width: f32 = 520;
-const panel_height: f32 = 460;
+const panel_height: f32 = 540;
 const header_height: f32 = 36;
 const footer_height: f32 = 44;
-const content_height: f32 = panel_height - header_height - footer_height;
+const separator_height: f32 = 1;
+const min_content_height: f32 = 120;
 const form_font_size: f32 = 11;
 const control_font_size: f32 = 11;
 const field_height: f32 = 20;
 
 pub fn show(app: *App, palette: theme.Palette) void {
-    var layer = dvui.overlay(@src(), .{
-        .expand = .both,
-        .id_extra = 50_000,
-    });
-    defer layer.deinit();
+    const window_rect = dvui.windowRect();
+    const popup_w = @min(panel_width, @max(@as(f32, 360), window_rect.w - 48));
+    const available_h = @max(@as(f32, 180), window_rect.h - 24);
+    const popup_h = @min(panel_height, available_h);
+    const rect: dvui.Rect.Natural = .{
+        .x = @max(12, @round((window_rect.w - popup_w) / 2)),
+        .y = @max(12, @round((window_rect.h - popup_h) / 2)),
+        .w = popup_w,
+        .h = popup_h,
+    };
 
-    var animator = dvui.animate(@src(), .{
-        .kind = .alpha,
-        .duration = 120_000,
-    }, .{
-        .gravity_x = 0.5,
-        .gravity_y = 0.5,
-        .min_size_content = .{ .w = panel_width, .h = panel_height },
-        .max_size_content = .{ .w = panel_width, .h = panel_height },
-        .id_extra = 50_001,
-    });
-    defer animator.deinit();
-
-    var panel = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
-        .min_size_content = .{ .w = panel_width, .h = panel_height },
-        .max_size_content = .{ .w = panel_width, .h = panel_height },
+    var panel: dvui.FloatingWidget = undefined;
+    panel.init(@src(), .{}, theme.panel(.{
+        .rect = .cast(rect),
+        .min_size_content = .{ .w = rect.w, .h = rect.h },
+        .max_size_content = .{ .w = rect.w, .h = rect.h },
         .padding = .all(0),
+        .border = .all(1),
         .corner_radius = .all(8),
         .id_extra = 50_002,
     }, palette).override(.{
@@ -42,9 +39,12 @@ pub fn show(app: *App, palette: theme.Palette) void {
         .color_border = palette.border_subtle,
     }));
     defer panel.deinit();
+    dvui.focusSubwindow(panel.data().id, null);
 
     header(palette);
-    form(app, palette);
+    separator(palette, 50_012);
+    form(app, palette, @max(min_content_height, rect.h - header_height - footer_height - separator_height * 2));
+    separator(palette, 50_089);
     footer(app, palette);
 }
 
@@ -68,7 +68,22 @@ fn header(palette: theme.Palette) void {
     });
 }
 
-fn form(app: *App, palette: theme.Palette) void {
+fn separator(palette: theme.Palette, id_extra: usize) void {
+    var line = dvui.box(@src(), .{}, theme.panel(.{
+        .expand = .horizontal,
+        .min_size_content = .height(1),
+        .max_size_content = .height(1),
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = id_extra,
+    }, palette).override(.{
+        .color_fill = palette.border_subtle,
+        .color_border = palette.border_subtle,
+    }));
+    defer line.deinit();
+}
+
+fn form(app: *App, palette: theme.Palette, content_height: f32) void {
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
@@ -94,24 +109,6 @@ fn form(app: *App, palette: theme.Palette) void {
     });
     defer content.deinit();
 
-    {
-        var kind = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .margin = .{ .h = 4 },
-            .id_extra = 50_022,
-        });
-        defer kind.deinit();
-
-        if (dvui.radio(@src(), app.draft.profile_type == .ssh, "SSH", .{ .id_extra = 50_023, .color_text = palette.text, .font = theme.textFont("SSH", form_font_size) })) {
-            app.draft.profile_type = .ssh;
-            app.draft.port = profile.defaultPort(.ssh);
-        }
-        if (dvui.radio(@src(), app.draft.profile_type == .ftp, "FTP", .{ .id_extra = 50_024, .color_text = palette.text, .font = theme.textFont("FTP", form_font_size) })) {
-            app.draft.profile_type = .ftp;
-            app.draft.port = profile.defaultPort(.ftp);
-        }
-    }
-
     textField("Name", &app.draft.name, 50_030, palette);
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = 50_040 });
@@ -121,13 +118,111 @@ fn form(app: *App, palette: theme.Palette) void {
     }
     textField("Group", &app.draft.group, 50_050, palette);
     textField("Username", &app.draft.username, 50_060, palette);
-    textField("Password", &app.draft.password, 50_070, palette);
-
-    if (app.draft.profile_type == .ssh) {
-        _ = dvui.checkbox(@src(), &app.draft.sftp_enabled, "Enable SFTP", .{ .id_extra = 50_080, .color_text = palette.text, .font = theme.textFont("Enable SFTP", form_font_size) });
-    } else {
-        _ = dvui.checkbox(@src(), &app.draft.secure_ftp, "Use FTPS", .{ .id_extra = 50_081, .color_text = palette.text, .font = theme.textFont("Use FTPS", form_font_size) });
+    authSelector(app, palette);
+    switch (app.draft.auth_type) {
+        .password => textField("Password", &app.draft.password, 50_070, palette),
+        .private_key => {
+            privateKeyPathField(app, palette);
+            textField("Key Passphrase", &app.draft.private_key_passphrase, 50_075, palette);
+        },
+        .agent => authNotice("Uses SSH agent authentication when supported by the runtime.", 50_077, palette),
     }
+
+    _ = dvui.checkbox(@src(), &app.draft.sftp_enabled, "Enable SFTP", .{ .id_extra = 50_080, .color_text = palette.text, .font = theme.textFont("Enable SFTP", form_font_size) });
+}
+
+fn authSelector(app: *App, palette: theme.Palette) void {
+    var cell = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .margin = .{ .y = 3, .h = 3 },
+        .id_extra = 50_065,
+    });
+    defer cell.deinit();
+
+    dvui.label(@src(), "Authentication", .{}, .{
+        .color_text = palette.muted_text,
+        .font = theme.textFont("Authentication", form_font_size),
+        .id_extra = 50_066,
+    });
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = 50_067 });
+    defer row.deinit();
+
+    authButton(app, .password, 50_068, palette);
+    authButton(app, .private_key, 50_069, palette);
+    authButton(app, .agent, 50_071, palette);
+}
+
+fn authButton(app: *App, auth_type: profile.AuthType, id_extra: usize, palette: theme.Palette) void {
+    const selected = app.draft.auth_type == auth_type;
+    if (theme.button(@src(), auth_type.label(), .{
+        .expand = .horizontal,
+        .min_size_content = .height(24),
+        .margin = .{ .x = 2 },
+        .id_extra = id_extra,
+    }, palette, .{
+        .intent = if (selected) .primary else .neutral,
+        .state = if (selected) .selected else .normal,
+        .variant = if (selected) .solid else .ghost,
+        .font_size = control_font_size,
+    })) {
+        app.draft.auth_type = auth_type;
+    }
+}
+
+fn privateKeyPathField(app: *App, palette: theme.Palette) void {
+    var cell = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .margin = .{ .y = 3, .h = 3 },
+        .id_extra = 50_072,
+    });
+    defer cell.deinit();
+
+    dvui.label(@src(), "Private Key Path", .{}, .{
+        .color_text = palette.muted_text,
+        .font = theme.textFont("Private Key Path", form_font_size),
+        .id_extra = 50_073,
+    });
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .height(28),
+        .id_extra = 50_074,
+    });
+    defer row.deinit();
+
+    var te = dvui.textEntry(@src(), .{ .text = .{ .buffer = &app.draft.private_key_path } }, theme.panel(.{
+        .expand = .horizontal,
+        .gravity_y = 0.5,
+        .min_size_content = .height(field_height),
+        .max_size_content = .height(field_height),
+        .font = theme.cjkFont(form_font_size),
+        .corner_radius = .all(5),
+        .id_extra = 50_076,
+    }, palette).override(.{
+        .color_fill = palette.surface_bg,
+        .color_border = palette.border,
+    }));
+    te.deinit();
+
+    if (theme.button(@src(), "Browse", .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 70, .h = field_height },
+        .margin = .{ .x = 6 },
+        .id_extra = 50_078,
+    }, palette, .{ .variant = .ghost, .font_size = control_font_size })) {
+        const selected = dvui.dialogNativeFileOpen(dvui.currentWindow().arena(), .{ .title = "Select Private Key" }) catch null;
+        if (selected) |path| profile.setBuffer(&app.draft.private_key_path, path);
+    }
+}
+
+fn authNotice(message: []const u8, id_extra: usize, palette: theme.Palette) void {
+    dvui.label(@src(), "{s}", .{message}, .{
+        .color_text = palette.muted_text,
+        .font = theme.textFont(message, form_font_size),
+        .margin = .{ .y = 4, .h = 6 },
+        .id_extra = id_extra,
+    });
 }
 
 fn footer(app: *App, palette: theme.Palette) void {
@@ -154,6 +249,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .min_size_content = .{ .w = 64, .h = 26 },
         .margin = .{ .x = 3 },
         .id_extra = 50_092,
+        .gravity_y = 0.5,
     }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = control_font_size })) {
         app.deleteSelectedProfile();
     }
@@ -161,6 +257,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .min_size_content = .{ .w = 64, .h = 26 },
         .margin = .{ .x = 3 },
         .id_extra = 50_093,
+        .gravity_y = 0.5,
     }, palette, .{ .intent = .primary, .variant = .ghost, .font_size = control_font_size })) {
         app.saveDraft();
     }
@@ -168,6 +265,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .min_size_content = .{ .w = 64, .h = 26 },
         .margin = .{ .x = 3 },
         .id_extra = 50_094,
+        .gravity_y = 0.5,
     }, palette, .{ .variant = .ghost, .font_size = control_font_size })) {
         app.cancelConfig();
     }

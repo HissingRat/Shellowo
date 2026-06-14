@@ -40,11 +40,13 @@ pub const Backend = struct {
     fn connect(context: *anyopaque, allocator: std.mem.Allocator, options: ssh.ConnectOptions) ssh.Error!ssh.Client {
         _ = context;
 
+        reportProgress(options, .resolving);
         const host = allocator.dupeZ(u8, options.endpoint.host) catch return ssh.Error.ConnectionFailed;
         defer allocator.free(host);
         const service = std.fmt.allocPrintSentinel(allocator, "{d}", .{options.endpoint.port}, 0) catch return ssh.Error.ConnectionFailed;
         defer allocator.free(service);
 
+        reportProgress(options, .connecting);
         const fd = connectSocketWithRetry(host, service, options.endpoint) catch return ssh.Error.ConnectionFailed;
         errdefer _ = closeSocket(fd);
         std.log.debug("libssh2 connect socket ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
@@ -59,11 +61,13 @@ pub const Backend = struct {
         if (c.libssh2_session_handshake(session, fd) != 0) return ssh.Error.ConnectionFailed;
         std.log.debug("libssh2 handshake ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
+        reportProgress(options, .verifying_host_key);
         std.log.debug("libssh2 host key verify begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
         const host_key = readHostKey(session) catch return ssh.Error.InvalidHostKey;
         try verifyHostKey(options, host_key);
         std.log.debug("libssh2 host key verify ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
 
+        reportProgress(options, .authenticating);
         std.log.debug("libssh2 auth begin host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
         authenticate(session, allocator, options.auth) catch |err| return err;
         std.log.debug("libssh2 auth ok host={s} port={d}", .{ options.endpoint.host, options.endpoint.port });
@@ -82,6 +86,10 @@ pub const Backend = struct {
         };
     }
 };
+
+fn reportProgress(options: ssh.ConnectOptions, stage: ssh.ConnectStage) void {
+    if (options.progress_reporter) |reporter| reporter.report(stage);
+}
 
 const connector_vtable: ssh.Connector.VTable = .{
     .connect = Backend.connect,
@@ -201,8 +209,35 @@ fn authenticate(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, auth:
                 return ssh.Error.AuthenticationFailed;
             }
         },
-        .agent => return ssh.Error.UnsupportedAuth,
+        .agent => |agent| try authenticateAgent(session, allocator, agent.username),
     }
+}
+
+fn authenticateAgent(session: *c.LIBSSH2_SESSION, allocator: std.mem.Allocator, username_bytes: []const u8) ssh.Error!void {
+    if (username_bytes.len == 0) return ssh.Error.AuthenticationFailed;
+    const username = allocator.dupeZ(u8, username_bytes) catch return ssh.Error.AuthenticationFailed;
+    defer allocator.free(username);
+
+    const agent = c.libssh2_agent_init(session) orelse return ssh.Error.AuthenticationFailed;
+    defer c.libssh2_agent_free(agent);
+
+    if (c.libssh2_agent_connect(agent) != 0) return ssh.Error.AuthenticationFailed;
+    defer _ = c.libssh2_agent_disconnect(agent);
+
+    if (c.libssh2_agent_list_identities(agent) != 0) return ssh.Error.AuthenticationFailed;
+
+    var identity: ?*c.struct_libssh2_agent_publickey = null;
+    var previous: ?*c.struct_libssh2_agent_publickey = null;
+    while (c.libssh2_agent_get_identity(agent, &identity, previous) == 0) {
+        if (identity) |candidate| {
+            if (c.libssh2_agent_userauth(agent, username.ptr, candidate) == 0) return;
+            previous = candidate;
+        } else {
+            break;
+        }
+    }
+
+    return ssh.Error.AuthenticationFailed;
 }
 
 fn readHostKey(session: *c.LIBSSH2_SESSION) ssh.Error!ssh.HostKey {
@@ -733,7 +768,7 @@ test "backend exposes the stable ssh connector shape" {
 test "strict host key policy fails closed before authentication" {
     const opts = ssh.ConnectOptions{
         .endpoint = .{ .host = "127.0.0.1", .port = 1 },
-        .auth = .{ .agent = {} },
+        .auth = .{ .agent = .{ .username = "dev" } },
         .host_key_policy = .strict,
         .timeout_ms = 1,
     };

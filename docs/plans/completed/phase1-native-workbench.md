@@ -23,13 +23,13 @@ Baseline completed. Polish continues in `docs/plans/active/phase1-polish.md`.
   - runtime path: `data/profiles.json`
   - ignored by git
 - 支持 mock workspace tab 打开/关闭。
-- 支持 SSH/FTP profile 创建、编辑、删除。
+- 支持 SSH profile 创建、编辑、删除。
 - 保留 transfer panel 占位。
 
 ## 非目标保留
 
 - 尚未接真实 SSH。
-- 尚未接真实 SFTP/FTP。
+- 尚未接真实 SFTP。
 - 不保存密码、passphrase 或私钥内容。
 - 不做发布打包。
 

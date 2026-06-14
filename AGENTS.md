@@ -4,9 +4,9 @@
 
 ## 1. 项目定位
 
-Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。当前技术路线是 `Zig + DVUI + SDL3`，目标是把 SSH 终端、SFTP 文件、FTP 文件、多标签工作区、传输任务和连接管理收束到一个轻量、可长期使用的桌面客户端里。
+Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。当前技术路线是 `Zig + DVUI + SDL3`，目标是把 SSH 终端、SFTP 文件、多标签工作区、传输任务和连接管理收束到一个轻量、可长期使用的桌面客户端里。
 
-当前仓库处于 Phase 1：已经具备原生工作台壳、连接配置 CRUD、非敏感 profile 持久化和 mock workspace tabs，但 UI polish 仍在进行中。真实 SSH/SFTP/FTP 协议仍在后续阶段。
+当前仓库已经具备原生工作台壳、连接配置 CRUD、非敏感 profile 持久化、真实 SSH runtime、SFTP 文件面板和基础传输任务。后续重点是 SSH/SFTP 可用性、安全凭据策略、传输中心体验和发布准备。
 
 ## 2. 先读哪里
 
@@ -25,8 +25,8 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。
 
 - UI 保持原生 DVUI 路线，不引入 Electron/WebView 作为主界面。
 - 领域模型优先独立于 UI 和协议客户端，后续建议沉入 `src/core/`。
-- Renderer/UI 层不直接拥有 SSH/SFTP/FTP 协议状态机；协议运行时必须经 service/controller 边界暴露。
-- SSH/SFTP 与 FTP 在 controller/protocol 层保持分离，不做伪统一。
+- Renderer/UI 层不直接拥有 SSH/SFTP 协议状态机；协议运行时必须经 service/controller 边界暴露。
+- 远程文件能力走 SSH/SFTP 路线。
 - 终端通道只传 PTY 字节流；文件传输走 transfer system，不把二进制传输塞进 shell。
 - Transfer 进度统一进入 transfer system，不在各个 widget 里零散维护。
 - Raw libssh2 handle 不得越过 `src/protocols/libssh2_backend.zig` 一类 backend 边界。
@@ -65,8 +65,7 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。
 3. 实现 SSH connect/auth/host-key verification。
 4. 建立终端 widget 与 PTY resize 同步路径。
 5. 接 SFTP list/upload/download，并进入 transfer queue。
-6. 接 FTP file-only controller。
-7. 将当前 mock tab 替换为真实 session runtime。
+6. 将当前 mock/fallback 路径替换为真实 session runtime。
 
 ## 8. 文档维护规则
 

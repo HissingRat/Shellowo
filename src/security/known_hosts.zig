@@ -12,16 +12,33 @@ pub const Entry = struct {
     }
 };
 
+pub const PendingHostKey = struct {
+    host: []const u8,
+    port: u16,
+    host_key: ssh.HostKey,
+
+    pub fn deinit(self: PendingHostKey, allocator: std.mem.Allocator) void {
+        allocator.free(self.host);
+    }
+
+    pub fn endpoint(self: PendingHostKey) ssh.Endpoint {
+        return .{ .host = self.host, .port = self.port };
+    }
+};
+
 pub const KnownHosts = struct {
     allocator: std.mem.Allocator,
+    lock: std.atomic.Mutex = .unlocked,
     entries: std.ArrayList(Entry) = .empty,
     trust_missing: bool = false,
+    pending: ?PendingHostKey = null,
 
     pub fn init(allocator: std.mem.Allocator) KnownHosts {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *KnownHosts) void {
+        self.clearPendingHostKey();
         for (self.entries.items) |entry| {
             entry.deinit(self.allocator);
         }
@@ -36,37 +53,32 @@ pub const KnownHosts = struct {
     }
 
     pub fn verify(self: *KnownHosts, endpoint: ssh.Endpoint, policy: ssh.HostKeyPolicy, host_key: ssh.HostKey) ssh.Error!void {
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+
         switch (policy) {
             .insecure_accept_any => return,
             .strict, .trust_on_first_use => {},
         }
 
-        if (self.find(endpoint)) |entry| {
+        if (self.findLocked(endpoint)) |entry| {
             if (entry.algorithm == host_key.algorithm and std.mem.eql(u8, &entry.sha256, &host_key.sha256)) return;
             return ssh.Error.HostKeyChanged;
         }
 
         if (policy == .trust_on_first_use and self.trust_missing) {
-            self.addTrusted(endpoint, host_key) catch return ssh.Error.InvalidHostKey;
+            self.addTrustedLocked(endpoint, host_key) catch return ssh.Error.InvalidHostKey;
             return;
         }
 
+        self.setPendingHostKeyLocked(endpoint, host_key) catch return ssh.Error.InvalidHostKey;
         return ssh.Error.HostKeyUnknown;
     }
 
     pub fn addTrusted(self: *KnownHosts, endpoint: ssh.Endpoint, host_key: ssh.HostKey) !void {
-        if (self.findIndex(endpoint)) |idx| {
-            self.entries.items[idx].algorithm = host_key.algorithm;
-            self.entries.items[idx].sha256 = host_key.sha256;
-            return;
-        }
-
-        try self.entries.append(self.allocator, .{
-            .host = try self.allocator.dupe(u8, endpoint.host),
-            .port = endpoint.port,
-            .algorithm = host_key.algorithm,
-            .sha256 = host_key.sha256,
-        });
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+        try self.addTrustedLocked(endpoint, host_key);
     }
 
     pub fn loadFromDisk(self: *KnownHosts, io: std.Io, path: []const u8) !void {
@@ -100,6 +112,9 @@ pub const KnownHosts = struct {
     }
 
     pub fn saveToDisk(self: *KnownHosts, io: std.Io, path: []const u8) !void {
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+
         var persisted: std.ArrayList(PersistedEntry) = .empty;
         defer {
             for (persisted.items) |item| {
@@ -133,11 +148,48 @@ pub const KnownHosts = struct {
     }
 
     pub fn find(self: *KnownHosts, endpoint: ssh.Endpoint) ?Entry {
-        const idx = self.findIndex(endpoint) orelse return null;
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+        const idx = self.findIndexLocked(endpoint) orelse return null;
         return self.entries.items[idx];
     }
 
-    fn findIndex(self: *KnownHosts, endpoint: ssh.Endpoint) ?usize {
+    pub fn copyPendingHostKey(self: *KnownHosts, allocator: std.mem.Allocator) !?PendingHostKey {
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+        const pending = self.pending orelse return null;
+        return .{
+            .host = try allocator.dupe(u8, pending.host),
+            .port = pending.port,
+            .host_key = pending.host_key,
+        };
+    }
+
+    pub fn trustPendingHostKey(self: *KnownHosts) !void {
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+        const pending = self.pending orelse return;
+        try self.addTrustedLocked(pending.endpoint(), pending.host_key);
+        self.clearPendingHostKeyLocked();
+    }
+
+    pub fn clearPendingHostKey(self: *KnownHosts) void {
+        self.lockKnownHosts();
+        defer self.unlockKnownHosts();
+        self.clearPendingHostKeyLocked();
+    }
+
+    fn clearPendingHostKeyLocked(self: *KnownHosts) void {
+        if (self.pending) |pending| pending.deinit(self.allocator);
+        self.pending = null;
+    }
+
+    fn findLocked(self: *KnownHosts, endpoint: ssh.Endpoint) ?Entry {
+        const idx = self.findIndexLocked(endpoint) orelse return null;
+        return self.entries.items[idx];
+    }
+
+    fn findIndexLocked(self: *KnownHosts, endpoint: ssh.Endpoint) ?usize {
         for (self.entries.items, 0..) |entry, idx| {
             if (entry.port == endpoint.port and std.mem.eql(u8, entry.host, endpoint.host)) return idx;
         }
@@ -145,10 +197,45 @@ pub const KnownHosts = struct {
     }
 
     fn clear(self: *KnownHosts) void {
+        self.clearPendingHostKeyLocked();
         for (self.entries.items) |entry| {
             entry.deinit(self.allocator);
         }
         self.entries.clearRetainingCapacity();
+    }
+
+    fn setPendingHostKeyLocked(self: *KnownHosts, endpoint: ssh.Endpoint, host_key: ssh.HostKey) !void {
+        self.clearPendingHostKeyLocked();
+        self.pending = .{
+            .host = try self.allocator.dupe(u8, endpoint.host),
+            .port = endpoint.port,
+            .host_key = host_key,
+        };
+    }
+
+    fn addTrustedLocked(self: *KnownHosts, endpoint: ssh.Endpoint, host_key: ssh.HostKey) !void {
+        if (self.findIndexLocked(endpoint)) |idx| {
+            self.entries.items[idx].algorithm = host_key.algorithm;
+            self.entries.items[idx].sha256 = host_key.sha256;
+            return;
+        }
+
+        try self.entries.append(self.allocator, .{
+            .host = try self.allocator.dupe(u8, endpoint.host),
+            .port = endpoint.port,
+            .algorithm = host_key.algorithm,
+            .sha256 = host_key.sha256,
+        });
+    }
+
+    fn lockKnownHosts(self: *KnownHosts) void {
+        while (!self.lock.tryLock()) {
+            std.Thread.yield() catch {};
+        }
+    }
+
+    fn unlockKnownHosts(self: *KnownHosts) void {
+        self.lock.unlock();
     }
 };
 
@@ -197,6 +284,22 @@ test "trust on first use can explicitly add a missing host key" {
     try known_hosts.verify(endpoint, .trust_on_first_use, host_key);
     try known_hosts.verify(endpoint, .strict, host_key);
     try std.testing.expectEqual(@as(usize, 1), known_hosts.entries.items.len);
+}
+
+test "missing host key stores pending confirmation" {
+    var known_hosts = KnownHosts.init(std.testing.allocator);
+    defer known_hosts.deinit();
+
+    const endpoint = ssh.Endpoint{ .host = "example.test", .port = 22 };
+    const host_key = ssh.HostKey{ .algorithm = .ed25519, .sha256 = [_]u8{7} ** 32 };
+    try std.testing.expectError(ssh.Error.HostKeyUnknown, known_hosts.verify(endpoint, .trust_on_first_use, host_key));
+    const pending = (try known_hosts.copyPendingHostKey(std.testing.allocator)) orelse return error.MissingPendingHostKey;
+    defer pending.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("example.test", pending.host);
+    try std.testing.expectEqual(ssh.HostKeyAlgorithm.ed25519, pending.host_key.algorithm);
+    try known_hosts.trustPendingHostKey();
+    try std.testing.expect((try known_hosts.copyPendingHostKey(std.testing.allocator)) == null);
+    try known_hosts.verify(endpoint, .strict, host_key);
 }
 
 test "changed host key is rejected" {

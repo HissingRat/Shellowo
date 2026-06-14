@@ -7,6 +7,7 @@ comptime {
     _ = @import("protocols/libssh2_backend.zig");
     _ = @import("protocols/ssh.zig");
     _ = @import("security/known_hosts.zig");
+    _ = @import("security/profile_vault.zig");
     _ = @import("security/secret_file.zig");
     _ = @import("services/ssh_session.zig");
     _ = @import("services/ssh_session_worker.zig");

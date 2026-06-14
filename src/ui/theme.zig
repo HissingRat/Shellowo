@@ -209,13 +209,6 @@ pub fn button(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Opt
     return buttonWidget(src, label, opts, p, style, .{});
 }
 
-pub fn buttonVisual(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options, p: Palette, style: ButtonStyle) void {
-    _ = buttonWidget(src, label, opts, p, style, .{
-        .process_events = false,
-        .clear_role = true,
-    });
-}
-
 pub fn buttonNoHoverAndPress(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options, p: Palette, style: ButtonStyle) bool {
     const fill = buttonFill(p, style);
     return buttonWidget(src, label, opts, p, style, .{
@@ -225,8 +218,6 @@ pub fn buttonNoHoverAndPress(src: std.builtin.SourceLocation, label: []const u8,
 }
 
 const ButtonWidgetOptions = struct {
-    process_events: bool = true,
-    clear_role: bool = false,
     fill_hover: ?dvui.Color = null,
     fill_press: ?dvui.Color = null,
 };
@@ -248,18 +239,9 @@ fn buttonWidget(
     if (widget_opts.fill_press) |fill| {
         options = options.override(.{ .color_fill_press = fill });
     }
-    if (widget_opts.clear_role) {
-        options = options.override(.{
-            .role = .none,
-            .tab_index = 0,
-        });
-    }
-
     var bw: dvui.ButtonWidget = undefined;
     bw.init(src, .{ .draw_focus = false }, options);
-    if (widget_opts.process_events) {
-        bw.processEvents();
-    }
+    bw.processEvents();
     bw.drawBackground();
 
     const label_options = opts.strip().override(bw.style()).override(.{

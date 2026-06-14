@@ -21,6 +21,12 @@ const GroupExpansion = struct {
     expanded: bool,
 };
 
+const ProfileSecurity = enum {
+    plain,
+    locked,
+    unlocked_encrypted,
+};
+
 allocator: std.mem.Allocator,
 io: ?std.Io = null,
 config: app_config.Config,
@@ -47,6 +53,12 @@ message: []const u8 = "Home",
 connection_search: [128]u8 = std.mem.zeroes([128]u8),
 group_expansions: std.ArrayList(GroupExpansion) = .empty,
 group_defaults_initialized: bool = false,
+profile_security: ProfileSecurity = .plain,
+unlock_password: [128]u8 = std.mem.zeroes([128]u8),
+master_password_session: [128]u8 = std.mem.zeroes([128]u8),
+master_password_new: [128]u8 = std.mem.zeroes([128]u8),
+master_password_confirm: [128]u8 = std.mem.zeroes([128]u8),
+master_password_disable: [128]u8 = std.mem.zeroes([128]u8),
 
 const profiles_path = "data/profiles.json";
 const known_hosts_path = "data/known_hosts.json";
@@ -64,8 +76,7 @@ pub fn initMemory(allocator: std.mem.Allocator) !App {
         .terminal_backend = .{ .allocator = allocator },
     };
     app.theme_mode = app.config.theme_mode;
-    app.known_hosts.trust_missing = true;
-    app.draft.reset(.ssh);
+    app.draft.reset();
     try app.profiles.seedDefaults();
     app.selectFirstProfile();
     return app;
@@ -85,21 +96,26 @@ pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
         .terminal_backend = .{ .allocator = allocator },
     };
     app.theme_mode = app.config.theme_mode;
-    app.known_hosts.trust_missing = true;
-    app.draft.reset(.ssh);
-    try app.profiles.loadFromDisk(io, profiles_path);
+    app.draft.reset();
     try app.known_hosts.loadFromDisk(io, known_hosts_path);
-    if (app.profiles.items().len == 0) {
-        try app.profiles.seedDefaults();
-        try app.profiles.saveToDisk(io, profiles_path);
+    if (try app.profiles.profileFileEncrypted(io, profiles_path)) {
+        app.profile_security = .locked;
+    } else {
+        try app.profiles.loadFromDisk(io, profiles_path);
+        if (app.profiles.items().len == 0) {
+            try app.profiles.seedDefaults();
+            try app.profiles.saveToDisk(io, profiles_path);
+        }
+        app.selectFirstProfile();
     }
-    app.selectFirstProfile();
     return app;
 }
 
 pub fn deinit(self: *App) void {
     self.config.theme_mode = self.theme_mode;
     self.persistConfig();
+    self.clearMasterPasswordInputs();
+    profile.setBuffer(&self.master_password_session, "");
     for (self.group_expansions.items) |entry| {
         self.allocator.free(entry.name);
     }
@@ -177,9 +193,9 @@ pub fn selectProfile(self: *App, id: u64) void {
     }
 }
 
-pub fn newProfile(self: *App, session_type: profile.SessionType) void {
+pub fn newProfile(self: *App) void {
     self.selected_profile_id = null;
-    self.draft.reset(session_type);
+    self.draft.reset();
     self.show_config = true;
     self.message = "New profile";
 }
@@ -193,7 +209,7 @@ pub fn cancelConfig(self: *App) void {
     if (self.selected_profile_id) |id| {
         if (self.profiles.get(id)) |item| self.draft.load(item.*);
     } else {
-        self.draft.reset(.ssh);
+        self.draft.reset();
     }
     self.show_config = false;
     self.message = "Home";
@@ -245,6 +261,17 @@ pub fn saveDraft(self: *App) void {
         self.message = "Name and host are required";
         return;
     }
+    switch (self.draft.auth_type) {
+        .password => if (profile.textFromBuffer(&self.draft.password).len == 0) {
+            self.message = "Password is required";
+            return;
+        },
+        .private_key => if (profile.textFromBuffer(&self.draft.private_key_path).len == 0) {
+            self.message = "Private key path is required";
+            return;
+        },
+        .agent => {},
+    }
 
     const id = self.profiles.upsertDraft(&self.draft) catch {
         self.message = "Could not save profile";
@@ -270,13 +297,135 @@ pub fn deleteSelectedProfile(self: *App) void {
     };
     self.persistProfiles();
     self.selected_profile_id = null;
-    self.draft.reset(.ssh);
+    self.draft.reset();
     self.show_config = false;
     self.message = "Profile deleted";
 }
 
 pub fn configVisible(self: *const App) bool {
     return self.show_config;
+}
+
+pub fn profilesLocked(self: *const App) bool {
+    return self.profile_security == .locked;
+}
+
+pub fn masterPasswordEnabled(self: *const App) bool {
+    return self.profile_security != .plain;
+}
+
+pub fn unlockProfiles(self: *App) void {
+    const io = self.io orelse {
+        self.message = "Persistent storage is not available";
+        return;
+    };
+    const password = profile.textFromBuffer(&self.unlock_password);
+    if (password.len == 0) {
+        self.message = "Master password is required";
+        return;
+    }
+
+    self.profiles.loadFromDiskWithPassword(io, profiles_path, password) catch |err| {
+        self.message = switch (err) {
+            profile_repository.Error.WrongMasterPassword => "Wrong master password",
+            profile_repository.Error.MasterPasswordRequired => "Master password is required",
+            else => "Could not unlock profiles",
+        };
+        return;
+    };
+    profile.setBuffer(&self.master_password_session, password);
+    profile.setBuffer(&self.unlock_password, "");
+    self.profile_security = .unlocked_encrypted;
+    self.group_defaults_initialized = false;
+    self.selectFirstProfile();
+    self.message = "Profiles unlocked";
+}
+
+pub fn enableMasterPassword(self: *App) void {
+    const password = profile.textFromBuffer(&self.master_password_new);
+    const confirm = profile.textFromBuffer(&self.master_password_confirm);
+    if (password.len == 0) {
+        self.message = "Master password is required";
+        return;
+    }
+    if (!std.mem.eql(u8, password, confirm)) {
+        self.message = "Master passwords do not match";
+        return;
+    }
+
+    const io = self.io orelse {
+        self.message = "Persistent storage is not available";
+        return;
+    };
+    self.profiles.saveToDiskWithPassword(io, profiles_path, password) catch {
+        self.message = "Could not enable master password";
+        return;
+    };
+    profile.setBuffer(&self.master_password_session, password);
+    self.clearMasterPasswordInputs();
+    self.profile_security = .unlocked_encrypted;
+    self.message = "Master password enabled";
+}
+
+pub fn cancelMasterPasswordSetup(self: *App) void {
+    profile.setBuffer(&self.master_password_new, "");
+    profile.setBuffer(&self.master_password_confirm, "");
+    profile.setBuffer(&self.master_password_disable, "");
+    self.message = "Home";
+}
+
+pub fn disableMasterPassword(self: *App) void {
+    if (self.profile_security != .unlocked_encrypted) {
+        self.message = "Profiles must be unlocked first";
+        return;
+    }
+    const password = profile.textFromBuffer(&self.master_password_disable);
+    const session_password = profile.textFromBuffer(&self.master_password_session);
+    if (password.len == 0) {
+        self.message = "Master password is required";
+        return;
+    }
+    if (!std.mem.eql(u8, password, session_password)) {
+        self.message = "Wrong master password";
+        return;
+    }
+
+    const io = self.io orelse {
+        self.message = "Persistent storage is not available";
+        return;
+    };
+    self.profiles.saveToDiskWithPassword(io, profiles_path, null) catch {
+        self.message = "Could not disable master password";
+        return;
+    };
+    self.profile_security = .plain;
+    self.clearMasterPasswordInputs();
+    profile.setBuffer(&self.master_password_session, "");
+    self.message = "Master password disabled";
+}
+
+pub fn pendingHostKey(self: *App, allocator: std.mem.Allocator) ?known_hosts_store.PendingHostKey {
+    return self.known_hosts.copyPendingHostKey(allocator) catch {
+        self.message = "Could not read pending host key";
+        return null;
+    };
+}
+
+pub fn trustPendingHostKey(self: *App) void {
+    self.known_hosts.trustPendingHostKey() catch {
+        self.message = "Could not trust host key";
+        return;
+    };
+    self.persistKnownHosts();
+    self.message = "Host key trusted";
+    if (self.sessions.activeTab()) |tab| {
+        if (tab.status == .failed) self.reconnectTab(tab.id);
+    }
+}
+
+pub fn rejectPendingHostKey(self: *App) void {
+    self.known_hosts.clearPendingHostKey();
+    self.message = "Host key rejected";
 }
 
 pub fn connectionSearchText(self: *const App) []const u8 {
@@ -289,7 +438,7 @@ pub fn ensureGroupDefaults(self: *App, visible_profile_capacity: usize) void {
 
     const expand_default = self.profiles.items().len <= visible_profile_capacity;
     for (self.profiles.items()) |item| {
-        const group = normalizedGroup(item.base().group);
+        const group = normalizedGroup(item.base.group);
         if (self.groupExpansionIndex(group) != null) continue;
         self.addGroupExpansion(group, expand_default and std.mem.eql(u8, group, "Default")) catch {
             self.message = "Could not initialize groups";
@@ -330,22 +479,11 @@ pub fn openProfile(self: *App, id: u64) void {
         return;
     };
 
-    switch (item.*) {
-        .ssh => {
-            _ = self.sessions.openSshWorkerTab(item.*, self.sshRuntimeOptions()) catch {
-                self.message = "Could not start SSH session";
-                return;
-            };
-            self.message = "SSH session starting";
-        },
-        .ftp => {
-            _ = self.sessions.openMockTab(item.*) catch {
-                self.message = "Could not open mock tab";
-                return;
-            };
-            self.message = "FTP session opened";
-        },
-    }
+    _ = self.sessions.openSshWorkerTab(item.*, self.sshRuntimeOptions()) catch {
+        self.message = "Could not start SSH session";
+        return;
+    };
+    self.message = "SSH session starting";
 }
 
 pub fn openSelectedProfile(self: *App) void {
@@ -562,15 +700,26 @@ fn removeTransferAt(self: *App, idx: usize) void {
 
 fn selectFirstProfile(self: *App) void {
     if (self.profiles.items().len == 0) return;
-    self.selected_profile_id = self.profiles.items()[0].base().id;
+    self.selected_profile_id = self.profiles.items()[0].base.id;
     self.draft.load(self.profiles.items()[0]);
 }
 
 fn persistProfiles(self: *App) void {
     const io = self.io orelse return;
-    self.profiles.saveToDisk(io, profiles_path) catch {
+    const password: ?[]const u8 = if (self.profile_security == .unlocked_encrypted)
+        profile.textFromBuffer(&self.master_password_session)
+    else
+        null;
+    self.profiles.saveToDiskWithPassword(io, profiles_path, password) catch {
         self.message = "Profile saved in memory, but disk write failed";
     };
+}
+
+fn clearMasterPasswordInputs(self: *App) void {
+    profile.setBuffer(&self.unlock_password, "");
+    profile.setBuffer(&self.master_password_new, "");
+    profile.setBuffer(&self.master_password_confirm, "");
+    profile.setBuffer(&self.master_password_disable, "");
 }
 
 fn persistConfig(self: *App) void {
@@ -652,5 +801,6 @@ test "app seeds profiles" {
     var app = try App.initMemory(std.testing.allocator);
     defer app.deinit();
 
-    try std.testing.expect(app.profiles.items().len >= 2);
+    try std.testing.expectEqual(@as(usize, 1), app.profiles.items().len);
+    try std.testing.expectEqual(@as(u16, 22), app.profiles.items()[0].base.port);
 }

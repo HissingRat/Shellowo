@@ -4,7 +4,7 @@
 
 Shellow 已经具备真实 SSH PTY 字节流、`libvterm` emulator snapshot 和 DVUI terminal panel 的第一版渲染。下一阶段目标是让它从“能连上并显示输出”推进到“日常可用的真 terminal”。
 
-本计划聚焦 terminal 体验与渲染能力。协议连接、认证、host key、SFTP 和 FTP 仍由各自 active plan 跟踪。
+本计划聚焦 terminal 体验与渲染能力。协议连接、认证、host key 和 SFTP 仍由各自 active plan 跟踪。
 
 相关计划：
 

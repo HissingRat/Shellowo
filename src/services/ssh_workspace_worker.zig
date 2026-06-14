@@ -12,6 +12,11 @@ const ssh_session = @import("ssh_session.zig");
 pub const State = enum(u8) {
     idle,
     starting,
+    resolving,
+    connecting,
+    verifying_host_key,
+    authenticating,
+    opening_shell,
     connected,
     stopping,
     stopped,
@@ -432,7 +437,14 @@ pub const SshWorkspaceWorker = struct {
                 .ordinal = slot.ordinal,
                 .title = slot.title(),
                 .status = switch (slot.state()) {
-                    .idle, .starting => .opening,
+                    .idle,
+                    .starting,
+                    .resolving,
+                    .connecting,
+                    .verifying_host_key,
+                    .authenticating,
+                    .opening_shell,
+                    => .opening,
                     .connected => .active,
                     .stopping, .stopped => .closed,
                     .failed => .failed,
@@ -452,7 +464,7 @@ pub const SshWorkspaceWorker = struct {
         self.lockMonitor();
         defer self.unlockMonitor();
         var snapshot = self.monitor_snapshot;
-        const base = self.connection.base();
+        const base = self.connection.base;
         if (base.host.len > 0) snapshot.monitor.setIp(base.host);
         return snapshot;
     }
@@ -568,18 +580,20 @@ pub const SshWorkspaceWorker = struct {
     }
 
     fn run(self: *SshWorkspaceWorker) void {
-        const ssh_profile = self.connection.ssh;
+        const ssh_profile = self.connection;
         const endpoint = ssh.Endpoint{ .host = ssh_profile.base.host, .port = ssh_profile.base.port };
         const auth = ssh_session.authFromProfile(ssh_profile) catch |err| {
             self.fail(err);
             return;
         };
 
+        self.setState(.resolving);
         const client = self.options.connector.connect(self.allocator, .{
             .endpoint = endpoint,
             .auth = auth,
             .host_key_policy = self.options.host_key_policy,
             .host_key_verifier = self.options.host_key_verifier,
+            .progress_reporter = self.progressReporter(),
             .timeout_ms = @intCast(self.options.timeout_ms),
         }) catch |err| {
             self.fail(err);
@@ -605,7 +619,7 @@ pub const SshWorkspaceWorker = struct {
     }
 
     fn runFiles(self: *SshWorkspaceWorker) void {
-        const ssh_profile = self.connection.ssh;
+        const ssh_profile = self.connection;
         if (!ssh_profile.sftp_enabled) {
             self.storeFileError("SFTP disabled for this profile");
             return;
@@ -659,6 +673,7 @@ pub const SshWorkspaceWorker = struct {
     }
 
     fn openSlot(self: *SshWorkspaceWorker, client: ssh.Client, slot: *PtySlot) ssh_session.Error!void {
+        self.setState(.opening_shell);
         const shell = client.openShell(.{ .size = self.options.shell_size }) catch |err| {
             slot.last_error = err;
             slot.setState(.failed);
@@ -679,6 +694,7 @@ pub const SshWorkspaceWorker = struct {
         slot.shell = shell;
         slot.emulator = emulator;
         slot.setState(.connected);
+        self.setState(.connected);
         try slot.cacheSnapshot(self.allocator);
     }
 
@@ -1021,7 +1037,7 @@ pub const SshWorkspaceWorker = struct {
     };
 
     fn openDownloadSftp(self: *SshWorkspaceWorker) ssh_session.Error!DownloadSftp {
-        const ssh_profile = self.connection.ssh;
+        const ssh_profile = self.connection;
         const endpoint = ssh.Endpoint{ .host = ssh_profile.base.host, .port = ssh_profile.base.port };
         const auth = try ssh_session.authFromProfile(ssh_profile);
         const client = try self.options.connector.connect(self.allocator, .{
@@ -1606,6 +1622,15 @@ pub const SshWorkspaceWorker = struct {
         self.state_raw.store(@intFromEnum(new_state), .release);
     }
 
+    fn progressReporter(self: *SshWorkspaceWorker) ssh.ConnectProgressReporter {
+        return .{ .context = self, .vtable = &progress_vtable };
+    }
+
+    fn reportProgress(context: *anyopaque, stage: ssh.ConnectStage) void {
+        const self: *SshWorkspaceWorker = @ptrCast(@alignCast(context));
+        self.setState(stateFromConnectStage(stage));
+    }
+
     fn fail(self: *SshWorkspaceWorker, err: ssh_session.Error) void {
         self.last_error = err;
         self.setState(.failed);
@@ -1992,6 +2017,17 @@ fn directoryEntryExists(entries: []const remote_file.RemoteFileEntry, name: []co
     return false;
 }
 
+const progress_vtable: ssh.ConnectProgressReporter.VTable = .{ .report = SshWorkspaceWorker.reportProgress };
+
+fn stateFromConnectStage(stage: ssh.ConnectStage) State {
+    return switch (stage) {
+        .resolving => .resolving,
+        .connecting => .connecting,
+        .verifying_host_key => .verifying_host_key,
+        .authenticating => .authenticating,
+    };
+}
+
 test "set file path accepts overlapping parent path slice" {
     var worker = SshWorkspaceWorker{
         .allocator = std.testing.allocator,
@@ -2023,7 +2059,7 @@ test "workspace worker owns one initial terminal slot" {
     _ = &fake_options;
 
     var draft = profile.ProfileDraft{};
-    draft.reset(.ssh);
+    draft.reset();
     profile.setBuffer(&draft.name, "Workspace SSH");
     profile.setBuffer(&draft.host, "example.test");
     profile.setBuffer(&draft.username, "dev");

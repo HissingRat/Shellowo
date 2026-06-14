@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var term_backend = libvterm_backend.Backend{ .allocator = allocator };
 
     var draft = profile.ProfileDraft{};
-    draft.reset(.ssh);
+    draft.reset();
     profile.setBuffer(&draft.name, "Worker Probe");
     profile.setBuffer(&draft.host, argv[1]);
     draft.port = try std.fmt.parseInt(u16, argv[2], 10);

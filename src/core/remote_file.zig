@@ -36,7 +36,6 @@ pub const RemoteFileEntry = struct {
 pub const FileLocation = enum {
     local,
     sftp,
-    ftp,
 };
 
 pub const FilePaneTarget = enum {

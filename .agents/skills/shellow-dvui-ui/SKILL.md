@@ -57,11 +57,6 @@ SSH tab layout:
 - SFTP file panel
 - visible connection status
 
-FTP tab layout:
-
-- file-only workspace
-- no terminal placeholder
-
 ## Interaction Rules
 
 - Buttons that trigger network/file work need a busy/disabled state.

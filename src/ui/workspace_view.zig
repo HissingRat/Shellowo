@@ -25,10 +25,7 @@ pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void
     }, palette));
     defer stage.deinit();
 
-    switch (tab.layout) {
-        .terminal_file => terminalFileWorkspace(app, tab, palette),
-        .file_only => fileOnlyWorkspace(app, tab, palette),
-    }
+    terminalFileWorkspace(app, tab, palette);
 }
 
 fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void {
@@ -104,47 +101,6 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
         .local_width = &layout.local_file_width,
         .columns = &app.config.file_columns,
         .id_extra = 660,
-    })) |intent| app.handleFilePanelIntent(tab.id, intent);
-}
-
-fn fileOnlyWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette) void {
-    const layout = &app.config.workspace;
-    var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .both,
-        .padding = .all(0),
-        .id_extra = 680,
-    });
-    defer shell.deinit();
-
-    status_panel.show(tab, app.sessions.statusPanelSnapshot(tab.id), palette, .{
-        .width = layout.sidebar_width,
-        .id_extra = 690,
-    });
-
-    resize.handle(palette, .{
-        .axis = .vertical,
-        .value = &layout.sidebar_width,
-        .min = min_sidebar_width,
-        .max = max_sidebar_width,
-        .id_extra = 691,
-    });
-
-    var main = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .both,
-        .padding = .all(0),
-        .id_extra = 700,
-    });
-    defer main.deinit();
-
-    var local_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
-    var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
-    if (file_panel.show(tab, palette, .{
-        .app = app,
-        .snapshot = app.filePanelSnapshot(tab.id, &local_entries, &remote_entries),
-        .height = null,
-        .local_width = &layout.local_file_width,
-        .columns = &app.config.file_columns,
-        .id_extra = 710,
     })) |intent| app.handleFilePanelIntent(tab.id, intent);
 }
 

@@ -7,6 +7,11 @@ const ssh_session = @import("ssh_session.zig");
 pub const State = enum(u8) {
     idle,
     starting,
+    resolving,
+    connecting,
+    verifying_host_key,
+    authenticating,
+    opening_shell,
     connected,
     stopping,
     stopped,
@@ -129,6 +134,7 @@ pub const SshSessionWorker = struct {
         var session = ssh_session.SshSession.init(self.allocator);
         defer session.deinit();
 
+        self.setState(.resolving);
         session.open(self.connection, self.options) catch |err| {
             self.last_error = session.last_error orelse err;
             self.setState(.failed);
@@ -313,7 +319,7 @@ test "worker owns a cloned connection profile" {
     _ = &fake_options;
 
     var draft = profile.ProfileDraft{};
-    draft.reset(.ssh);
+    draft.reset();
     profile.setBuffer(&draft.name, "Worker SSH");
     profile.setBuffer(&draft.host, "example.test");
     profile.setBuffer(&draft.username, "dev");
@@ -326,5 +332,5 @@ test "worker owns a cloned connection profile" {
     defer worker.destroy();
 
     try std.testing.expectEqual(State.idle, worker.state());
-    try std.testing.expect(worker.connection.base().host.ptr != connection.base().host.ptr);
+    try std.testing.expect(worker.connection.base.host.ptr != connection.base.host.ptr);
 }

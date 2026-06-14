@@ -84,25 +84,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 - 能上传下载文件
 - 传输状态进入统一 transfer system
 
-## Phase 4: FTP MVP
-
-目标：在 SSH terminal 和 SFTP MVP 稳定后，加入第二种独立会话类型，但不污染 SSH 工作流。
-
-交付：
-
-- FTP 连接
-- FTP 文件浏览
-- FTP 上传下载
-- FTP 新建目录、重命名、删除
-- `file_only` 工作区布局
-
-验收标准：
-
-- FTP 会话可独立打开
-- 不显示终端区
-- 文件操作路径完整可用
-
-## Phase 5: 传输中心与体验打磨
+## Phase 4: 传输中心与体验打磨
 
 目标：从“能用”提升到“顺手”。
 
@@ -122,7 +104,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 - 常见错误能给出清晰提示
 - 桌面体验接近日常使用
 
-## Phase 6: 发布准备
+## Phase 5: 发布准备
 
 目标：形成可分发的桌面版本。
 
@@ -159,8 +141,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 3. 用 `libssh2` 封装打通 SSH connect/auth/PTY shell。
 4. 用 `libvterm` 封装打通 terminal emulator 和终端渲染。
 5. 再接 SFTP 文件面板和 transfer queue。
-6. 再补 FTP 独立会话。
-7. 最后统一传输中心、设置和发布。
+6. 最后统一传输中心、设置和发布。
 
 ## 近期待办
 

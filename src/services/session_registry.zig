@@ -55,7 +55,7 @@ pub const MockSessionRegistry = struct {
     }
 
     pub fn openMockTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile) !u64 {
-        if (self.findByProfileId(connection.base().id)) |existing| {
+        if (self.findByProfileId(connection.base.id)) |existing| {
             self.active_tab_id = existing;
             return existing;
         }
@@ -64,8 +64,7 @@ pub const MockSessionRegistry = struct {
     }
 
     pub fn openSshRuntimeTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile, options: ssh_session.Options) !u64 {
-        if (connection != .ssh) return ssh_session.Error.UnsupportedProfile;
-        if (self.findByProfileId(connection.base().id)) |existing| {
+        if (self.findByProfileId(connection.base.id)) |existing| {
             if (self.reuseExistingTab(existing)) return existing;
             self.closeTab(existing);
         }
@@ -89,8 +88,7 @@ pub const MockSessionRegistry = struct {
     }
 
     pub fn openSshWorkerTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile, options: ssh_session.Options) !u64 {
-        if (connection != .ssh) return ssh_session.Error.UnsupportedProfile;
-        if (self.findByProfileId(connection.base().id)) |existing| {
+        if (self.findByProfileId(connection.base.id)) |existing| {
             if (self.reuseExistingTab(existing)) return existing;
             self.closeTab(existing);
         }
@@ -110,13 +108,17 @@ pub const MockSessionRegistry = struct {
 
     pub fn pollWorkers(self: *MockSessionRegistry) void {
         for (self.tabs.items) |tab| {
-            if (tab.session_type != .ssh) continue;
             const worker = self.sshWorkspace(tab.id) orelse {
                 self.setTabStatus(tab.id, .closed);
                 continue;
             };
             const status: workspace.TabStatus = switch (worker.state()) {
                 .idle, .starting => .connecting,
+                .resolving => .resolving,
+                .connecting => .connecting,
+                .verifying_host_key => .verifying_host_key,
+                .authenticating => .authenticating,
+                .opening_shell => .opening_shell,
                 .connected => .connected,
                 .stopping, .stopped => .closed,
                 .failed => .failed,
@@ -184,18 +186,13 @@ pub const MockSessionRegistry = struct {
 
     pub fn filePanelSnapshot(self: *MockSessionRegistry, tab_id: u64, local_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
         const tab = self.tabById(tab_id) orelse return .{};
-        if (tab.session_type == .ssh) {
-            if (self.sshWorkspace(tab_id)) |worker| {
-                return .{
-                    .local = worker.fileTreeSnapshot(local_buffer),
-                    .remote = worker.filePanelSnapshot(remote_buffer),
-                };
-            }
+        if (self.sshWorkspace(tab_id)) |worker| {
+            return .{
+                .local = worker.fileTreeSnapshot(local_buffer),
+                .remote = worker.filePanelSnapshot(remote_buffer),
+            };
         }
-        const remote = switch (tab.session_type) {
-            .ssh => mockSftpPane(tab.status),
-            .ftp => mockFtpPane(tab.status),
-        };
+        const remote = mockSftpPane(tab.status);
         const local = remoteTreePane(remote, local_buffer);
         return .{ .local = local, .remote = remote };
     }
@@ -225,9 +222,8 @@ pub const MockSessionRegistry = struct {
 
     pub fn terminalSlots(self: *MockSessionRegistry, tab_id: u64, buffer: []terminal_slot.TerminalSlotSummary) []terminal_slot.TerminalSlotSummary {
         if (buffer.len == 0) return buffer[0..0];
-        const tab = self.tabById(tab_id) orelse return buffer[0..0];
+        _ = self.tabById(tab_id) orelse return buffer[0..0];
         const worker = self.sshWorkspace(tab_id) orelse return buffer[0..0];
-        if (tab.session_type != .ssh) return buffer[0..0];
         return worker.slotSummaries(buffer);
     }
 
@@ -250,8 +246,7 @@ pub const MockSessionRegistry = struct {
     }
 
     pub fn createTerminalSlot(self: *MockSessionRegistry, tab_id: u64) !terminal_slot.TerminalSlotId {
-        const tab = self.tabById(tab_id) orelse return ssh_session.Error.ChannelClosed;
-        if (tab.session_type != .ssh) return ssh_session.Error.UnsupportedProfile;
+        _ = self.tabById(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const worker = self.sshWorkspace(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const slot_id = try worker.createSlot();
         try self.setActiveTerminalSlot(tab_id, slot_id);
@@ -329,16 +324,15 @@ pub const MockSessionRegistry = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        const b = connection.base();
+        const b = connection.base;
         const title = try self.allocator.dupe(u8, b.name);
         errdefer self.allocator.free(title);
 
         try self.tabs.append(self.allocator, .{
             .id = id,
             .profile_id = b.id,
-            .session_type = connection.sessionType(),
             .title = title,
-            .layout = workspace.layoutFor(connection.sessionType()),
+            .layout = .terminal_file,
             .status = status,
         });
         self.active_tab_id = id;
@@ -402,7 +396,7 @@ const mock_sftp_entries = [_]remote_file.RemoteFileEntry{
 };
 
 fn mockSftpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
-    if (status == .connecting) {
+    if (status.isOpening()) {
         return .{
             .location = .sftp,
             .path = "/",
@@ -432,17 +426,6 @@ fn mockSftpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
             .can_upload = true,
             .can_download = true,
         },
-    };
-}
-
-fn mockFtpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
-    _ = status;
-    return .{
-        .location = .ftp,
-        .path = "/",
-        .state = .unavailable,
-        .error_summary = "FTP file runtime is planned after SFTP MVP.",
-        .capabilities = .{},
     };
 }
 

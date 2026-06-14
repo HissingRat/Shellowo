@@ -8,8 +8,7 @@ Shellow 当前 workspace 左侧 `status_panel` 已经从静态 mock 升级为会
 
 - `status_panel` 是 workspace 左侧栏。
 - SSH workspace 中显示远端系统监控摘要。
-- FTP workspace 中 monitor 延后，第一阶段不显示系统监控假数据。
-- UI 只消费 snapshot，不直接执行 SSH/SFTP/FTP 操作。
+- UI 只消费 snapshot，不直接执行 SSH/SFTP 操作。
 
 ## 目标
 
@@ -23,7 +22,6 @@ Shellow 当前 workspace 左侧 `status_panel` 已经从静态 mock 升级为会
 
 ## 非目标
 
-- 第一阶段不实现 FTP 远端系统 monitor。
 - 不把监控脚本通过用户当前 terminal PTY 发送。
 - 不在 DVUI widget 中直接打开 SSH channel 或解析远端命令输出。
 - 不暴露 raw libssh2 handle 到 UI 层。
@@ -196,24 +194,12 @@ pub const MonitorSnapshot = struct {
 - 监控采样失败不影响 terminal 输入输出。
 - 弱网络或远端缺命令时 status panel 降级显示。
 
-### 3. FTP Monitor Deferred
-
-- [x] FTP workspace 暂不接系统监控。
-- [x] FTP tab 不显示 SSH monitor 的 CPU/process/disk 假数据。
-- [ ] 如果后续确有 FTP server capability 信息，再单独定义 FTP snapshot。
-
-验收：
-
-- FTP tab 不出现 terminal 或 SSH monitor 假信息。
-- FTP file-only workspace 可以隐藏 status panel 的系统监控区，或显示 unavailable 空态。
-
 ## UI 规则
 
 - 左侧栏保持紧凑，不做大卡片。
 - 控件以双列 rows、progress bar、network chart、compact table 为主。
 - 长 host/title/cmd 需要截断或稳定宽度，不能撑宽 panel。
 - unavailable 值显示 `--`，整块长期 unavailable 时隐藏 section。
-- SSH 与 FTP 显示内容按 session type 分支，不做伪统一；FTP monitor 第一阶段保持 deferred。
 
 ## 质量检查
 

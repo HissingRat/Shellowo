@@ -9,7 +9,6 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - 一个连接列表
 - 一个多标签工作区
 - SSH 会话中终端与 SFTP 文件联动
-- FTP 会话中只呈现文件管理
 - 上传下载任务全局可见
 - 连接、会话、传输和窗口状态可恢复
 
@@ -21,18 +20,19 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - DVUI 依赖
 - SDL3 backend
 - 原生工作台布局
-- SSH/FTP 连接配置 CRUD
+- SSH 连接配置 CRUD
 - 非敏感 profile JSON 持久化
-- mock workspace tabs
-- transfer panel 占位
+- SSH workspace tab 与 libssh2-backed SSH runtime
+- PTY shell channel、libvterm terminal rendering、resize/input/selection 基础路径
+- SFTP 文件面板：远端目录树、右侧文件表、基础 mutation、上传/下载任务
+- 全局 transfer task 摘要、进度、取消和文件面板内任务弹窗
+- 设置与主题系统基础：`owoConfig.json`、Light/Dark、窗口/布局尺寸和下载路径持久化
 
 尚未具备：
 
-- SSH / SFTP / FTP 协议接入
-- 终端渲染与 PTY 尺寸同步
-- 真实文件管理器
-- 真实传输中心
-- 设置与主题系统
+- 安全凭据存储与发布级 profile secret 策略
+- 完整传输中心体验，例如速度、重试、历史和更细的 busy 状态
+- 远程编辑器、权限编辑等高级文件管理能力
 - 发布打包流程
 
 ## 3. 技术路线
@@ -47,7 +47,6 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 
 - SSH client / PTY channel 能力
 - SFTP client 能力
-- FTP/FTPS client 能力
 - 本地配置存储格式
 - 可选的系统钥匙串或平台安全存储
 - 打包与签名流程
@@ -97,7 +96,6 @@ DVUI App Shell
 - `Protocol Controllers`
   - SSH shell controller
   - SFTP file controller
-  - FTP file controller
 - `Protocol Clients`
   - 第三方或自研协议实现
 
@@ -135,7 +133,6 @@ Shellow/
     protocols/
       ssh/
       sftp/
-      ftp/
     ui/
       home.zig
       workspace.zig
@@ -149,16 +146,9 @@ Shellow/
 
 ## 6. 会话模型
 
-### 6.1 Session Type
+### 6.1 Profile
 
-```zig
-pub const SessionType = enum {
-    ssh,
-    ftp,
-};
-```
-
-### 6.2 Profile
+Shellow 当前只支持 SSH 连接，profile 模型直接表达 SSH 所需字段，不再额外保存 `SessionType`。
 
 ```zig
 pub const BaseProfile = struct {
@@ -168,28 +158,21 @@ pub const BaseProfile = struct {
     port: u16,
 };
 
-pub const SshProfile = struct {
+pub const ConnectionProfile = struct {
     base: BaseProfile,
     username: []const u8,
     auth_type: AuthType,
     sftp_enabled: bool,
 };
-
-pub const FtpProfile = struct {
-    base: BaseProfile,
-    username: []const u8,
-    secure: bool,
-};
 ```
 
 敏感字段可以在用户选择持久化时进入 profile 存储，但必须通过 Shellow-owned profile repository/security 边界。密码、私钥 passphrase、临时凭据不能在 UI、日志或普通业务对象里明文散落。
 
-### 6.3 Workspace Tab
+### 6.2 Workspace Tab
 
 ```zig
 pub const WorkspaceLayout = enum {
     terminal_file,
-    file_only,
 };
 
 pub const TabStatus = enum {
@@ -201,23 +184,14 @@ pub const TabStatus = enum {
 };
 ```
 
-## 7. 为什么 SSH/SFTP 与 FTP 必须拆开
+## 7. SSH/SFTP 工作区边界
 
-SSH/SFTP：
+SSH/SFTP 共享认证上下文和目标主机，但终端、文件面板和传输任务仍保持清晰边界：
 
-- 同一个认证上下文
-- 同一个目标主机
-- 终端与文件面板天然联动
-- 后续可扩展端口转发、远端命令、路径跟随
-
-FTP：
-
-- 独立协议
-- 无 shell
-- 文件操作是完整主路径
-- FTPS 仍属于 FTP 家族，不应嫁接到 SSH 模型中
-
-不要为了“统一文件协议”做一个过大的 `RemoteSession`。可以共享 `RemoteFileEntry`、`TransferTask`、`FileOperation` 等数据形状，但 controller 层保持分离。
+- SSH shell controller 只负责 PTY 字节流。
+- SFTP file controller 负责远端文件 list/read/write/upload/download。
+- Transfer system 负责上传下载进度和任务生命周期。
+- UI 只消费 snapshot 并发出 intent，不直接持有协议 client。
 
 ## 8. 终端边界
 
@@ -238,7 +212,7 @@ terminal widget
 
 ## 9. 文件与传输边界
 
-文件操作共享数据形状，但不同协议控制器独立实现：
+SFTP 文件操作通过 Shellow-owned controller 暴露：
 
 - list
 - stat
@@ -278,11 +252,6 @@ SSH/SFTP 工作区：
 - 可切换终端全屏或文件全屏
 - 后续可做路径跟随
 
-FTP 工作区：
-
-- file-only 布局
-- 不显示终端区
-
 ## 11. 存储设计
 
 第一阶段本地持久化对象：
@@ -298,7 +267,8 @@ FTP 工作区：
 
 - profile 可以保存用户选择持久化的 secret。
 - 密码、passphrase、私钥内容必须通过 profile repository/security 层定义的存储格式处理，不直接明文写入 JSON。
-- 可以先支持每次连接输入密码，再评估平台安全存储。
+- 当前实现支持可选 Master Password：启用后 `data/profiles.json` 存为 Shellowo profile vault object，使用 Argon2id 从用户密码和随机 salt 派生密钥，并用 XChaCha20-Poly1305 加密 profile JSON array。
+- 未启用 Master Password 时仍兼容旧的明文 profile array；后续仍可评估平台安全存储。
 
 ## 12. 实施原则
 

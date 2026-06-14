@@ -13,6 +13,7 @@ pub const Error = error{
 
 pub const State = enum {
     idle,
+    resolving,
     connecting,
     verifying_host_key,
     authenticating,
@@ -65,29 +66,28 @@ pub const SshSession = struct {
     }
 
     pub fn open(self: *SshSession, connection: profile.ConnectionProfile, options: Options) Error!void {
-        if (connection != .ssh) return Error.UnsupportedProfile;
-        const ssh_profile = connection.ssh;
-
-        const auth = try authFromProfile(ssh_profile);
+        const auth = try authFromProfile(connection);
         const endpoint = ssh.Endpoint{
-            .host = ssh_profile.base.host,
-            .port = ssh_profile.base.port,
+            .host = connection.base.host,
+            .port = connection.base.port,
         };
 
-        self.state = .connecting;
+        self.state = .resolving;
         std.log.debug("ssh session connecting host={s} port={d} user={s}", .{
             endpoint.host,
             endpoint.port,
-            ssh_profile.base.username,
+            connection.base.username,
         });
 
-        const client = options.connector.connect(self.allocator, .{
+        const connect_options = ssh.ConnectOptions{
             .endpoint = endpoint,
             .auth = auth,
             .host_key_policy = options.host_key_policy,
             .host_key_verifier = options.host_key_verifier,
+            .progress_reporter = self.progressReporter(),
             .timeout_ms = @intCast(options.timeout_ms),
-        }) catch |err| {
+        };
+        const client = options.connector.connect(self.allocator, connect_options) catch |err| {
             std.log.debug("ssh session connect failed host={s} port={d} err={s}", .{
                 endpoint.host,
                 endpoint.port,
@@ -210,9 +210,29 @@ pub const SshSession = struct {
         self.last_error = err;
         self.state = .failed;
     }
+
+    fn progressReporter(self: *SshSession) ssh.ConnectProgressReporter {
+        return .{ .context = self, .vtable = &progress_vtable };
+    }
+
+    fn reportProgress(context: *anyopaque, stage: ssh.ConnectStage) void {
+        const self: *SshSession = @ptrCast(@alignCast(context));
+        self.state = stateFromConnectStage(stage);
+    }
 };
 
-pub fn authFromProfile(connection: profile.SshProfile) Error!ssh.Auth {
+const progress_vtable: ssh.ConnectProgressReporter.VTable = .{ .report = SshSession.reportProgress };
+
+fn stateFromConnectStage(stage: ssh.ConnectStage) State {
+    return switch (stage) {
+        .resolving => .resolving,
+        .connecting => .connecting,
+        .verifying_host_key => .verifying_host_key,
+        .authenticating => .authenticating,
+    };
+}
+
+pub fn authFromProfile(connection: profile.ConnectionProfile) Error!ssh.Auth {
     return switch (connection.auth_type) {
         .password => if (connection.password.len == 0)
             Error.MissingCredentials
@@ -221,8 +241,12 @@ pub fn authFromProfile(connection: profile.SshProfile) Error!ssh.Auth {
         .private_key => if (connection.private_key_path.len == 0)
             Error.MissingCredentials
         else
-            .{ .private_key = .{ .username = connection.base.username, .private_key_path = connection.private_key_path } },
-        .agent => .agent,
+            .{ .private_key = .{
+                .username = connection.base.username,
+                .private_key_path = connection.private_key_path,
+                .passphrase = if (connection.private_key_passphrase.len == 0) null else connection.private_key_passphrase,
+            } },
+        .agent => .{ .agent = .{ .username = connection.base.username } },
     };
 }
 
@@ -276,8 +300,52 @@ test "session resize updates emulator and shell together" {
     try std.testing.expectEqual(@as(u16, 40), fake.term_context.size.rows);
 }
 
+test "private key auth from profile includes path and passphrase" {
+    const item = profile.ConnectionProfile{
+        .base = .{
+            .id = 1,
+            .name = "Key Login",
+            .host = "example.test",
+            .port = 22,
+            .username = "dev",
+        },
+        .auth_type = .private_key,
+        .private_key_path = "/Users/dev/.ssh/id_ed25519",
+        .private_key_passphrase = "phrase",
+    };
+
+    const auth = try authFromProfile(item);
+    switch (auth) {
+        .private_key => |key| {
+            try std.testing.expectEqualStrings("dev", key.username);
+            try std.testing.expectEqualStrings("/Users/dev/.ssh/id_ed25519", key.private_key_path);
+            try std.testing.expectEqualStrings("phrase", key.passphrase orelse "");
+        },
+        else => return error.UnexpectedAuth,
+    }
+}
+
+test "agent auth from profile includes username" {
+    const item = profile.ConnectionProfile{
+        .base = .{
+            .id = 1,
+            .name = "Agent Login",
+            .host = "example.test",
+            .port = 22,
+            .username = "dev",
+        },
+        .auth_type = .agent,
+    };
+
+    const auth = try authFromProfile(item);
+    switch (auth) {
+        .agent => |agent| try std.testing.expectEqualStrings("dev", agent.username),
+        else => return error.UnexpectedAuth,
+    }
+}
+
 fn fakeProfile(allocator: std.mem.Allocator) !profile.ConnectionProfile {
-    return .{ .ssh = .{
+    return .{
         .base = .{
             .id = 1,
             .name = try allocator.dupe(u8, "Test SSH"),
@@ -289,7 +357,8 @@ fn fakeProfile(allocator: std.mem.Allocator) !profile.ConnectionProfile {
         .auth_type = .password,
         .password = try allocator.dupe(u8, "pw"),
         .private_key_path = try allocator.dupe(u8, ""),
-    } };
+        .private_key_passphrase = try allocator.dupe(u8, ""),
+    };
 }
 
 const FakeRuntime = struct {

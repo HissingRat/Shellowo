@@ -132,7 +132,11 @@ pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, opts
 
     const transcript = switch (tab.status) {
         .idle => "Session is idle.\n",
-        .connecting => "Connecting SSH session...\n",
+        .resolving => "Resolving SSH host...\n",
+        .connecting => "Connecting SSH socket...\n",
+        .verifying_host_key => "Verifying SSH host key...\n",
+        .authenticating => "Authenticating SSH session...\n",
+        .opening_shell => "Opening SSH shell...\n",
         .connected => "SSH session connected. Waiting for terminal output...\n",
         .failed => failureText(opts.failure),
         .closed => "SSH session closed.\n",
@@ -1230,7 +1234,6 @@ fn viewportState(data: *dvui.WidgetData) *TerminalViewport {
 }
 
 fn syncTerminalResize(app: *App, tab: workspace.WorkspaceTab, viewport: *TerminalViewport, crs: dvui.RectScale) void {
-    if (tab.session_type != .ssh) return;
     const size = terminalGridSize(crs) orelse return;
     if (sameTerminalSize(viewport.last_size, size)) return;
 
@@ -1291,8 +1294,6 @@ fn visibleStartRow(total_rows: usize, rows: usize, scroll_offset: usize) usize {
 }
 
 fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.WidgetData, viewport: *TerminalViewport, snapshot: ?terminal.Snapshot) void {
-    if (tab.session_type != .ssh) return;
-
     dvui.tabIndexSet(data.id, data.options.tab_index, data.rectScale().r);
     if (dvui.focusedWidgetId() == data.id) {
         dvui.wantTextInput(terminalTextInputRect(data, snapshot, viewport).toNatural());

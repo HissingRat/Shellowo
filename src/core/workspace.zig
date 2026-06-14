@@ -1,20 +1,20 @@
-const profile = @import("profile.zig");
-
 pub const WorkspaceLayout = enum {
     terminal_file,
-    file_only,
 
     pub fn label(self: WorkspaceLayout) []const u8 {
         return switch (self) {
             .terminal_file => "Terminal + Files",
-            .file_only => "Files",
         };
     }
 };
 
 pub const TabStatus = enum {
     idle,
+    resolving,
     connecting,
+    verifying_host_key,
+    authenticating,
+    opening_shell,
     connected,
     failed,
     closed,
@@ -22,10 +22,21 @@ pub const TabStatus = enum {
     pub fn label(self: TabStatus) []const u8 {
         return switch (self) {
             .idle => "idle",
+            .resolving => "resolving",
             .connecting => "connecting",
+            .verifying_host_key => "verifying host",
+            .authenticating => "authenticating",
+            .opening_shell => "opening shell",
             .connected => "connected",
             .failed => "failed",
             .closed => "closed",
+        };
+    }
+
+    pub fn isOpening(self: TabStatus) bool {
+        return switch (self) {
+            .resolving, .connecting, .verifying_host_key, .authenticating, .opening_shell => true,
+            else => false,
         };
     }
 };
@@ -33,15 +44,7 @@ pub const TabStatus = enum {
 pub const WorkspaceTab = struct {
     id: u64,
     profile_id: u64,
-    session_type: profile.SessionType,
     title: []const u8,
     layout: WorkspaceLayout,
     status: TabStatus = .connected,
 };
-
-pub fn layoutFor(session_type: profile.SessionType) WorkspaceLayout {
-    return switch (session_type) {
-        .ssh => .terminal_file,
-        .ftp => .file_only,
-    };
-}

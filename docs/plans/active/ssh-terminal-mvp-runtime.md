@@ -20,7 +20,6 @@ Shellow 已有第一版 `libssh2` wrapper 和 `libvterm` wrapper，但 workspace
 
 ## 非目标
 
-- 不在 SSH terminal MVP 中实现 FTP。
 - 不把 SFTP 文件传输塞进 shell channel。
 - profile 可以保存用户选择持久化的 secret，但必须通过 Shellow-owned security/profile repository 边界，不能把明文 secret 散落到 UI、日志或普通业务对象外。
 - 不为了 UI 方便暴露 raw `LIBSSH2_*` 或 raw `VTerm*` handle。
@@ -65,7 +64,7 @@ DVUI workspace
   - [x] `trust_on_first_use`: missing 时返回需要用户确认的状态，确认后写入。
   - [x] `insecure_accept_any`: 仅允许开发/显式用户选择。
 - 将 libssh2 error code 映射成 Shellow user-facing error。
-- 保持 agent auth 未完成时显式 `UnsupportedAuth`，不要静默 fallback。
+- agent auth 通过 libssh2 agent API 遍历 SSH agent identities，失败时显式返回认证失败。
 
 验收：
 
@@ -93,10 +92,10 @@ DVUI workspace
 
 - [x] 定义 runtime 状态：
   - [x] `idle`
-  - [ ] `resolving`
+  - [x] `resolving`
   - [x] `connecting`
-  - [ ] `verifying_host_key`
-  - [ ] `authenticating`
+  - [x] `verifying_host_key`
+  - [x] `authenticating`
   - [x] `opening_shell`
   - [x] `connected`
   - [x] `closing`
@@ -126,9 +125,7 @@ DVUI workspace
 
 - [x] 保留 `WorkspaceTab` 作为 UI 可消费摘要。
 - [x] registry 内部保存 runtime handle，但 UI 不直接拥有 protocol object。
-- `openProfile` 改成根据 profile type 分发：
-  - [x] SSH -> create `SshSession`
-  - FTP -> 暂时仍 mock 或明确 unavailable
+- `openProfile` 打开 SSH profile 时创建 `SshSession`。
 - [x] active tab 与 runtime id 绑定。
 - mock transcript 仅作为空状态/测试 fallback，不作为真实 SSH 路径。
 
@@ -138,15 +135,14 @@ DVUI workspace
 - `session_registry.MockSessionRegistry` 已有 `openSshWorkerTab()` 后台 worker 入口。
 - `App` 已能生成真实 SSH runtime options，包括 libssh2 connector、libvterm terminal factory 和 known_hosts verifier。
 - UI 的 `openProfile()` 对 SSH profile 已切到 `openSshWorkerTab()`。
+- profile 配置已支持 password/private-key auth 类型、private key path 和可选 passphrase，并会传入 Shellow SSH runtime。
 - worker 已支持 outbound input queue，UI 可通过最小命令栏向 SSH PTY 写入一行输入。
-- FTP profile 仍使用 mock tab。
-- 开发期 SSH runtime 使用 TOFU 自动信任 missing host key，并在 app 关闭前持久化 known_hosts；正式确认 UI 仍待接入。
+- SSH runtime 使用 TOFU 时会把 missing host key 暂存到 known_hosts 边界，UI 确认后写入并重连当前失败 tab。
 - `zig build ssh-probe -- 10.157.123.76 8022 root 123456` 已通过 Shellow 自己的 libssh2 backend 完成 connect/auth/open shell/write/read smoke test，读回 `shellow_probe_okLinux`。
 
 验收：
 
 - SSH profile 打开后创建真实 runtime。
-- FTP profile 不污染 SSH runtime 类型。
 
 ### 5. 接 terminal viewport 与 resize 同步
 
@@ -172,10 +168,10 @@ DVUI workspace
 - [x] `terminal_panel.zig` 改为可选消费 snapshot。
 - 初版先支持：
   - [x] ASCII codepoint
-  - [ ] UTF-8 codepoint
-  - [ ] default/indexed/rgb colors
-  - [ ] bold/italic/underline/reverse
-  - [ ] cursor
+  - [x] UTF-8 codepoint
+  - [x] default/indexed/rgb colors
+  - [x] bold/italic/underline/reverse
+  - [x] cursor
 - 之后再加：
   - scrollback
   - selection/copy
@@ -270,7 +266,7 @@ zig build
 - [x] shell channel 可打开并写入命令。
 - [x] shell output 可读回并进入 terminal/render 路径。
 - [ ] 键盘级 terminal 输入、特殊键和 paste。
-- [ ] 完整 color/cursor/UTF-8 渲染。
+- [x] 初版 color/cursor/UTF-8 渲染。
 
 ### M3: Resize Stable
 
