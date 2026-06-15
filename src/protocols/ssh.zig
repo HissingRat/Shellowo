@@ -13,6 +13,7 @@ pub const Error = error{
     ChannelClosed,
     SftpUnavailable,
     TransferFailed,
+    TransferCanceled,
     WouldBlock,
 };
 
@@ -153,6 +154,19 @@ pub const ExecOptions = struct {
     timeout_ms: u32 = 1_000,
 };
 
+pub const FileProgressReporter = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        report: *const fn (*anyopaque, u64, ?u64) bool,
+    };
+
+    pub fn report(self: FileProgressReporter, completed_bytes: u64, total_bytes: ?u64) bool {
+        return self.vtable.report(self.context, completed_bytes, total_bytes);
+    }
+};
+
 pub const SessionState = enum {
     idle,
     connecting,
@@ -200,12 +214,13 @@ pub const Sftp = struct {
 
     pub const VTable = struct {
         list: *const fn (*anyopaque, std.mem.Allocator, []const u8) Error![]RemoteFileEntry,
-        readFile: *const fn (*anyopaque, std.mem.Allocator, []const u8) Error![]u8,
-        writeFile: *const fn (*anyopaque, []const u8, []const u8) Error!void,
+        readFile: *const fn (*anyopaque, std.mem.Allocator, []const u8, ?FileProgressReporter) Error![]u8,
+        writeFile: *const fn (*anyopaque, []const u8, []const u8, ?FileProgressReporter) Error!void,
         remove: *const fn (*anyopaque, []const u8) Error!void,
         removeDir: *const fn (*anyopaque, []const u8) Error!void,
         mkdir: *const fn (*anyopaque, []const u8) Error!void,
         rename: *const fn (*anyopaque, []const u8, []const u8) Error!void,
+        chmod: *const fn (*anyopaque, []const u8, u32) Error!void,
         close: *const fn (*anyopaque) void,
     };
 
@@ -214,11 +229,19 @@ pub const Sftp = struct {
     }
 
     pub fn readFile(self: Sftp, allocator: std.mem.Allocator, path: []const u8) Error![]u8 {
-        return self.vtable.readFile(self.context, allocator, path);
+        return self.vtable.readFile(self.context, allocator, path, null);
+    }
+
+    pub fn readFileWithProgress(self: Sftp, allocator: std.mem.Allocator, path: []const u8, reporter: FileProgressReporter) Error![]u8 {
+        return self.vtable.readFile(self.context, allocator, path, reporter);
     }
 
     pub fn writeFile(self: Sftp, path: []const u8, bytes: []const u8) Error!void {
-        return self.vtable.writeFile(self.context, path, bytes);
+        return self.vtable.writeFile(self.context, path, bytes, null);
+    }
+
+    pub fn writeFileWithProgress(self: Sftp, path: []const u8, bytes: []const u8, reporter: FileProgressReporter) Error!void {
+        return self.vtable.writeFile(self.context, path, bytes, reporter);
     }
 
     pub fn remove(self: Sftp, path: []const u8) Error!void {
@@ -235,6 +258,10 @@ pub const Sftp = struct {
 
     pub fn rename(self: Sftp, old_path: []const u8, new_path: []const u8) Error!void {
         return self.vtable.rename(self.context, old_path, new_path);
+    }
+
+    pub fn chmod(self: Sftp, path: []const u8, permissions: u32) Error!void {
+        return self.vtable.chmod(self.context, path, permissions);
     }
 
     pub fn close(self: Sftp) void {

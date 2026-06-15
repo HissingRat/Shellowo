@@ -124,6 +124,12 @@ pub const FileRenameIntent = struct {
     new_name: []const u8,
 };
 
+pub const FileChmodIntent = struct {
+    pane: FilePaneTarget,
+    path: []const u8,
+    permissions: u32,
+};
+
 pub const FileTransferIntent = struct {
     local_path: []const u8,
     remote_path: []const u8,
@@ -157,6 +163,7 @@ pub const FilePanelIntent = union(enum) {
     create_file: FileCreateFileIntent,
     create_directory: FileCreateDirectoryIntent,
     rename: FileRenameIntent,
+    chmod: FileChmodIntent,
     delete: FileEntryTarget,
     upload: FileTransferIntent,
     upload_many: FileBatchTransferIntent,

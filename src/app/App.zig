@@ -27,6 +27,12 @@ const ProfileSecurity = enum {
     unlocked_encrypted,
 };
 
+const TransferRetryRecord = struct {
+    id: u64,
+    tab_id: u64,
+    intent: remote_file.FilePanelIntent,
+};
+
 allocator: std.mem.Allocator,
 io: ?std.Io = null,
 config: app_config.Config,
@@ -36,6 +42,7 @@ sessions: session_registry.MockSessionRegistry,
 ssh_backend: libssh2_backend.Backend,
 terminal_backend: libvterm_backend.Backend,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
+transfer_retries: std.ArrayList(TransferRetryRecord) = .empty,
 native_events: std.ArrayList(native_event.NativeEvent) = .empty,
 file_drag_active: bool = false,
 file_drag_point: native_event.Point = .{},
@@ -62,6 +69,7 @@ master_password_disable: [128]u8 = std.mem.zeroes([128]u8),
 
 const profiles_path = "data/profiles.json";
 const known_hosts_path = "data/known_hosts.json";
+const transfer_speed_sample_ns: i128 = 500 * std.time.ns_per_ms;
 
 pub fn initMemory(allocator: std.mem.Allocator) !App {
     var config = try app_config.Config.load(allocator, null);
@@ -128,6 +136,10 @@ pub fn deinit(self: *App) void {
         self.allocator.free(task.title);
     }
     self.transfers.deinit(self.allocator);
+    for (self.transfer_retries.items) |record| {
+        self.freeRetryIntent(record.intent);
+    }
+    self.transfer_retries.deinit(self.allocator);
     self.clearNativeEvents();
     self.native_events.deinit(self.allocator);
     self.config.deinit();
@@ -575,12 +587,12 @@ pub fn filePanelSnapshot(self: *App, tab_id: u64, tree_buffer: []remote_file.Rem
 
 pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePanelIntent) void {
     var queued_intent = intent;
-    const transfer_id = self.recordFileTransfer(&queued_intent) catch {
+    const transfer_id = self.recordFileTransfer(tab_id, &queued_intent) catch {
         self.message = "Could not create transfer task";
         return;
     };
     self.sessions.handleFilePanelIntent(tab_id, queued_intent) catch {
-        if (transfer_id) |id| self.removeTransfer(id);
+        if (transfer_id) |id| self.dismissTransfer(id);
         self.message = "File action is not available yet";
         return;
     };
@@ -589,7 +601,12 @@ pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePa
 
 pub fn cancelTransfer(self: *App, transfer_id: u64) void {
     self.sessions.cancelTransfer(transfer_id);
-    self.removeTransfer(transfer_id);
+    if (self.transferIndex(transfer_id)) |idx| {
+        self.transfers.items[idx].status = .canceled;
+        self.transfers.items[idx].progress = 1;
+        self.transfers.items[idx].finished_ns = nowNs();
+        self.transfers.items[idx].bytes_per_sec = 0;
+    }
     self.message = "Transfer canceled";
 }
 
@@ -597,54 +614,131 @@ pub fn dismissTransfer(self: *App, transfer_id: u64) void {
     self.removeTransfer(transfer_id);
 }
 
+pub fn retryTransfer(self: *App, transfer_id: u64) void {
+    const idx = self.transferIndex(transfer_id) orelse return;
+    const retry_record = self.retryRecord(transfer_id) orelse return;
+    var queued_intent = self.cloneRetryIntent(retry_record.intent) catch {
+        self.message = "Could not retry transfer";
+        return;
+    };
+    errdefer self.freeRetryIntent(queued_intent);
+
+    const now = nowNs();
+    const new_id = self.next_transfer_id;
+    self.next_transfer_id += 1;
+    setTransferIntentId(&queued_intent, new_id);
+
+    const new_retry_intent = self.cloneRetryIntent(retry_record.intent) catch {
+        self.message = "Could not retry transfer";
+        return;
+    };
+    errdefer self.freeRetryIntent(new_retry_intent);
+
+    self.sessions.handleFilePanelIntent(retry_record.tab_id, queued_intent) catch {
+        self.message = "Retry is not available";
+        return;
+    };
+    self.freeRetryIntent(queued_intent);
+
+    self.freeRetryIntent(retry_record.intent);
+    self.transfer_retries.items[self.retryRecordIndex(transfer_id).?] = .{
+        .id = new_id,
+        .tab_id = retry_record.tab_id,
+        .intent = new_retry_intent,
+    };
+
+    self.transfers.items[idx].id = new_id;
+    self.transfers.items[idx].status = .running;
+    self.transfers.items[idx].progress = 0;
+    self.transfers.items[idx].bytes_done = 0;
+    self.transfers.items[idx].bytes_total = null;
+    self.transfers.items[idx].bytes_per_sec = 0;
+    self.transfers.items[idx].started_ns = now;
+    self.transfers.items[idx].finished_ns = null;
+    self.transfers.items[idx].last_sample_ns = now;
+    self.transfers.items[idx].last_sample_bytes = 0;
+    self.transfers.items[idx].attempt += 1;
+    self.message = "Transfer retry started";
+}
+
+pub fn remoteDownloadBusy(self: *const App, remote_path: []const u8, name: []const u8) bool {
+    for (self.transfers.items) |task| {
+        if (task.status != .pending and task.status != .running) continue;
+        const record = self.retryRecord(task.id) orelse continue;
+        switch (record.intent) {
+            .download => |item| {
+                if (std.mem.eql(u8, item.remote_path, remote_path) and std.mem.eql(u8, item.name, name)) return true;
+            },
+            .download_many => |item| {
+                if (!std.mem.eql(u8, item.remote_path, remote_path)) continue;
+                for (item.entries) |entry| {
+                    if (std.mem.eql(u8, entry.name, name)) return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+pub fn transferBusyInRemotePath(self: *const App, remote_path: []const u8) bool {
+    for (self.transfers.items) |task| {
+        if (task.status != .pending and task.status != .running) continue;
+        const record = self.retryRecord(task.id) orelse continue;
+        switch (record.intent) {
+            .download => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
+            .download_many => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
+            .upload => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
+            .upload_many => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
 fn syncTransferProgress(self: *App) void {
     var buffer: [128]transfer.TransferProgress = undefined;
     const updates = self.sessions.transferProgress(&buffer);
     for (updates) |update| {
         const idx = self.transferIndex(update.id) orelse continue;
-        if (update.status == .completed or update.status == .canceled) {
-            self.removeTransferAt(idx);
-            continue;
-        }
-        self.transfers.items[idx].status = update.status;
-        self.transfers.items[idx].progress = update.progress;
+        self.applyTransferProgress(idx, update);
     }
 }
 
-fn recordFileTransfer(self: *App, intent: *remote_file.FilePanelIntent) !?u64 {
+fn recordFileTransfer(self: *App, tab_id: u64, intent: *remote_file.FilePanelIntent) !?u64 {
     switch (intent.*) {
         .upload => |*upload| {
-            const id = try self.appendNamedTransfer(.upload, upload.name);
+            const id = try self.appendNamedTransfer(tab_id, .upload, upload.name, intent.*);
             upload.transfer_id = id;
             return id;
         },
         .upload_many => |*upload_many| {
             if (upload_many.entries.len == 1) {
-                const id = try self.appendNamedTransfer(.upload, upload_many.entries[0].name);
+                const id = try self.appendNamedTransfer(tab_id, .upload, upload_many.entries[0].name, intent.*);
                 upload_many.transfer_id = id;
                 return id;
             } else {
                 var title_buf: [64]u8 = undefined;
                 const title = try std.fmt.bufPrint(&title_buf, "Upload {d} items", .{upload_many.entries.len});
-                const id = try self.appendTransferTitle(.upload, title);
+                const id = try self.appendTransferTitle(tab_id, .upload, title, intent.*);
                 upload_many.transfer_id = id;
                 return id;
             }
         },
         .download => |*download| {
-            const id = try self.appendNamedTransfer(.download, download.name);
+            const id = try self.appendNamedTransfer(tab_id, .download, download.name, intent.*);
             download.transfer_id = id;
             return id;
         },
         .download_many => |*download_many| {
             if (download_many.entries.len == 1) {
-                const id = try self.appendNamedTransfer(.download, download_many.entries[0].name);
+                const id = try self.appendNamedTransfer(tab_id, .download, download_many.entries[0].name, intent.*);
                 download_many.transfer_id = id;
                 return id;
             } else {
                 var title_buf: [64]u8 = undefined;
                 const title = try std.fmt.bufPrint(&title_buf, "Download {d} items", .{download_many.entries.len});
-                const id = try self.appendTransferTitle(.download, title);
+                const id = try self.appendTransferTitle(tab_id, .download, title, intent.*);
                 download_many.transfer_id = id;
                 return id;
             }
@@ -653,32 +747,65 @@ fn recordFileTransfer(self: *App, intent: *remote_file.FilePanelIntent) !?u64 {
     }
 }
 
-fn appendNamedTransfer(self: *App, direction: transfer.TransferDirection, name: []const u8) !u64 {
+fn appendNamedTransfer(self: *App, tab_id: u64, direction: transfer.TransferDirection, name: []const u8, intent: remote_file.FilePanelIntent) !u64 {
     const action = switch (direction) {
         .download => "Download",
         .upload => "Upload",
     };
     const title = try std.fmt.allocPrint(self.allocator, "{s} '{s}'", .{ action, name });
-    return self.appendOwnedTransferTitle(direction, title);
+    return self.appendOwnedTransferTitle(tab_id, direction, title, intent);
 }
 
-fn appendTransferTitle(self: *App, direction: transfer.TransferDirection, title_text: []const u8) !u64 {
+fn appendTransferTitle(self: *App, tab_id: u64, direction: transfer.TransferDirection, title_text: []const u8, intent: remote_file.FilePanelIntent) !u64 {
     const title = try self.allocator.dupe(u8, title_text);
-    return self.appendOwnedTransferTitle(direction, title);
+    return self.appendOwnedTransferTitle(tab_id, direction, title, intent);
 }
 
-fn appendOwnedTransferTitle(self: *App, direction: transfer.TransferDirection, title: []const u8) !u64 {
+fn appendOwnedTransferTitle(self: *App, tab_id: u64, direction: transfer.TransferDirection, title: []const u8, intent: remote_file.FilePanelIntent) !u64 {
     errdefer self.allocator.free(title);
+    const retry_intent = try self.cloneRetryIntent(intent);
+    errdefer self.freeRetryIntent(retry_intent);
     const id = self.next_transfer_id;
+    const now = nowNs();
     try self.transfers.append(self.allocator, .{
         .id = id,
+        .tab_id = tab_id,
         .title = title,
         .direction = direction,
         .status = .running,
         .progress = 0,
+        .started_ns = now,
+        .last_sample_ns = now,
     });
+    errdefer _ = self.transfers.pop();
+    try self.transfer_retries.append(self.allocator, .{ .id = id, .tab_id = tab_id, .intent = retry_intent });
     self.next_transfer_id += 1;
     return id;
+}
+
+fn applyTransferProgress(self: *App, idx: usize, update: transfer.TransferProgress) void {
+    var task = &self.transfers.items[idx];
+    const now = nowNs();
+    const is_terminal = update.status == .completed or update.status == .failed or update.status == .canceled;
+    if (!is_terminal and update.bytes_done >= task.last_sample_bytes and now - task.last_sample_ns >= transfer_speed_sample_ns) {
+        const delta_bytes = update.bytes_done - task.last_sample_bytes;
+        const delta_ns = now - task.last_sample_ns;
+        if (delta_ns > 0) {
+            task.bytes_per_sec = @as(f32, @floatFromInt(delta_bytes)) / (@as(f32, @floatFromInt(delta_ns)) / @as(f32, @floatFromInt(std.time.ns_per_s)));
+        }
+        task.last_sample_ns = now;
+        task.last_sample_bytes = update.bytes_done;
+    }
+    task.status = update.status;
+    task.progress = update.progress;
+    task.bytes_done = update.bytes_done;
+    task.bytes_total = update.bytes_total;
+    if (is_terminal) {
+        if (task.finished_ns == null) task.finished_ns = now;
+        task.last_sample_ns = now;
+        task.last_sample_bytes = update.bytes_done;
+        task.bytes_per_sec = 0;
+    }
 }
 
 fn transferIndex(self: *const App, transfer_id: u64) ?usize {
@@ -694,8 +821,111 @@ fn removeTransfer(self: *App, transfer_id: u64) void {
 }
 
 fn removeTransferAt(self: *App, idx: usize) void {
+    const id = self.transfers.items[idx].id;
     self.allocator.free(self.transfers.items[idx].title);
     _ = self.transfers.orderedRemove(idx);
+    if (self.retryRecordIndex(id)) |record_idx| {
+        self.freeRetryIntent(self.transfer_retries.items[record_idx].intent);
+        _ = self.transfer_retries.orderedRemove(record_idx);
+    }
+}
+
+fn retryRecord(self: *const App, transfer_id: u64) ?TransferRetryRecord {
+    const idx = self.retryRecordIndex(transfer_id) orelse return null;
+    return self.transfer_retries.items[idx];
+}
+
+fn retryRecordIndex(self: *const App, transfer_id: u64) ?usize {
+    for (self.transfer_retries.items, 0..) |record, idx| {
+        if (record.id == transfer_id) return idx;
+    }
+    return null;
+}
+
+fn cloneRetryIntent(self: *App, intent: remote_file.FilePanelIntent) !remote_file.FilePanelIntent {
+    return switch (intent) {
+        .upload => |item| .{ .upload = try self.cloneTransferIntent(item) },
+        .download => |item| .{ .download = try self.cloneTransferIntent(item) },
+        .upload_many => |item| .{ .upload_many = try self.cloneBatchTransferIntent(item) },
+        .download_many => |item| .{ .download_many = try self.cloneBatchTransferIntent(item) },
+        else => intent,
+    };
+}
+
+fn cloneTransferIntent(self: *App, item: remote_file.FileTransferIntent) !remote_file.FileTransferIntent {
+    const local_path = try self.allocator.dupe(u8, item.local_path);
+    errdefer self.allocator.free(local_path);
+    const remote_path = try self.allocator.dupe(u8, item.remote_path);
+    errdefer self.allocator.free(remote_path);
+    const name = try self.allocator.dupe(u8, item.name);
+    return .{
+        .local_path = local_path,
+        .remote_path = remote_path,
+        .name = name,
+        .transfer_id = null,
+    };
+}
+
+fn cloneBatchTransferIntent(self: *App, item: remote_file.FileBatchTransferIntent) !remote_file.FileBatchTransferIntent {
+    const local_path = try self.allocator.dupe(u8, item.local_path);
+    errdefer self.allocator.free(local_path);
+    const remote_path = try self.allocator.dupe(u8, item.remote_path);
+    errdefer self.allocator.free(remote_path);
+    const entries = try self.allocator.alloc(remote_file.FileBatchEntry, item.entries.len);
+    errdefer self.allocator.free(entries);
+    for (item.entries, 0..) |entry, idx| {
+        entries[idx] = .{
+            .name = try self.allocator.dupe(u8, entry.name),
+            .kind = entry.kind,
+        };
+    }
+    return .{
+        .local_path = local_path,
+        .remote_path = remote_path,
+        .entries = entries,
+        .transfer_id = null,
+    };
+}
+
+fn freeRetryIntent(self: *App, intent: remote_file.FilePanelIntent) void {
+    switch (intent) {
+        .upload => |item| self.freeTransferIntent(item),
+        .download => |item| self.freeTransferIntent(item),
+        .upload_many => |item| self.freeBatchTransferIntent(item),
+        .download_many => |item| self.freeBatchTransferIntent(item),
+        else => {},
+    }
+}
+
+fn freeTransferIntent(self: *App, item: remote_file.FileTransferIntent) void {
+    self.allocator.free(item.local_path);
+    self.allocator.free(item.remote_path);
+    self.allocator.free(item.name);
+}
+
+fn freeBatchTransferIntent(self: *App, item: remote_file.FileBatchTransferIntent) void {
+    self.allocator.free(item.local_path);
+    self.allocator.free(item.remote_path);
+    for (item.entries) |entry| self.allocator.free(entry.name);
+    self.allocator.free(item.entries);
+}
+
+fn setTransferIntentId(intent: *remote_file.FilePanelIntent, id: u64) void {
+    switch (intent.*) {
+        .upload => |*item| item.transfer_id = id,
+        .download => |*item| item.transfer_id = id,
+        .upload_many => |*item| item.transfer_id = id,
+        .download_many => |*item| item.transfer_id = id,
+        else => {},
+    }
+}
+
+fn nowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    switch (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts))) {
+        .SUCCESS => return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec,
+        else => return 0,
+    }
 }
 
 fn selectFirstProfile(self: *App) void {
@@ -763,6 +993,7 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
         .create_file => "Creating file",
         .create_directory => "Creating folder",
         .rename => "Renaming file",
+        .chmod => "Updating permissions",
         .delete => "Deleting file",
         .upload, .upload_many => "Uploading file",
         .download, .download_many => "Downloading file",

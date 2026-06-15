@@ -624,7 +624,7 @@ fn sftpList(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8)
     return entries.toOwnedSlice(allocator) catch return ssh.Error.TransferFailed;
 }
 
-fn sftpReadFile(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8) ssh.Error![]u8 {
+fn sftpReadFile(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8, reporter: ?ssh.FileProgressReporter) ssh.Error![]u8 {
     const self: *SftpContext = @ptrCast(@alignCast(context));
     if (self.closed) return ssh.Error.SftpUnavailable;
 
@@ -637,10 +637,16 @@ fn sftpReadFile(context: *anyopaque, allocator: std.mem.Allocator, path: []const
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var buffer: [16 * 1024]u8 = undefined;
+    var completed: u64 = 0;
     while (true) {
         const rc = c.libssh2_sftp_read(handle, @ptrCast(&buffer), buffer.len);
         if (rc > 0) {
-            out.appendSlice(allocator, buffer[0..@as(usize, @intCast(rc))]) catch return ssh.Error.TransferFailed;
+            const len: usize = @intCast(rc);
+            out.appendSlice(allocator, buffer[0..len]) catch return ssh.Error.TransferFailed;
+            completed += len;
+            if (reporter) |value| {
+                if (!value.report(completed, null)) return ssh.Error.TransferCanceled;
+            }
             continue;
         }
         if (rc == 0) break;
@@ -653,7 +659,7 @@ fn sftpReadFile(context: *anyopaque, allocator: std.mem.Allocator, path: []const
     return out.toOwnedSlice(allocator) catch return ssh.Error.TransferFailed;
 }
 
-fn sftpWriteFile(context: *anyopaque, path: []const u8, bytes: []const u8) ssh.Error!void {
+fn sftpWriteFile(context: *anyopaque, path: []const u8, bytes: []const u8, reporter: ?ssh.FileProgressReporter) ssh.Error!void {
     const self: *SftpContext = @ptrCast(@alignCast(context));
     if (self.closed) return ssh.Error.SftpUnavailable;
 
@@ -665,11 +671,17 @@ fn sftpWriteFile(context: *anyopaque, path: []const u8, bytes: []const u8) ssh.E
     defer _ = c.libssh2_sftp_close(handle);
 
     var written: usize = 0;
+    if (reporter) |value| {
+        if (!value.report(0, bytes.len)) return ssh.Error.TransferCanceled;
+    }
     while (written < bytes.len) {
         const remaining = bytes[written..];
         const rc = c.libssh2_sftp_write(handle, @ptrCast(remaining.ptr), remaining.len);
         if (rc > 0) {
             written += @as(usize, @intCast(rc));
+            if (reporter) |value| {
+                if (!value.report(written, bytes.len)) return ssh.Error.TransferCanceled;
+            }
             continue;
         }
         if (rc == c.LIBSSH2_ERROR_EAGAIN) {
@@ -734,6 +746,26 @@ fn sftpRename(context: *anyopaque, old_path: []const u8, new_path: []const u8) s
     return ssh.Error.TransferFailed;
 }
 
+fn sftpChmod(context: *anyopaque, path: []const u8, permissions: u32) ssh.Error!void {
+    const self: *SftpContext = @ptrCast(@alignCast(context));
+    if (self.closed) return ssh.Error.SftpUnavailable;
+    const path_z = self.allocator.dupeZ(u8, path) catch return ssh.Error.TransferFailed;
+    defer self.allocator.free(path_z);
+
+    var attrs: c.LIBSSH2_SFTP_ATTRIBUTES = std.mem.zeroes(c.LIBSSH2_SFTP_ATTRIBUTES);
+    attrs.flags = c.LIBSSH2_SFTP_ATTR_PERMISSIONS;
+    attrs.permissions = permissions;
+
+    var attempts: usize = 0;
+    while (attempts < 5000) : (attempts += 1) {
+        const rc = c.libssh2_sftp_stat_ex(self.sftp, path_z.ptr, @intCast(path.len), c.LIBSSH2_SFTP_SETSTAT, &attrs);
+        if (rc == 0) return;
+        if (rc != c.LIBSSH2_ERROR_EAGAIN) return ssh.Error.TransferFailed;
+        sleepMs(1);
+    }
+    return ssh.Error.TransferFailed;
+}
+
 fn closeSftp(context: *anyopaque) void {
     const self: *SftpContext = @ptrCast(@alignCast(context));
     if (!self.closed) {
@@ -752,6 +784,7 @@ const sftp_vtable: ssh.Sftp.VTable = .{
     .removeDir = sftpRemoveDir,
     .mkdir = sftpMkdir,
     .rename = sftpRename,
+    .chmod = sftpChmod,
     .close = closeSftp,
 };
 

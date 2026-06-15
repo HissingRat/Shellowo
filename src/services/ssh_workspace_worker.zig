@@ -49,13 +49,33 @@ const TransferProgressState = struct {
     id: u64,
     status: transfer_core.TransferStatus,
     progress: f32,
+    bytes_done: u64 = 0,
+    bytes_total: ?u64 = null,
     cancel_requested: bool = false,
+    finished: bool = false,
 };
 
 const DownloadProgress = struct {
     id: ?u64,
     completed: usize = 0,
     total: usize = 1,
+    bytes_done: u64 = 0,
+    bytes_total: u64 = 0,
+
+    fn fraction(self: DownloadProgress) f32 {
+        return @as(f32, @floatFromInt(self.completed)) / @as(f32, @floatFromInt(@max(self.total, 1)));
+    }
+};
+
+const TransferByteProgress = struct {
+    worker: *SshWorkspaceWorker,
+    progress: *DownloadProgress,
+    base_done: u64,
+    total: ?u64,
+
+    fn reporter(self: *TransferByteProgress) ssh.FileProgressReporter {
+        return .{ .context = self, .vtable = &byte_progress_vtable };
+    }
 };
 
 const DownloadThread = struct {
@@ -372,6 +392,7 @@ pub const SshWorkspaceWorker = struct {
 
     pub fn requestStop(self: *SshWorkspaceWorker) void {
         self.stop_requested.store(true, .release);
+        self.cancelActiveTransfers();
     }
 
     pub fn join(self: *SshWorkspaceWorker) void {
@@ -555,19 +576,17 @@ pub const SshWorkspaceWorker = struct {
         var idx: usize = 0;
         while (idx < self.transfer_progress.items.len) {
             const item = self.transfer_progress.items[idx];
-            if (item.cancel_requested) {
-                _ = self.transfer_progress.orderedRemove(idx);
-                continue;
-            }
             if (count < buffer.len) {
                 buffer[count] = .{
                     .id = item.id,
                     .status = item.status,
                     .progress = item.progress,
+                    .bytes_done = item.bytes_done,
+                    .bytes_total = item.bytes_total,
                 };
                 count += 1;
             }
-            if (item.status == .completed) {
+            if (item.finished and (item.status == .completed or item.status == .failed or item.status == .canceled)) {
                 _ = self.transfer_progress.orderedRemove(idx);
                 continue;
             }
@@ -583,6 +602,8 @@ pub const SshWorkspaceWorker = struct {
                 .id = item.id,
                 .status = item.status,
                 .progress = item.progress,
+                .bytes_done = item.bytes_done,
+                .bytes_total = item.bytes_total,
             };
         }
         return buffer[0..count];
@@ -595,6 +616,17 @@ pub const SshWorkspaceWorker = struct {
         progress_state.cancel_requested = true;
         progress_state.status = .canceled;
         progress_state.progress = 1;
+    }
+
+    fn cancelActiveTransfers(self: *SshWorkspaceWorker) void {
+        self.lockFile();
+        defer self.unlockFile();
+        for (self.transfer_progress.items) |*progress_state| {
+            if (progress_state.finished) continue;
+            progress_state.cancel_requested = true;
+            progress_state.status = .canceled;
+            progress_state.progress = 1;
+        }
     }
 
     pub fn queueInput(self: *SshWorkspaceWorker, slot_id: terminal_slot.TerminalSlotId, bytes: []const u8) !void {
@@ -946,6 +978,9 @@ pub const SshWorkspaceWorker = struct {
                 .rename => |rename| if (rename.pane == .remote) {
                     self.renameRemoteEntry(sftp, rename.path, rename.old_name, rename.new_name);
                 },
+                .chmod => |chmod| if (chmod.pane == .remote) {
+                    self.chmodRemoteEntry(sftp, chmod.path, chmod.permissions);
+                },
                 .delete => |target| if (target.pane == .remote) {
                     self.deleteRemoteEntry(sftp, target.path, target.name, target.kind orelse .file);
                 },
@@ -1013,7 +1048,7 @@ pub const SshWorkspaceWorker = struct {
             .download_many => |transfer| transfer.transfer_id,
             else => null,
         };
-        self.markTransferProgress(transfer_id, .running, 0);
+        self.markTransferProgress(transfer_id, .running, 0, 0, null);
 
         if (self.stop_requested.load(.acquire)) {
             self.markTransferFinished(transfer_id, .canceled);
@@ -1031,7 +1066,7 @@ pub const SshWorkspaceWorker = struct {
         switch (intent) {
             .upload => |transfer| {
                 self.uploadLocalEntry(sftp.sftp, transfer.local_path, transfer.name, transfer.remote_path, transfer.transfer_id) catch |err| {
-                    if (err == error.Canceled) {
+                    if (transferErrorCanceled(err)) {
                         self.markTransferFinished(transfer.transfer_id, .canceled);
                     } else {
                         self.markTransferFinished(transfer.transfer_id, .failed);
@@ -1041,7 +1076,7 @@ pub const SshWorkspaceWorker = struct {
             },
             .upload_many => |transfer| {
                 self.uploadLocalEntries(sftp.sftp, transfer) catch |err| {
-                    if (err == error.Canceled) {
+                    if (transferErrorCanceled(err)) {
                         self.markTransferFinished(transfer.transfer_id, .canceled);
                     } else {
                         self.markTransferFinished(transfer.transfer_id, .failed);
@@ -1051,7 +1086,7 @@ pub const SshWorkspaceWorker = struct {
             },
             .download => |transfer| {
                 self.downloadRemoteEntry(sftp.sftp, transfer.remote_path, transfer.name, .file, transfer.transfer_id) catch |err| {
-                    if (err == error.Canceled) {
+                    if (transferErrorCanceled(err)) {
                         self.markTransferFinished(transfer.transfer_id, .canceled);
                     } else {
                         self.markTransferFinished(transfer.transfer_id, .failed);
@@ -1061,7 +1096,7 @@ pub const SshWorkspaceWorker = struct {
             },
             .download_many => |transfer| {
                 self.downloadRemoteEntries(sftp.sftp, transfer) catch |err| {
-                    if (err == error.Canceled) {
+                    if (transferErrorCanceled(err)) {
                         self.markTransferFinished(transfer.transfer_id, .canceled);
                     } else {
                         self.markTransferFinished(transfer.transfer_id, .failed);
@@ -1158,6 +1193,16 @@ pub const SshWorkspaceWorker = struct {
         self.file_refresh_requested.store(true, .release);
     }
 
+    fn chmodRemoteEntry(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, permissions: u32) void {
+        sftp.chmod(path, permissions) catch {
+            self.storeFileNotice("Permission update failed");
+            return;
+        };
+        const parent = parentPath(path);
+        self.invalidatePathCaches(parent);
+        self.file_refresh_requested.store(true, .release);
+    }
+
     fn deleteRemotePath(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, kind: remote_file.RemoteFileKind) ssh.Error!void {
         if (kind == .directory) {
             const entries = try sftp.list(self.allocator, path);
@@ -1179,7 +1224,7 @@ pub const SshWorkspaceWorker = struct {
             .id = transfer.transfer_id,
             .total = @max(transfer.entries.len, 1),
         };
-        self.markTransferProgress(transfer.transfer_id, .running, 0);
+        self.markTransferProgress(transfer.transfer_id, .running, 0, 0, null);
         for (transfer.entries) |entry| {
             try self.downloadRemoteEntryToBase(sftp, transfer.remote_path, entry.name, entry.kind, base_path, &progress);
         }
@@ -1195,7 +1240,7 @@ pub const SshWorkspaceWorker = struct {
             .id = transfer_id,
             .total = 1,
         };
-        self.markTransferProgress(transfer_id, .running, 0);
+        self.markTransferProgress(transfer_id, .running, 0, 0, null);
         try self.downloadRemoteEntryToBase(sftp, remote_path, name, kind, base_path, &progress);
         self.markTransferFinished(transfer_id, .completed);
     }
@@ -1228,8 +1273,16 @@ pub const SshWorkspaceWorker = struct {
             return;
         }
 
-        const bytes = try sftp.readFile(self.allocator, remote_path);
+        var byte_progress = TransferByteProgress{
+            .worker = self,
+            .progress = progress,
+            .base_done = progress.bytes_done,
+            .total = null,
+        };
+        const bytes = try sftp.readFileWithProgress(self.allocator, remote_path, byte_progress.reporter());
         defer self.allocator.free(bytes);
+        progress.bytes_done += bytes.len;
+        progress.bytes_total += bytes.len;
         if (std.fs.path.dirname(local_path)) |dirname| {
             try std.Io.Dir.cwd().createDirPath(io, dirname);
         }
@@ -1242,7 +1295,7 @@ pub const SshWorkspaceWorker = struct {
 
     fn bumpDownloadProgress(self: *SshWorkspaceWorker, progress: *DownloadProgress) void {
         progress.completed += 1;
-        self.markTransferProgress(progress.id, .running, @as(f32, @floatFromInt(progress.completed)) / @as(f32, @floatFromInt(progress.total)));
+        self.markTransferProgress(progress.id, .running, progress.fraction(), progress.bytes_done, if (progress.bytes_total > 0) progress.bytes_total else null);
     }
 
     fn downloadBasePath(self: *SshWorkspaceWorker, requested: []const u8) ![]u8 {
@@ -1259,7 +1312,7 @@ pub const SshWorkspaceWorker = struct {
             .id = transfer.transfer_id,
             .total = @max(transfer.entries.len, 1),
         };
-        self.markTransferProgress(transfer.transfer_id, .running, 0);
+        self.markTransferProgress(transfer.transfer_id, .running, 0, 0, null);
         for (transfer.entries) |entry| {
             try self.uploadLocalEntryToBase(sftp, transfer.local_path, entry.name, transfer.remote_path, &progress);
         }
@@ -1273,7 +1326,7 @@ pub const SshWorkspaceWorker = struct {
             .id = transfer_id,
             .total = 1,
         };
-        self.markTransferProgress(transfer_id, .running, 0);
+        self.markTransferProgress(transfer_id, .running, 0, 0, null);
         try self.uploadLocalEntryToBase(sftp, local_path, name, remote_path, &progress);
         self.markTransferFinished(transfer_id, .completed);
         self.invalidatePathCaches(remote_path);
@@ -1327,8 +1380,17 @@ pub const SshWorkspaceWorker = struct {
         try self.checkTransferCanceled(progress.id);
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, local_path, self.allocator, .limited(std.math.maxInt(usize)));
         defer self.allocator.free(bytes);
+        progress.bytes_total += bytes.len;
+        self.markTransferProgress(progress.id, .running, progress.fraction(), progress.bytes_done, if (progress.bytes_total > 0) progress.bytes_total else null);
         try self.checkTransferCanceled(progress.id);
-        try sftp.writeFile(remote_path, bytes);
+        var byte_progress = TransferByteProgress{
+            .worker = self,
+            .progress = progress,
+            .base_done = progress.bytes_done,
+            .total = progress.bytes_total,
+        };
+        try sftp.writeFileWithProgress(remote_path, bytes, byte_progress.reporter());
+        progress.bytes_done += bytes.len;
         self.bumpDownloadProgress(progress);
     }
 
@@ -1794,7 +1856,7 @@ pub const SshWorkspaceWorker = struct {
         self.file_error_len = len;
     }
 
-    fn markTransferProgress(self: *SshWorkspaceWorker, transfer_id: ?u64, status: transfer_core.TransferStatus, progress: f32) void {
+    fn markTransferProgress(self: *SshWorkspaceWorker, transfer_id: ?u64, status: transfer_core.TransferStatus, progress: f32, bytes_done: u64, bytes_total: ?u64) void {
         const id = transfer_id orelse return;
         self.lockFile();
         defer self.unlockFile();
@@ -1802,6 +1864,9 @@ pub const SshWorkspaceWorker = struct {
         if (progress_state.cancel_requested) return;
         progress_state.status = status;
         progress_state.progress = @max(0, @min(progress, 1));
+        progress_state.bytes_done = bytes_done;
+        progress_state.bytes_total = bytes_total;
+        progress_state.finished = false;
     }
 
     fn markTransferFinished(self: *SshWorkspaceWorker, transfer_id: ?u64, status: transfer_core.TransferStatus) void {
@@ -1809,9 +1874,9 @@ pub const SshWorkspaceWorker = struct {
         self.lockFile();
         defer self.unlockFile();
         const progress_state = self.ensureTransferProgressLocked(id) catch return;
-        if (progress_state.cancel_requested and status != .canceled) return;
-        progress_state.status = status;
+        progress_state.status = if (progress_state.cancel_requested and status != .canceled) .canceled else status;
         progress_state.progress = 1;
+        progress_state.finished = true;
     }
 
     fn checkTransferCanceled(self: *SshWorkspaceWorker, transfer_id: ?u64) !void {
@@ -1820,6 +1885,15 @@ pub const SshWorkspaceWorker = struct {
         defer self.unlockFile();
         const idx = self.transferProgressIndexLocked(id) orelse return;
         if (self.transfer_progress.items[idx].cancel_requested) return error.Canceled;
+    }
+
+    fn transferCanceled(self: *SshWorkspaceWorker, transfer_id: ?u64) bool {
+        if (self.stop_requested.load(.acquire)) return true;
+        const id = transfer_id orelse return false;
+        self.lockFile();
+        defer self.unlockFile();
+        const idx = self.transferProgressIndexLocked(id) orelse return false;
+        return self.transfer_progress.items[idx].cancel_requested;
     }
 
     fn ensureTransferProgressLocked(self: *SshWorkspaceWorker, transfer_id: u64) !*TransferProgressState {
@@ -1899,6 +1973,11 @@ pub const SshWorkspaceWorker = struct {
                 .old_name = try self.allocator.dupe(u8, rename.old_name),
                 .new_name = try self.allocator.dupe(u8, rename.new_name),
             } },
+            .chmod => |chmod| .{ .chmod = .{
+                .pane = chmod.pane,
+                .path = try self.allocator.dupe(u8, chmod.path),
+                .permissions = chmod.permissions,
+            } },
             .delete => |target| .{ .delete = try self.cloneEntryTarget(target) },
             .upload => |transfer| .{ .upload = try self.cloneTransferIntent(transfer) },
             .upload_many => |transfer| .{ .upload_many = try self.cloneBatchTransferIntent(transfer) },
@@ -1958,6 +2037,7 @@ pub const SshWorkspaceWorker = struct {
                 self.allocator.free(rename.old_name);
                 self.allocator.free(rename.new_name);
             },
+            .chmod => |chmod| self.allocator.free(chmod.path),
             .delete => |target| self.freeEntryTarget(target),
             .upload => |transfer| self.freeTransferIntent(transfer),
             .upload_many => |transfer| self.freeBatchTransferIntent(transfer),
@@ -2071,6 +2151,25 @@ fn directoryEntryExists(entries: []const remote_file.RemoteFileEntry, name: []co
 
 const progress_vtable: ssh.ConnectProgressReporter.VTable = .{ .report = SshWorkspaceWorker.reportProgress };
 const cancel_token_vtable: ssh.CancelToken.VTable = .{ .canceled = SshWorkspaceWorker.canceled };
+const byte_progress_vtable: ssh.FileProgressReporter.VTable = .{ .report = reportTransferBytes };
+
+fn reportTransferBytes(context: *anyopaque, completed_bytes: u64, total_bytes: ?u64) bool {
+    const state: *TransferByteProgress = @ptrCast(@alignCast(context));
+    if (state.worker.transferCanceled(state.progress.id)) return false;
+    const total = state.total orelse total_bytes;
+    state.worker.markTransferProgress(
+        state.progress.id,
+        .running,
+        state.progress.fraction(),
+        state.base_done + completed_bytes,
+        total,
+    );
+    return true;
+}
+
+fn transferErrorCanceled(err: anyerror) bool {
+    return err == error.Canceled or err == error.TransferCanceled;
+}
 
 fn stateFromConnectStage(stage: ssh.ConnectStage) State {
     return switch (stage) {

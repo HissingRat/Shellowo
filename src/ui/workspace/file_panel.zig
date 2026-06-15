@@ -5,14 +5,17 @@ const App = @import("../../app/App.zig");
 const app_config = @import("../../app/config.zig");
 const native_event = @import("../../app/native_event.zig");
 const remote_file = @import("../../core/remote_file.zig");
-const transfer = @import("../../core/transfer.zig");
 const workspace = @import("../../core/workspace.zig");
+const active_tasks_panel = @import("file_panel_elements/active_tasks_panel.zig");
+const context_menu = @import("file_panel_elements/context_menu.zig");
+const details_panel = @import("file_panel_elements/details_panel.zig");
+const file_format = @import("file_panel_elements/file_format.zig");
+const permissions_panel = @import("file_panel_elements/permissions_panel.zig");
 const resize = @import("resize.zig");
 const theme = @import("../theme.zig");
 
 const folder_icon_bytes = @embedFile("shellowo-folder-icon");
 const file_icon_bytes = @embedFile("shellowo-file-icon");
-const close_icon_bytes = @embedFile("shellowo-close-icon");
 
 pub const Options = struct {
     app: *App,
@@ -28,7 +31,6 @@ const max_local_width: f32 = 380;
 const toolbar_height: f32 = 31;
 const row_height: f32 = 24;
 const header_height: f32 = 24;
-const context_menu_font_size: f32 = 9;
 const double_click_window_ns: i128 = 500 * 1_000_000;
 const tooltip_delay_us: i32 = 1_500_000;
 const file_icon_size: f32 = 15;
@@ -52,13 +54,6 @@ const toast_visible_ns: i128 = 2 * std.time.ns_per_s;
 const toast_fade_ns: i128 = 180 * std.time.ns_per_ms;
 const toast_tooltip_offset: dvui.Point.Natural = .{ .x = 12, .y = 14 };
 const toast_tooltip_max_width: f32 = 280;
-const transfer_popup_max_height: f32 = 200;
-const transfer_popup_min_width: f32 = 280;
-const transfer_popup_max_width: f32 = 760;
-const transfer_popup_pad_x: f32 = 2;
-const transfer_popup_pad_y: f32 = 1;
-const transfer_task_row_height: f32 = 64;
-const transfer_close_button_size: f32 = 14;
 const drop_tooltip_width: f32 = 58;
 const drop_tooltip_height: f32 = 22;
 const drop_tooltip_offset: dvui.Point.Natural = .{ .x = 14, .y = 16 };
@@ -91,6 +86,9 @@ const PaneLayoutState = struct {
     delete_name_len: usize = 0,
     delete_kind: remote_file.RemoteFileKind = .file,
     delete_anchor: dvui.Point.Natural = .{},
+
+    details: details_panel.State = .{},
+    permissions: permissions_panel.State = .{},
 
     toast_message: [96]u8 = undefined,
     toast_message_len: usize = 0,
@@ -227,12 +225,6 @@ const PaneLayoutState = struct {
     }
 };
 
-const PathBarState = struct {
-    transfer_popup_open: bool = false,
-    transfer_popup_anchor: dvui.Rect.Natural = .{},
-    transfer_popup_rect: dvui.Rect = .{},
-};
-
 const EditMode = enum {
     none,
     new_file,
@@ -316,292 +308,7 @@ fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palet
         .id_extra = id_extra + 1,
     });
 
-    const state = dvui.dataGetPtrDefault(null, bar.data().id, "path-bar-state", PathBarState, .{});
-    transferTaskButton(app, state, palette, id_extra + 20);
-}
-
-fn transferTaskButton(app: *App, state: *PathBarState, palette: theme.Palette, id_extra: usize) void {
-    var count_buf: [32]u8 = undefined;
-    const active_count = activeTransferCount(app.transfers.items);
-    const count_label = std.fmt.bufPrint(&count_buf, "{d} active tasks", .{active_count}) catch "active tasks";
-
-    var button_box = dvui.box(@src(), .{}, .{
-        .min_size_content = .{ .w = 148, .h = toolbar_height },
-        .max_size_content = .{ .w = 148, .h = toolbar_height },
-        .padding = .all(0),
-        .id_extra = id_extra,
-    });
-    const button_rect = button_box.data().rectScale().r;
-    const clicked = theme.button(@src(), count_label, .{
-        .expand = .both,
-        .gravity_y = 0.5,
-        .padding = .all(0),
-        .margin = .all(0),
-        .corner_radius = .all(0),
-        .id_extra = id_extra + 1,
-    }, palette, .{ .variant = .ghost, .font_size = 10, .text_align_x = 0.5 });
-    button_box.deinit();
-
-    if (clicked) {
-        state.transfer_popup_open = !state.transfer_popup_open;
-        state.transfer_popup_anchor = button_rect.toNatural();
-    }
-
-    if (state.transfer_popup_open) {
-        state.transfer_popup_rect = transferPopupRect(state.transfer_popup_anchor, app.transfers.items);
-        transferPopup(app, palette, state, id_extra + 100);
-    }
-}
-
-fn activeTransferCount(tasks: []const transfer.TransferTask) usize {
-    var count: usize = 0;
-    for (tasks) |task| {
-        if (task.status == .pending or task.status == .running) count += 1;
-    }
-    return count;
-}
-
-fn transferPopup(app: *App, palette: theme.Palette, state: *PathBarState, id_extra: usize) void {
-    const tasks = app.transfers.items;
-    const popup_width = transferPopupWidth(tasks);
-    var win = dvui.floatingWindow(@src(), .{
-        .rect = &state.transfer_popup_rect,
-        .open_flag = &state.transfer_popup_open,
-        .resize = .none,
-        .window_avoid = .none,
-    }, theme.panel(.{
-        .id_extra = id_extra,
-        .padding = .{ .x = transfer_popup_pad_x, .y = transfer_popup_pad_y, .w = transfer_popup_pad_x, .h = transfer_popup_pad_y },
-        .corner_radius = .all(3),
-        .min_size_content = .{ .w = popup_width, .h = 58 },
-        .max_size_content = .{ .w = popup_width, .h = transfer_popup_max_height },
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border_subtle,
-    }));
-    defer win.deinit();
-
-    dvui.label(@src(), "Transfers", .{}, .{
-        .font = theme.textFont("Transfers", 9),
-        .color_text = palette.text_subtle,
-        .min_size_content = .height(22),
-        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-        .id_extra = id_extra + 1,
-    });
-
-    var scroll = dvui.scrollArea(@src(), .{
-        .vertical = .auto,
-        .horizontal = .none,
-    }, .{
-        .expand = .horizontal,
-        .min_size_content = .{ .w = popup_width - transfer_popup_pad_x * 2, .h = @min(transfer_popup_max_height - 28, popupContentHeight(tasks.len)) },
-        .max_size_content = .{ .w = popup_width - transfer_popup_pad_x * 2, .h = transfer_popup_max_height - 28 },
-        .padding = .all(0),
-        .background = true,
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border_subtle,
-        .id_extra = id_extra + 2,
-    });
-    defer scroll.deinit();
-
-    if (tasks.len == 0) {
-        transferEmptyRow(palette, id_extra + 3);
-    } else {
-        for (tasks, 0..) |task, idx| {
-            if (transferTaskRow(task, popup_width, palette, id_extra + 10 + idx * 8)) |transfer_id| {
-                if (task.status == .pending or task.status == .running) {
-                    app.cancelTransfer(transfer_id);
-                } else {
-                    app.dismissTransfer(transfer_id);
-                }
-            }
-        }
-    }
-
-    if (outsideTransferPopupClick(win.data().rectScale().r)) {
-        state.transfer_popup_open = false;
-        win.close();
-    }
-}
-
-fn transferPopupRect(anchor: dvui.Rect.Natural, tasks: []const transfer.TransferTask) dvui.Rect {
-    const width = transferPopupWidth(tasks);
-    const height = @min(transfer_popup_max_height, popupContentHeight(tasks.len) + 28 + transfer_popup_pad_y * 2);
-    return .{
-        .x = anchor.x + anchor.w - width,
-        .y = anchor.y + anchor.h + 4,
-        .w = width,
-        .h = height,
-    };
-}
-
-fn transferPopupWidth(tasks: []const transfer.TransferTask) f32 {
-    var width = transfer_popup_min_width;
-    for (tasks) |task| {
-        const measured = theme.textFont(task.title, 9).textSize(task.title).w;
-        const estimated = @as(f32, @floatFromInt(task.title.len)) * 7.2;
-        const title_width = @max(measured, estimated) + 132;
-        width = @max(width, title_width);
-    }
-    return @min(width, transfer_popup_max_width);
-}
-
-fn popupContentHeight(task_count: usize) f32 {
-    if (task_count == 0) return 28;
-    return @as(f32, @floatFromInt(task_count)) * transfer_task_row_height;
-}
-
-fn transferEmptyRow(palette: theme.Palette, id_extra: usize) void {
-    dvui.label(@src(), "No active tasks", .{}, .{
-        .font = theme.textFont("No active tasks", 9),
-        .color_text = palette.muted_text,
-        .min_size_content = .{ .w = 240, .h = 26 },
-        .gravity_y = 0.5,
-        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-        .id_extra = id_extra,
-    });
-}
-
-fn transferTaskRow(task: transfer.TransferTask, popup_width: f32, palette: theme.Palette, id_extra: usize) ?u64 {
-    var row = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
-        .expand = .horizontal,
-        .min_size_content = .{ .w = popup_width - transfer_popup_pad_x * 2 - 6, .h = transfer_task_row_height },
-        .max_size_content = .height(transfer_task_row_height),
-        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-        .margin = .{ .x = 0, .y = 0, .w = 0, .h = 2 },
-        .corner_radius = .all(2),
-        .border = .all(1),
-        .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border,
-    }));
-    defer row.deinit();
-    var canceled_id: ?u64 = null;
-
-    {
-        var title_line = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .min_size_content = .height(24),
-            .max_size_content = .height(24),
-            .padding = .all(0),
-            .id_extra = id_extra + 1,
-        });
-        defer title_line.deinit();
-
-        dvui.label(@src(), "{s}", .{task.title}, .{
-            .font = theme.textFont(task.title, 9),
-            .color_text = palette.text,
-            .expand = .horizontal,
-            .min_size_content = .height(24),
-            .max_size_content = .height(24),
-            .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-            .id_extra = id_extra + 2,
-        });
-
-        if (transferCloseButton(palette, id_extra + 3)) {
-            canceled_id = task.id;
-        }
-    }
-
-    var progress_buf: [32]u8 = undefined;
-    const clamped = @max(0, @min(task.progress, 1));
-    const percent = std.fmt.bufPrint(&progress_buf, "{d:.0}%", .{clamped * 100}) catch "0%";
-    var status_buf: [80]u8 = undefined;
-    const status_text = std.fmt.bufPrint(&status_buf, "{s} {s}", .{ task.status.label(), percent }) catch task.status.label();
-    {
-        var status_line = dvui.box(@src(), .{}, .{
-            .expand = .horizontal,
-            .min_size_content = .height(22),
-            .max_size_content = .height(22),
-            .padding = .all(0),
-            .id_extra = id_extra + 4,
-        });
-        defer status_line.deinit();
-
-        dvui.label(@src(), "{s}", .{status_text}, .{
-            .font = theme.textFont(status_text, 9),
-            .color_text = palette.muted_text,
-            .expand = .horizontal,
-            .min_size_content = .height(22),
-            .max_size_content = .height(22),
-            .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-            .id_extra = id_extra + 5,
-        });
-    }
-
-    {
-        var bar_line = dvui.box(@src(), .{}, .{
-            .expand = .horizontal,
-            .min_size_content = .height(16),
-            .max_size_content = .height(16),
-            .padding = .{ .x = 2, .y = 5, .w = 2, .h = 5 },
-            .id_extra = id_extra + 6,
-        });
-        defer bar_line.deinit();
-
-        var bar = dvui.box(@src(), .{}, .{
-            .expand = .horizontal,
-            .min_size_content = .height(6),
-            .max_size_content = .height(6),
-            .background = true,
-            .color_fill = palette.surface_hover,
-            .corner_radius = .all(2),
-            .id_extra = id_extra + 7,
-        });
-        const bar_rect = bar.data().contentRectScale().r;
-        if (!bar_rect.empty()) {
-            var fill = bar_rect;
-            fill.w *= clamped;
-            fill.fill(.{}, .{ .color = palette.accent });
-        }
-        bar.deinit();
-    }
-    return canceled_id;
-}
-
-fn transferCloseButton(palette: theme.Palette, id_extra: usize) bool {
-    var bw: dvui.ButtonWidget = undefined;
-    const options = theme.buttonOptions(.{
-        .min_size_content = .{ .w = transfer_close_button_size, .h = transfer_close_button_size },
-        .max_size_content = .{ .w = transfer_close_button_size, .h = transfer_close_button_size },
-        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-        .corner_radius = .all(2),
-        .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 });
-
-    bw.init(@src(), .{ .draw_focus = false }, options);
-    bw.processEvents();
-    bw.drawBackground();
-
-    const color = bw.style().color(.text);
-    renderThemedPng(close_icon_bytes, "close.png", bw.data().contentRectScale(), color);
-
-    const clicked = bw.clicked();
-    bw.drawFocus();
-    bw.deinit();
-    return clicked;
-}
-
-fn renderThemedPng(bytes: []const u8, name: []const u8, rs: dvui.RectScale, color: dvui.Color) void {
-    const source: dvui.ImageSource = .{ .imageFile = .{
-        .bytes = bytes,
-        .name = name,
-        .interpolation = .linear,
-    } };
-    dvui.renderImage(source, rs, .{ .colormod = color }) catch {};
-}
-
-fn outsideTransferPopupClick(menu_rect: dvui.Rect.Physical) bool {
-    if (menu_rect.empty()) return false;
-    for (dvui.events()) |event| {
-        if (event.handled or event.evt != .mouse) continue;
-        const mouse = event.evt.mouse;
-        if (mouse.action != .press or !mouse.button.pointer()) continue;
-        if (menu_rect.contains(mouse.p)) continue;
-        return true;
-    }
-    return false;
+    active_tasks_panel.showButton(app, palette, id_extra + 20);
 }
 
 const PaneKind = enum { tree, remote };
@@ -644,11 +351,24 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
         return;
     }
     layout.observeToast(opts.snapshot.error_summary);
+    layout.details.syncFromSnapshot(opts.snapshot);
     failureTooltip(layout, palette, opts.id_extra + 6);
     tableHeader(layout, palette, opts.id_extra + 10);
     opts.columns.* = layout.columns;
     fileRows(kind, opts.app, opts.snapshot, layout, palette, opts.id_extra + 30, intent);
-    deleteConfirmModal(opts.snapshot, layout, palette, opts.id_extra + 5000, intent);
+    handleDeleteConfirm(opts.snapshot, layout, palette, opts.id_extra + 5000, intent);
+    if (details_panel.show(&layout.details, palette, opts.id_extra + 5200)) |action| {
+        switch (action) {
+            .edit_permissions => |entry| layout.permissions.openFor(entry),
+        }
+    }
+    if (permissions_panel.show(&layout.permissions, palette, opts.id_extra + 5400)) |panel_intent| {
+        switch (panel_intent) {
+            .chmod => |chmod| layout.details.applyPermissions(chmod.path, chmod.permissions),
+            else => {},
+        }
+        intent.* = panel_intent;
+    }
     if (intent.* != null) layout.clearToastGate();
 }
 
@@ -720,15 +440,15 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
 
     if (snapshot.entries.len == 0 and layout.edit_mode == .none) {
         emptyRow("No files", palette, id_extra);
-        blankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), 1), palette, id_extra + 500, intent);
+        handleBlankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), 1), palette, id_extra + 500, intent);
         return;
     }
 
     for (snapshot.entries, 0..) |entry, idx| {
-        fileRow(kind, snapshot, entry, layout, palette, id_extra + idx * 10, intent);
+        fileRow(kind, app, snapshot, entry, layout, palette, id_extra + idx * 10, intent);
     }
     const row_count = snapshot.entries.len + if (layout.edit_mode == .new_file or layout.edit_mode == .new_folder) @as(usize, 1) else 0;
-    blankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), row_count), palette, id_extra + 500, intent);
+    handleBlankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), row_count), palette, id_extra + 500, intent);
 }
 
 fn treeRows(snapshot: remote_file.FileTreeSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
@@ -846,7 +566,7 @@ fn treeToggleRect(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry) dvui.
     };
 }
 
-fn fileRow(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     if (layout.edit_mode == .rename and std.mem.eql(u8, layout.editingTargetName(), entry.name)) {
         editFileRow(snapshot, layout, palette, id_extra, intent);
         return;
@@ -903,18 +623,18 @@ fn fileRow(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, entry: remote
     maybeNameTooltip(entry.name, crs, x, columns.name, id_extra + 2);
     x += columns.name;
     var size_buf: [32]u8 = undefined;
-    renderCellText(crs, x, columns.size, sizeText(entry, &size_buf), palette.muted_text, id_extra + 3);
+    renderCellText(crs, x, columns.size, file_format.sizeText(entry, &size_buf), palette.muted_text, id_extra + 3);
     x += columns.size;
     var modified_buf: [32]u8 = undefined;
-    renderCellText(crs, x, columns.modified, modifiedText(entry, &modified_buf), palette.muted_text, id_extra + 4);
+    renderCellText(crs, x, columns.modified, file_format.modifiedText(entry, &modified_buf), palette.muted_text, id_extra + 4);
     x += columns.modified;
     var perm_buf: [12]u8 = undefined;
-    renderCellText(crs, x, columns.perm, permissionText(entry, &perm_buf), palette.muted_text, id_extra + 5);
+    renderCellText(crs, x, columns.perm, file_format.permissionText(entry, &perm_buf), palette.muted_text, id_extra + 5);
     x += columns.perm;
     var owner_buf: [40]u8 = undefined;
-    renderCellText(crs, x, columns.owner, ownerText(entry, &owner_buf), palette.muted_text, id_extra + 6);
+    renderCellText(crs, x, columns.owner, file_format.ownerText(entry, &owner_buf), palette.muted_text, id_extra + 6);
 
-    entryContextMenu(kind, snapshot, entry, layout, crs.r, palette, id_extra + 100, intent);
+    handleEntryContextMenu(kind, app, snapshot, entry, layout, crs.r, palette, id_extra + 100, intent);
     button.drawFocus();
 }
 
@@ -1234,80 +954,21 @@ fn entryByName(snapshot: remote_file.FilePaneSnapshot, name: []const u8) ?remote
     return null;
 }
 
-fn deleteConfirmModal(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn handleDeleteConfirm(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     if (!layout.delete_pending) return;
-
-    var menu = dvui.floatingMenu(@src(), .{ .from = .fromPoint(layout.delete_anchor) }, deleteConfirmOptions(palette, id_extra));
-    defer menu.deinit();
-
-    dvui.label(@src(), "Delete {s}?", .{layout.deleteName()}, .{
-        .font = theme.textFont("Delete file?", 9),
-        .color_text = palette.text,
-        .expand = .horizontal,
-        .min_size_content = .{ .w = 142, .h = 18 },
-        .max_size_content = .height(18),
-        .padding = .{ .x = 4, .y = 1, .w = 4, .h = 1 },
-        .id_extra = id_extra + 1,
-    });
-
-    var actions = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .horizontal,
-        .padding = .{ .x = 0, .y = 3, .w = 0, .h = 0 },
-        .id_extra = id_extra + 2,
-    });
-    defer actions.deinit();
-
-    if (theme.button(@src(), "Cancel", .{
-        .min_size_content = .{ .w = 62, .h = 19 },
-        .id_extra = id_extra + 3,
-    }, palette, .{ .variant = .ghost, .font_size = 9 })) {
-        layout.delete_pending = false;
-        menu.close();
+    switch (context_menu.deleteConfirm(palette, layout.deleteName(), layout.delete_anchor, id_extra)) {
+        .none => {},
+        .cancel => layout.delete_pending = false,
+        .confirm => {
+            intent.* = .{ .delete = .{
+                .pane = .remote,
+                .path = snapshot.path,
+                .name = layout.deleteName(),
+                .kind = layout.delete_kind,
+            } };
+            layout.delete_pending = false;
+        },
     }
-    if (theme.button(@src(), "Delete", .{
-        .min_size_content = .{ .w = 62, .h = 19 },
-        .id_extra = id_extra + 4,
-    }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 9 })) {
-        intent.* = .{ .delete = .{
-            .pane = .remote,
-            .path = snapshot.path,
-            .name = layout.deleteName(),
-            .kind = layout.delete_kind,
-        } };
-        layout.delete_pending = false;
-        menu.close();
-    }
-
-    if (outsideDeleteConfirmClick(menu.data().rectScale().r)) {
-        layout.delete_pending = false;
-        menu.close();
-    }
-}
-
-fn deleteConfirmOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
-    return .{
-        .id_extra = id_extra,
-        .background = true,
-        .color_fill = palette.app_bg,
-        .color_border = palette.border,
-        .color_text = palette.text,
-        .border = .all(1),
-        .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
-        .corner_radius = .all(3),
-        .min_size_content = .{ .w = 156, .h = 48 },
-    };
-}
-
-fn outsideDeleteConfirmClick(menu_rect: dvui.Rect.Physical) bool {
-    if (menu_rect.empty()) return false;
-    for (dvui.events()) |event| {
-        if (event.handled or event.evt != .mouse) continue;
-        const mouse = event.evt.mouse;
-        if (mouse.action != .press or !mouse.button.pointer()) continue;
-        if (menu_rect.contains(mouse.p)) continue;
-        return true;
-    }
-    return false;
 }
 
 fn failureTooltip(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize) void {
@@ -1443,73 +1104,41 @@ fn emptyRow(text: []const u8, palette: theme.Palette, id_extra: usize) void {
     });
 }
 
-fn entryContextMenu(kind: PaneKind, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
-    if (rect.empty()) return;
-
-    const context = dvui.context(@src(), .{ .rect = rect }, .{ .id_extra = id_extra });
-    defer context.deinit();
-
-    const active_point = context.activePoint() orelse return;
-    var menu = dvui.floatingMenu(@src(), .{ .from = .fromPoint(active_point) }, fileContextMenuOptions(palette, id_extra + 1));
-    defer menu.deinit();
-
+fn handleEntryContextMenu(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     const can_mutate = kind == .remote and snapshot.state == .ready;
-    if (fileContextMenuItem("New File", can_mutate, palette, id_extra + 2)) |_| {
-        layout.startCreate(.new_file);
-        menu.close();
-    }
-    if (fileContextMenuItem("New Folder", can_mutate and snapshot.capabilities.can_create_directory, palette, id_extra + 3)) |_| {
-        layout.startCreate(.new_folder);
-        menu.close();
-    }
-    if (fileContextMenuItem("Rename", can_mutate and snapshot.capabilities.can_rename, palette, id_extra + 4)) |_| {
-        layout.startRename(entry.name);
-        menu.close();
-    }
-    if (fileContextMenuItem("Delete", can_mutate and snapshot.capabilities.can_delete, palette, id_extra + 5)) |_| {
-        layout.setDeletePending(entry.name, entry.kind, active_point);
-        menu.close();
-    }
-    if (fileContextMenuItem("Download", can_mutate and snapshot.capabilities.can_download, palette, id_extra + 6)) |_| {
-        intent.* = downloadIntent(snapshot, layout, entry);
-        menu.close();
-    }
-    if (fileContextMenuItem("Upload", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 7)) |_| {
-        intent.* = uploadFilesIntent(snapshot);
-        menu.close();
-    }
-    if (fileContextMenuItem("Upload Folder", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 8)) |_| {
-        intent.* = uploadFolderIntent(snapshot);
-        menu.close();
+    const action = context_menu.entry(palette, .{
+        .rect = rect,
+        .can_mutate = can_mutate,
+        .capabilities = snapshot.capabilities,
+        .download_busy = app.remoteDownloadBusy(snapshot.path, entry.name),
+        .id_extra = id_extra,
+    }) orelse return;
+
+    switch (action.kind) {
+        .new_file => layout.startCreate(.new_file),
+        .new_folder => layout.startCreate(.new_folder),
+        .rename => layout.startRename(entry.name),
+        .delete => layout.setDeletePending(entry.name, entry.kind, action.anchor),
+        .download => intent.* = downloadIntent(snapshot, layout, entry),
+        .upload => intent.* = uploadFilesIntent(snapshot),
+        .upload_folder => intent.* = uploadFolderIntent(snapshot),
+        .details => layout.details.show(snapshot, entry),
     }
 }
 
-fn blankContextMenu(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
-    if (rect.empty()) return;
+fn handleBlankContextMenu(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+    const action = context_menu.blank(palette, .{
+        .rect = rect,
+        .can_mutate = snapshot.state == .ready,
+        .capabilities = snapshot.capabilities,
+        .id_extra = id_extra,
+    }) orelse return;
 
-    const context = dvui.context(@src(), .{ .rect = rect }, .{ .id_extra = id_extra });
-    defer context.deinit();
-
-    const active_point = context.activePoint() orelse return;
-    var menu = dvui.floatingMenu(@src(), .{ .from = .fromPoint(active_point) }, fileContextMenuOptions(palette, id_extra + 1));
-    defer menu.deinit();
-
-    const can_mutate = snapshot.state == .ready;
-    if (fileContextMenuItem("New File", can_mutate, palette, id_extra + 2)) |_| {
-        layout.startCreate(.new_file);
-        menu.close();
-    }
-    if (fileContextMenuItem("New Folder", can_mutate and snapshot.capabilities.can_create_directory, palette, id_extra + 3)) |_| {
-        layout.startCreate(.new_folder);
-        menu.close();
-    }
-    if (fileContextMenuItem("Upload", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 4)) |_| {
-        intent.* = uploadFilesIntent(snapshot);
-        menu.close();
-    }
-    if (fileContextMenuItem("Upload Folder", can_mutate and snapshot.capabilities.can_upload, palette, id_extra + 5)) |_| {
-        intent.* = uploadFolderIntent(snapshot);
-        menu.close();
+    switch (action) {
+        .new_file => layout.startCreate(.new_file),
+        .new_folder => layout.startCreate(.new_folder),
+        .upload => intent.* = uploadFilesIntent(snapshot),
+        .upload_folder => intent.* = uploadFolderIntent(snapshot),
     }
 }
 
@@ -1522,39 +1151,6 @@ fn blankContextRect(crs: dvui.RectScale, row_count: usize) dvui.Rect.Physical {
         .w = crs.r.w,
         .h = crs.r.h - consumed_h,
     };
-}
-
-fn fileContextMenuOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
-    return .{
-        .id_extra = id_extra,
-        .background = true,
-        .color_fill = palette.app_bg,
-        .color_border = palette.border,
-        .color_text = palette.text,
-        .border = .all(1),
-        .padding = .all(0),
-        .corner_radius = .all(3),
-    };
-}
-
-fn fileContextMenuItem(label: []const u8, enabled: bool, palette: theme.Palette, id_extra: usize) ?dvui.Rect.Natural {
-    const text_color = if (enabled) palette.text else palette.text_subtle;
-    const result = dvui.menuItemLabel(@src(), label, .{}, .{
-        .id_extra = id_extra,
-        .expand = .horizontal,
-        .background = true,
-        .font = theme.textFont(label, context_menu_font_size),
-        .color_fill = dvui.Color.transparent,
-        .color_fill_hover = if (enabled) palette.surface_active else dvui.Color.transparent,
-        .color_fill_press = if (enabled) palette.active_bg else dvui.Color.transparent,
-        .color_text = text_color,
-        .color_text_hover = text_color,
-        .color_text_press = text_color,
-        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-        .min_size_content = .{ .h = 17 },
-        .corner_radius = .all(2),
-    });
-    return if (enabled) result else null;
 }
 
 fn renderNameCell(crs: dvui.RectScale, x_offset: f32, width: f32, entry: remote_file.RemoteFileEntry, palette: theme.Palette, id_extra: usize) void {
@@ -1669,56 +1265,6 @@ fn paneTarget(kind: PaneKind) remote_file.FilePaneTarget {
         .tree => .remote,
         .remote => .remote,
     };
-}
-
-fn sizeText(entry: remote_file.RemoteFileEntry, buf: []u8) []const u8 {
-    if (entry.kind == .directory) return "-";
-    const size = entry.size orelse return "-";
-    if (size < 1024) return std.fmt.bufPrint(buf, "{d} B", .{size}) catch "-";
-    if (size < 1024 * 1024) return std.fmt.bufPrint(buf, "{d} KB", .{(size + 1023) / 1024}) catch "-";
-    if (size < 1024 * 1024 * 1024) return std.fmt.bufPrint(buf, "{d} MB", .{(size + 1024 * 1024 - 1) / (1024 * 1024)}) catch "-";
-    return std.fmt.bufPrint(buf, "{d} GB", .{(size + 1024 * 1024 * 1024 - 1) / (1024 * 1024 * 1024)}) catch "-";
-}
-
-fn modifiedText(entry: remote_file.RemoteFileEntry, buf: []u8) []const u8 {
-    const modified_unix = entry.modified_unix orelse return "-";
-    if (modified_unix < 0) return "-";
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(modified_unix) };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-    }) catch "-";
-}
-
-fn permissionText(entry: remote_file.RemoteFileEntry, buf: *[12]u8) []const u8 {
-    const permissions = entry.permissions orelse return "-";
-    buf[0] = switch (entry.kind) {
-        .directory => 'd',
-        .symlink => 'l',
-        else => '-',
-    };
-    const bits = permissions & 0o777;
-    const chars = "rwxrwxrwx";
-    for (0..9) |idx| {
-        const bit: u32 = @as(u32, 1) << @intCast(8 - idx);
-        buf[idx + 1] = if ((bits & bit) != 0) chars[idx] else '-';
-    }
-    return buf[0..10];
-}
-
-fn ownerText(entry: remote_file.RemoteFileEntry, buf: []u8) []const u8 {
-    if (entry.uid) |uid| {
-        if (entry.gid) |gid| return std.fmt.bufPrint(buf, "{d}/{d}", .{ uid, gid }) catch "-";
-        return std.fmt.bufPrint(buf, "{d}/-", .{uid}) catch "-";
-    }
-    if (entry.gid) |gid| return std.fmt.bufPrint(buf, "-/{d}", .{gid}) catch "-";
-    return "-";
 }
 
 fn totalColumnWidth(columns: ColumnWidths) f32 {
