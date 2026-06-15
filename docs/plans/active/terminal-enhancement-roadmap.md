@@ -60,7 +60,6 @@ SSH PTY channel
 - [x] 根据 terminal panel 尺寸和字体 cell size 计算 cols/rows。
 - [x] 将同一组 cols/rows 同步给 `TerminalEmulator.resize()` 和 SSH PTY resize。
 - [x] resize intent 合并为 latest-size intent，避免拖动窗口时把中间尺寸排成长队。
-- [ ] 字号变化后触发重新计算和 PTY resize。Deferred：字号设置暂不进入当前实现主线。
 
 验收：
 
@@ -93,7 +92,6 @@ SSH PTY channel
 - [x] 初版闪烁下划线 cursor。
 - [x] terminal 失焦时隐藏 cursor。
 - [ ] 统一 cell width / line height 计算，避免 cursor 与文本错位。
-- [ ] 支持 cursor style 配置：underline、block、bar。
 - [ ] 支持远端 cursor visible 状态。
 
 验收：
@@ -194,22 +192,9 @@ SSH PTY channel
 - 长输出里可以快速定位文本。
 - 搜索高亮不破坏 terminal 原始样式。
 
-### 10. 字体与字号
+### 10. Title 与断线状态
 
-Deferred：字号设置暂不实现。当前先保持固定 terminal font metrics，避免在搜索、状态、性能和回归基线完成前引入额外 resize/cell metrics 变量。
-
-- [ ] `Cmd+Plus` / `Cmd+Minus` / `Cmd+0`：字号调整。Deferred。
-- [ ] 字号变化后重新计算 cell metrics。Deferred。
-- [ ] 字号变化后触发 PTY resize。Deferred。
-
-验收：
-
-- 字号调整后 terminal grid、cursor 和远端 rows/cols 保持一致。
-
-### 11. Bell、title 与状态
-
-- [ ] 支持 BEL 提示。
-- [ ] 支持 OSC title 更新。
+- [x] 支持 OSC title 更新。
 - [ ] 将远端 title 或 cwd 作为 tab/status panel 可选信息。
 - [ ] 断线后保留最后 screen 和 scrollback。
 
@@ -218,7 +203,7 @@ Deferred：字号设置暂不实现。当前先保持固定 terminal font metric
 - 远端设置 title 时 tab 能显示合理标题。
 - 断线或重连不会立刻清空用户上下文。
 
-### 12. 性能与内存
+### 11. 性能与内存
 
 - [ ] 限制 scrollback 内存占用。
 - [ ] dirty rows / dirty regions。
@@ -231,7 +216,7 @@ Deferred：字号设置暂不实现。当前先保持固定 terminal font metric
 - 连续输出大日志时 UI 不明显卡顿。
 - 长时间 session 不无限增长内存。
 
-### 13. 回归测试基线
+### 12. 回归测试基线
 
 - [ ] 建立 terminal fixture。
 - [x] 覆盖 ANSI colors。
@@ -264,11 +249,10 @@ Deferred：字号设置暂不实现。当前先保持固定 terminal font metric
 1. ANSI 样式渲染。
 2. Alternate screen。
 3. 搜索。
-4. 字号调整。Deferred，暂不进入当前主线。
 
 第三阶段：稳定性和长期体验
 
-1. Bell / title / cwd 状态。
+1. Title / cwd 状态。
 2. 断线保留上下文。
 3. 性能优化。
 4. terminal fixture 和回归基线。

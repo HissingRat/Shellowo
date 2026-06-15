@@ -188,6 +188,7 @@ pub const FilePanelIntent = union(enum) {
 - [x] transfer queue 提供进度 snapshot、任务弹窗、进度条和取消入口。
 - [x] transfer popup 保留完成/失败/取消历史，并显示 bytes、实时速度和 retry/dismiss 入口。
 - [x] file panel 根据 transfer 状态禁用重复下载操作，并通过 path bar 显示 active task 摘要。
+- [x] file panel 根据 path/entry 级 active transfer 禁用高风险操作，并在 upload/download 覆盖目标时弹出确认。
 - [x] 下载默认目录进入 `owoConfig.json`，默认仍为程序目录旁 `owoDownloads/`。
 
 验收：
@@ -199,4 +200,4 @@ pub const FilePanelIntent = union(enum) {
 
 当前 `file_panel` 主线已经推进到 M5，后续优先收敛：
 
-- 后续如需更细粒度 busy UX，可继续扩展 upload 覆盖检测、跨目录批量任务占用提示和持久化 transfer history。
+- 继续打磨更复杂的冲突策略，例如批量任务的 apply-to-all、覆盖后的 rename/skip 选择，以及更细的跨目录占用说明。

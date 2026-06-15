@@ -1,8 +1,8 @@
-# Terminal Splits and Slots Plan
+# Terminal Slots Plan
 
 ## 背景
 
-Shellow 当前一个 SSH workspace tab 只对应一个 SSH PTY terminal。下一阶段希望在单个 SSH workspace 内管理多个 terminal，并最终支持横向/纵向分屏。OSC title 更新会作为每个 terminal slot 的自然标题来源。
+Shellow 当前一个 SSH workspace tab 可以管理多个 SSH PTY terminal。OSC title 更新会作为每个 terminal slot 的自然标题来源。
 
 ## 目标
 
@@ -10,11 +10,10 @@ Shellow 当前一个 SSH workspace tab 只对应一个 SSH PTY terminal。下一
 - 每个 terminal slot 有独立 PTY channel、terminal emulator、scrollback、selection/search viewport 状态。
 - terminal 顶部增加 compact terminal bar，展示当前 SSH workspace 内的 terminal slots。
 - OSC title 更新进入 slot label；无 title 时使用稳定 fallback。
-- 后续 split layout 通过 pane 绑定 terminal slot，不把协议状态塞进 UI widget。
 
 ## 非目标
 
-- 第一阶段不一次性实现完整拖拽分屏布局。
+- 不实现多 pane 终端布局。
 - 不把多个 terminal 的 runtime 状态堆进 `terminal_panel.zig`。
 - 不复用一个 shell byte stream 模拟多 terminal；每个 terminal slot 必须是独立 PTY shell channel。
 - 不把 SFTP/transfer 走 terminal slot。
@@ -37,7 +36,7 @@ WorkspaceTab
 
 DVUI workspace
   -> terminal slot bar
-  -> active terminal pane(s)
+  -> active terminal pane
 ```
 
 职责：
@@ -72,7 +71,7 @@ DVUI workspace
 - [x] 支持切换 active slot。
 - [x] active slot 固定显示在 terminal bar 第一个位置。
 - [x] terminal bar 超出宽度时显示 overflow 下拉菜单选择隐藏 slot。
-- [x] 第一版只显示 active terminal，不做真正分屏。
+- [x] 只显示 active terminal。
 
 ### 3. 单 SSH session 多 PTY runtime
 
@@ -88,14 +87,6 @@ DVUI workspace
 - [x] terminal snapshot/slot summary 携带 title。
 - [x] slot bar 使用 OSC title 作为 label。
 - [x] 无 title 时使用 `TerminalSlot.fallbackLabel()`。
-
-### 5. 真正分屏布局
-
-- [ ] 定义 split tree / pane model。
-- [ ] pane 绑定 terminal slot id。
-- [ ] 支持横向/纵向 split。
-- [ ] 支持 pane resize。
-- [ ] 支持 focus 切换和快捷键。
 
 ## 验收
 

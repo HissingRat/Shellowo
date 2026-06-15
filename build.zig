@@ -57,6 +57,21 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("shellowo-close-icon", .{
         .root_source_file = b.path("assets/close.png"),
     });
+    exe.root_module.addAnonymousImport("shellowo-search-icon", .{
+        .root_source_file = b.path("assets/search.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-search-prev-icon", .{
+        .root_source_file = b.path("assets/search_prev.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-search-next-icon", .{
+        .root_source_file = b.path("assets/search_next.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-replace-next-icon", .{
+        .root_source_file = b.path("assets/replace_next.png"),
+    });
+    exe.root_module.addAnonymousImport("shellowo-replace-all-icon", .{
+        .root_source_file = b.path("assets/replace_all.png"),
+    });
     exe.root_module.addAnonymousImport("shellowo-sun-icon", .{
         .root_source_file = b.path("assets/sun.png"),
     });
@@ -143,6 +158,21 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addAnonymousImport("shellowo-close-icon", .{
         .root_source_file = b.path("assets/close.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-search-icon", .{
+        .root_source_file = b.path("assets/search.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-search-prev-icon", .{
+        .root_source_file = b.path("assets/search_prev.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-search-next-icon", .{
+        .root_source_file = b.path("assets/search_next.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-replace-next-icon", .{
+        .root_source_file = b.path("assets/replace_next.png"),
+    });
+    tests.root_module.addAnonymousImport("shellowo-replace-all-icon", .{
+        .root_source_file = b.path("assets/replace_all.png"),
     });
     tests.root_module.addAnonymousImport("shellowo-sun-icon", .{
         .root_source_file = b.path("assets/sun.png"),

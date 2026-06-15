@@ -4,7 +4,7 @@
 
 Shellow 的 terminal 需要同时满足两类输入：
 
-- 应用层快捷键：复制、粘贴、标签页、搜索、分屏、重连等本地动作。
+- 应用层快捷键：复制、粘贴、标签页、搜索、重连等本地动作。
 - 终端层快捷键：Readline、shell、tmux、screen、vim 等必须透传给远端 PTY。
 
 如果应用层抢占过多按键，`Ctrl+C`、`Ctrl+B`、`Ctrl+A` 这类远端工作流会被破坏；如果全部透传，桌面 terminal 的复制粘贴体验又不可用。
@@ -51,13 +51,8 @@ Shellow 的 terminal 需要同时满足两类输入：
 | 搜索与设置 | 命令面板 | `Command+P` | `Ctrl+P` |
 | 搜索与设置 | 全局搜索 | `Command+Shift+F` | `Ctrl+Shift+F` |
 | 搜索与设置 | 调色板 | `Command+Shift+P` | `Ctrl+Shift+P` |
-| 字体 | 放大字体 | `Command+=` | `Ctrl+=` |
-| 字体 | 缩小字体 | `Command+-` | `Ctrl+-` |
-| 字体 | 重置字体大小 | `Command+0` | `Ctrl+0` |
 | 终端 | 重连会话 | `Command+Shift+R` | `Ctrl+Shift+R` |
 | 终端 | 清空滚动缓冲区 | `Command+Shift+L` | `Ctrl+Shift+L` |
-| 终端 | 水平分屏 | `Command+D` | `Ctrl+D` |
-| 终端 | 垂直分屏 | `Command+Shift+D` | `Ctrl+Shift+D` |
 | 会话 | 保存会话 | `Command+S` | `Ctrl+S` |
 | 会话 | 另存会话 | `Command+Shift+S` | `Ctrl+Shift+S` |
 | 会话 | 打开会话 | `Command+O` | `Ctrl+O` |

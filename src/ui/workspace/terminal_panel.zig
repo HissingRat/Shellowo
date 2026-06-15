@@ -1485,7 +1485,6 @@ fn drainPendingPaste(app: *App, tab: workspace.WorkspaceTab, terminal_id: dvui.I
     }
     if (tab.status == .failed or tab.status == .closed) {
         clearPendingPaste(viewport);
-        app.reconnectTab(tab.id);
         return;
     }
     if (tab.status != .connected) return;
@@ -1697,7 +1696,6 @@ const ansi16 = [_]dvui.Color{
 fn handleTerminalBytes(app: *App, tab: workspace.WorkspaceTab, bytes: []const u8) void {
     if (bytes.len == 0) return;
     if (tab.status == .failed or tab.status == .closed) {
-        app.reconnectTab(tab.id);
         return;
     }
     if (tab.status != .connected) return;

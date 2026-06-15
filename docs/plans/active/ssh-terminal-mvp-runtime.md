@@ -50,7 +50,7 @@ DVUI workspace
 | protocol | `src/protocols/ssh.zig`, `src/protocols/libssh2_backend.zig` | Shellow SSH facade 与 libssh2 backend |
 | terminal | `src/terminal/terminal.zig`, `src/terminal/libvterm_backend.zig` | terminal emulator facade 与 snapshot |
 | ui | `src/ui/workspace/terminal_panel.zig` | render snapshot、keyboard/paste/selection/resize intent |
-| security | `src/security/` | known_hosts、credential prompt/keychain strategy |
+| security | `src/security/` | known_hosts、credential prompt、profile vault strategy |
 
 ## 实施顺序
 
@@ -80,7 +80,6 @@ DVUI workspace
   - private key passphrase
   - private key path
 - UI 只把 credential intent 交给 profile repository 或 session open request；加密、清理和序列化由 repository/security 层负责。
-- 后续 keychain 作为独立 plan，不阻塞 MVP。
 
 验收：
 

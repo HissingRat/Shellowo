@@ -31,8 +31,8 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 尚未具备：
 
 - 安全凭据存储与发布级 profile secret 策略
-- 完整传输中心体验，例如速度、重试、历史和更细的 busy 状态
-- 远程编辑器、权限编辑等高级文件管理能力
+- 完整传输中心体验，例如重试、覆盖冲突处理和更细的 busy/disabled 状态
+- 远程编辑器的大文件、编码检测和冲突处理等高级编辑体验
 - 发布打包流程
 
 ## 3. 技术路线
@@ -48,7 +48,6 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - SSH client / PTY channel 能力
 - SFTP client 能力
 - 本地配置存储格式
-- 可选的系统钥匙串或平台安全存储
 - 打包与签名流程
 
 暂缓：
@@ -208,7 +207,7 @@ terminal widget
 - PTY 输出字节流不在 UI 层随意改写。
 - UI 的 cols/rows 必须和后端 PTY resize 使用同一套值。
 - 文件传输不通过 shell 通道混流。
-- 搜索、复制、粘贴、选区和字体设置属于 terminal widget 能力。
+- 搜索、复制、粘贴和选区属于 terminal widget 能力。
 
 ## 9. 文件与传输边界
 
@@ -229,7 +228,6 @@ SFTP 文件操作通过 Shellow-owned controller 暴露：
 
 - pending
 - running
-- paused
 - completed
 - failed
 - canceled
@@ -261,14 +259,13 @@ SSH/SFTP 工作区：
 - 最近连接
 - UI 设置
 - 终端设置
-- 传输历史
 
 敏感信息策略需要单独决策：
 
 - profile 可以保存用户选择持久化的 secret。
 - 密码、passphrase、私钥内容必须通过 profile repository/security 层定义的存储格式处理，不直接明文写入 JSON。
 - 当前实现支持可选 Master Password：启用后 `data/profiles.json` 存为 Shellowo profile vault object，使用 Argon2id 从用户密码和随机 salt 派生密钥，并用 XChaCha20-Poly1305 加密 profile JSON array。
-- 未启用 Master Password 时仍兼容旧的明文 profile array；后续仍可评估平台安全存储。
+- 未启用 Master Password 时仍兼容旧的明文 profile array。
 
 ## 12. 实施原则
 

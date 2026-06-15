@@ -9,7 +9,9 @@ pub const EntryOptions = struct {
     rect: dvui.Rect.Physical,
     can_mutate: bool,
     capabilities: remote_file.FilePaneCapabilities,
-    download_busy: bool,
+    kind: remote_file.RemoteFileKind,
+    entry_busy: bool,
+    path_busy: bool,
     id_extra: usize,
 };
 
@@ -17,6 +19,7 @@ pub const BlankOptions = struct {
     rect: dvui.Rect.Physical,
     can_mutate: bool,
     capabilities: remote_file.FilePaneCapabilities,
+    path_busy: bool,
     id_extra: usize,
 };
 
@@ -29,6 +32,7 @@ pub const EntryAction = struct {
         new_folder,
         rename,
         delete,
+        edit,
         download,
         upload,
         upload_folder,
@@ -59,16 +63,19 @@ pub fn entry(palette: theme.Palette, opts: EntryOptions) ?EntryAction {
     var menu = dvui.floatingMenu(@src(), .{ .from = .fromPoint(active_point) }, menuOptions(palette, opts.id_extra + 1));
     defer menu.deinit();
 
-    if (menuItem("New File", opts.can_mutate, palette, opts.id_extra + 2)) |_| return closeEntry(menu, .new_file, .{});
-    if (menuItem("New Folder", opts.can_mutate and opts.capabilities.can_create_directory, palette, opts.id_extra + 3)) |_| return closeEntry(menu, .new_folder, .{});
-    if (menuItem("Rename", opts.can_mutate and opts.capabilities.can_rename, palette, opts.id_extra + 4)) |_| return closeEntry(menu, .rename, .{});
-    if (menuItem("Delete", opts.can_mutate and opts.capabilities.can_delete, palette, opts.id_extra + 5)) |_| return closeEntry(menu, .delete, active_point);
-    if (menuItem("Download", opts.can_mutate and opts.capabilities.can_download and !opts.download_busy, palette, opts.id_extra + 6)) |_| return closeEntry(menu, .download, .{});
+    const can_change_path = opts.can_mutate and !opts.path_busy;
+    const can_change_entry = can_change_path and !opts.entry_busy;
+    if (menuItem("New File", can_change_path, palette, opts.id_extra + 2)) |_| return closeEntry(menu, .new_file, .{});
+    if (menuItem("New Folder", can_change_path and opts.capabilities.can_create_directory, palette, opts.id_extra + 3)) |_| return closeEntry(menu, .new_folder, .{});
+    if (menuItem("Rename", can_change_entry and opts.capabilities.can_rename, palette, opts.id_extra + 4)) |_| return closeEntry(menu, .rename, .{});
+    if (menuItem("Delete", can_change_entry and opts.capabilities.can_delete, palette, opts.id_extra + 5)) |_| return closeEntry(menu, .delete, active_point);
+    if (menuItem("Edit", can_change_entry and opts.capabilities.can_edit and opts.kind == .file, palette, opts.id_extra + 6)) |_| return closeEntry(menu, .edit, .{});
+    if (menuItem("Download", opts.can_mutate and opts.capabilities.can_download and !opts.entry_busy, palette, opts.id_extra + 7)) |_| return closeEntry(menu, .download, .{});
     rowSeparator(palette, opts.id_extra + 20);
-    if (menuItem("Upload", opts.can_mutate and opts.capabilities.can_upload, palette, opts.id_extra + 7)) |_| return closeEntry(menu, .upload, .{});
-    if (menuItem("Upload Folder", opts.can_mutate and opts.capabilities.can_upload, palette, opts.id_extra + 8)) |_| return closeEntry(menu, .upload_folder, .{});
+    if (menuItem("Upload", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 8)) |_| return closeEntry(menu, .upload, .{});
+    if (menuItem("Upload Folder", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 9)) |_| return closeEntry(menu, .upload_folder, .{});
     rowSeparator(palette, opts.id_extra + 21);
-    if (menuItem("Details", opts.can_mutate, palette, opts.id_extra + 9)) |_| return closeEntry(menu, .details, .{});
+    if (menuItem("Details", opts.can_mutate, palette, opts.id_extra + 10)) |_| return closeEntry(menu, .details, .{});
     return null;
 }
 
@@ -82,11 +89,12 @@ pub fn blank(palette: theme.Palette, opts: BlankOptions) ?BlankAction {
     var menu = dvui.floatingMenu(@src(), .{ .from = .fromPoint(active_point) }, menuOptions(palette, opts.id_extra + 1));
     defer menu.deinit();
 
-    if (menuItem("New File", opts.can_mutate, palette, opts.id_extra + 2)) |_| return closeBlank(menu, .new_file);
-    if (menuItem("New Folder", opts.can_mutate and opts.capabilities.can_create_directory, palette, opts.id_extra + 3)) |_| return closeBlank(menu, .new_folder);
+    const can_change_path = opts.can_mutate and !opts.path_busy;
+    if (menuItem("New File", can_change_path, palette, opts.id_extra + 2)) |_| return closeBlank(menu, .new_file);
+    if (menuItem("New Folder", can_change_path and opts.capabilities.can_create_directory, palette, opts.id_extra + 3)) |_| return closeBlank(menu, .new_folder);
     rowSeparator(palette, opts.id_extra + 20);
-    if (menuItem("Upload", opts.can_mutate and opts.capabilities.can_upload, palette, opts.id_extra + 4)) |_| return closeBlank(menu, .upload);
-    if (menuItem("Upload Folder", opts.can_mutate and opts.capabilities.can_upload, palette, opts.id_extra + 5)) |_| return closeBlank(menu, .upload_folder);
+    if (menuItem("Upload", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 4)) |_| return closeBlank(menu, .upload);
+    if (menuItem("Upload Folder", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 5)) |_| return closeBlank(menu, .upload_folder);
     return null;
 }
 

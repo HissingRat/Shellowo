@@ -87,8 +87,31 @@ fn pumpEvents(back: *sdl.SDLBackend, win: *dvui.Window) !void {
             rootEndFileDrag();
             continue;
         }
-        _ = try back.addEvent(win, event);
+        try dispatchEvent(back, win, &event);
     }
+}
+
+fn dispatchEvent(back: *sdl.SDLBackend, win: *dvui.Window, event: *c.SDL_Event) !void {
+    const target_window = c.SDL_GetWindowFromEvent(event) orelse {
+        _ = try back.addEvent(win, event.*);
+        return;
+    };
+    if (!try dispatchEventRecursive(back, win, event, target_window)) {
+        _ = try back.addEvent(win, event.*);
+    }
+}
+
+fn dispatchEventRecursive(back: *sdl.SDLBackend, win: *dvui.Window, event: *c.SDL_Event, target_window: *c.SDL_Window) !bool {
+    if (back.window == target_window) {
+        _ = try back.addEvent(win, event.*);
+        return true;
+    }
+
+    var child_it = win.child_os_wins.iterator();
+    while (child_it.next_peek()) |child| {
+        if (try dispatchEventRecursive(child.value.backend, child.value.dvui_win, event, target_window)) return true;
+    }
+    return false;
 }
 
 fn handleDropFile(back: *sdl.SDLBackend, event: c.SDL_Event) void {

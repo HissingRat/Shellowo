@@ -199,6 +199,7 @@ pub const MockSessionRegistry = struct {
             return .{
                 .tree = worker.fileTreeSnapshot(tree_buffer),
                 .remote = worker.filePanelSnapshot(remote_buffer),
+                .editor = worker.fileEditorSnapshot(),
             };
         }
         const remote = mockSftpPane(tab.status);
@@ -448,6 +449,7 @@ fn mockSftpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
             .can_delete = true,
             .can_upload = true,
             .can_download = true,
+            .can_edit = true,
         },
     };
 }

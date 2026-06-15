@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const max_editor_bytes: usize = 64 * 1024 * 1024;
+
 pub const RemoteFileKind = enum {
     file,
     directory,
@@ -58,6 +60,7 @@ pub const FilePaneCapabilities = struct {
     can_delete: bool = false,
     can_upload: bool = false,
     can_download: bool = false,
+    can_edit: bool = false,
 };
 
 pub const FilePaneSnapshot = struct {
@@ -93,9 +96,32 @@ pub const FileTreeSnapshot = struct {
     }
 };
 
+pub const FileEditorState = enum {
+    closed,
+    loading,
+    ready,
+    failed,
+};
+
+pub const FileEditorSnapshot = struct {
+    state: FileEditorState = .closed,
+    path: []const u8 = "",
+    name: []const u8 = "",
+    content: []const u8 = "",
+    error_summary: ?[]const u8 = null,
+    progress_done: u64 = 0,
+    progress_total: ?u64 = null,
+    version: u64 = 0,
+
+    pub fn isOpen(self: FileEditorSnapshot) bool {
+        return self.state != .closed;
+    }
+};
+
 pub const FilePanelSnapshot = struct {
     tree: FileTreeSnapshot = .{},
     remote: FilePaneSnapshot = .{ .location = .sftp },
+    editor: FileEditorSnapshot = .{},
 };
 
 pub const FileEntryTarget = struct {
@@ -128,6 +154,19 @@ pub const FileChmodIntent = struct {
     pane: FilePaneTarget,
     path: []const u8,
     permissions: u32,
+};
+
+pub const FileEditOpenIntent = struct {
+    pane: FilePaneTarget,
+    path: []const u8,
+    name: []const u8,
+    size: ?u64 = null,
+};
+
+pub const FileEditSaveIntent = struct {
+    pane: FilePaneTarget,
+    path: []const u8,
+    content: []const u8,
 };
 
 pub const FileTransferIntent = struct {
@@ -164,6 +203,9 @@ pub const FilePanelIntent = union(enum) {
     create_directory: FileCreateDirectoryIntent,
     rename: FileRenameIntent,
     chmod: FileChmodIntent,
+    open_edit: FileEditOpenIntent,
+    save_edit: FileEditSaveIntent,
+    close_edit: FilePaneTarget,
     delete: FileEntryTarget,
     upload: FileTransferIntent,
     upload_many: FileBatchTransferIntent,

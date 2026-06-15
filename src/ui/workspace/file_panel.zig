@@ -11,8 +11,10 @@ const context_menu = @import("file_panel_elements/context_menu.zig");
 const details_panel = @import("file_panel_elements/details_panel.zig");
 const file_format = @import("file_panel_elements/file_format.zig");
 const permissions_panel = @import("file_panel_elements/permissions_panel.zig");
+const remote_editor = @import("file_panel_elements/remote_editor.zig");
 const resize = @import("resize.zig");
 const theme = @import("../theme.zig");
+const transfer_confirm = @import("file_panel_elements/transfer_confirm.zig");
 
 const folder_icon_bytes = @embedFile("shellowo-folder-icon");
 const file_icon_bytes = @embedFile("shellowo-file-icon");
@@ -89,6 +91,8 @@ const PaneLayoutState = struct {
 
     details: details_panel.State = .{},
     permissions: permissions_panel.State = .{},
+    editor: remote_editor.State = .{},
+    transfer_confirm: transfer_confirm.State = .{},
 
     toast_message: [96]u8 = undefined,
     toast_message_len: usize = 0,
@@ -254,6 +258,7 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
         .app = opts.app,
         .tree = opts.snapshot.tree,
         .snapshot = .{ .location = .sftp },
+        .editor = opts.snapshot.editor,
         .width = opts.local_width.*,
         .columns = opts.columns,
         .id_extra = opts.id_extra + 30,
@@ -268,6 +273,7 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
     filePane(.remote, palette, .{
         .app = opts.app,
         .snapshot = opts.snapshot.remote,
+        .editor = opts.snapshot.editor,
         .width = null,
         .columns = opts.columns,
         .id_extra = opts.id_extra + 50,
@@ -317,6 +323,7 @@ const PaneOptions = struct {
     app: *App,
     tree: remote_file.FileTreeSnapshot = .{},
     snapshot: remote_file.FilePaneSnapshot,
+    editor: remote_file.FileEditorSnapshot = .{},
     width: ?f32,
     columns: *ColumnWidths,
     id_extra: usize,
@@ -353,9 +360,10 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     layout.observeToast(opts.snapshot.error_summary);
     layout.details.syncFromSnapshot(opts.snapshot);
     failureTooltip(layout, palette, opts.id_extra + 6);
+    const path_busy = opts.app.transferBusyInRemotePath(opts.snapshot.path);
     tableHeader(layout, palette, opts.id_extra + 10);
     opts.columns.* = layout.columns;
-    fileRows(kind, opts.app, opts.snapshot, layout, palette, opts.id_extra + 30, intent);
+    fileRows(kind, opts.app, opts.snapshot, layout, path_busy, palette, opts.id_extra + 30, intent);
     handleDeleteConfirm(opts.snapshot, layout, palette, opts.id_extra + 5000, intent);
     if (details_panel.show(&layout.details, palette, opts.id_extra + 5200)) |action| {
         switch (action) {
@@ -368,6 +376,17 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
             else => {},
         }
         intent.* = panel_intent;
+    }
+    if (remote_editor.show(&layout.editor, opts.editor, palette, opts.id_extra + 5600)) |editor_intent| {
+        intent.* = editor_intent;
+    }
+    switch (transfer_confirm.show(&layout.transfer_confirm, palette, opts.id_extra + 5800)) {
+        .none => {},
+        .cancel => layout.transfer_confirm.clear(),
+        .overwrite => {
+            intent.* = layout.transfer_confirm.intent();
+            layout.transfer_confirm.clear();
+        },
     }
     if (intent.* != null) layout.clearToastGate();
 }
@@ -396,7 +415,7 @@ fn tableHeader(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize
     drawColumnSeparators(row.data().contentRectScale(), columns, palette);
 }
 
-fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
@@ -430,9 +449,9 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
         .ready => {},
     }
 
-    registerDropTarget(kind, app, snapshot, drop_rect);
+    registerDropTarget(kind, app, snapshot, path_busy, drop_rect);
     renderDropTooltip(kind, app, snapshot, palette, id_extra + 7000);
-    handleDroppedUploads(kind, app, snapshot, drop_rect, intent);
+    handleDroppedUploads(kind, app, snapshot, layout, path_busy, drop_rect, intent);
 
     if (layout.edit_mode == .new_file or layout.edit_mode == .new_folder) {
         editFileRow(snapshot, layout, palette, id_extra + 3, intent);
@@ -440,15 +459,15 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
 
     if (snapshot.entries.len == 0 and layout.edit_mode == .none) {
         emptyRow("No files", palette, id_extra);
-        handleBlankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), 1), palette, id_extra + 500, intent);
+        handleBlankContextMenu(app, snapshot, layout, path_busy, blankContextRect(scroll.data().contentRectScale(), 1), palette, id_extra + 500, intent);
         return;
     }
 
     for (snapshot.entries, 0..) |entry, idx| {
-        fileRow(kind, app, snapshot, entry, layout, palette, id_extra + idx * 10, intent);
+        fileRow(kind, app, snapshot, entry, layout, path_busy, palette, id_extra + idx * 10, intent);
     }
     const row_count = snapshot.entries.len + if (layout.edit_mode == .new_file or layout.edit_mode == .new_folder) @as(usize, 1) else 0;
-    handleBlankContextMenu(snapshot, layout, blankContextRect(scroll.data().contentRectScale(), row_count), palette, id_extra + 500, intent);
+    handleBlankContextMenu(app, snapshot, layout, path_busy, blankContextRect(scroll.data().contentRectScale(), row_count), palette, id_extra + 500, intent);
 }
 
 fn treeRows(snapshot: remote_file.FileTreeSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
@@ -566,7 +585,7 @@ fn treeToggleRect(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry) dvui.
     };
 }
 
-fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     if (layout.edit_mode == .rename and std.mem.eql(u8, layout.editingTargetName(), entry.name)) {
         editFileRow(snapshot, layout, palette, id_extra, intent);
         return;
@@ -597,11 +616,19 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
     if (click_event) |event| {
         const pane = paneTarget(kind);
         const additive = clickAdditive(event);
-        if (entry.isDirectory() and registerEntryClick(layout, kind, entry.name) >= 2) {
+        const click_count = registerEntryClick(layout, kind, entry.name);
+        if (entry.isDirectory() and click_count >= 2) {
             intent.* = .{ .open = .{
                 .pane = pane,
                 .path = snapshot.path,
                 .name = entry.name,
+            } };
+        } else if (kind == .remote and entry.kind == .file and snapshot.capabilities.can_edit and click_count >= 2) {
+            intent.* = .{ .open_edit = .{
+                .pane = .remote,
+                .path = snapshot.path,
+                .name = entry.name,
+                .size = entry.size,
             } };
         } else {
             layout.applySelection(entry.name, additive);
@@ -634,7 +661,7 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
     var owner_buf: [40]u8 = undefined;
     renderCellText(crs, x, columns.owner, file_format.ownerText(entry, &owner_buf), palette.muted_text, id_extra + 6);
 
-    handleEntryContextMenu(kind, app, snapshot, entry, layout, crs.r, palette, id_extra + 100, intent);
+    handleEntryContextMenu(kind, app, snapshot, entry, layout, path_busy, crs.r, palette, id_extra + 100, intent);
     button.drawFocus();
 }
 
@@ -828,8 +855,8 @@ fn droppedUploadIntent(snapshot: remote_file.FilePaneSnapshot, path: []const u8)
     } };
 }
 
-fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.FilePaneSnapshot, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
-    if (intent.* != null or kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
+fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
+    if (intent.* != null or kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
     var paths: [max_selected_entries][]const u8 = undefined;
     var count: usize = 0;
     for (app.nativeEvents()) |event| {
@@ -845,7 +872,7 @@ fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.F
     }
     if (count == 0) return;
     if (count == 1) {
-        intent.* = droppedUploadIntent(snapshot, paths[0]);
+        queueTransferIntent(app, snapshot, layout, droppedUploadIntent(snapshot, paths[0]), intent);
         return;
     }
 
@@ -853,14 +880,14 @@ fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.F
     for (paths[1..count]) |path| {
         const dir = std.fs.path.dirname(path) orelse "";
         if (!std.mem.eql(u8, dir, first_dir)) {
-            intent.* = droppedUploadIntent(snapshot, paths[0]);
+            queueTransferIntent(app, snapshot, layout, droppedUploadIntent(snapshot, paths[0]), intent);
             return;
         }
     }
 
     const arena = dvui.currentWindow().arena();
     const entries = arena.alloc(remote_file.FileBatchEntry, count) catch {
-        intent.* = droppedUploadIntent(snapshot, paths[0]);
+        queueTransferIntent(app, snapshot, layout, droppedUploadIntent(snapshot, paths[0]), intent);
         return;
     };
     for (paths[0..count], 0..) |path, idx| {
@@ -869,15 +896,15 @@ fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.F
             .kind = .file,
         };
     }
-    intent.* = .{ .upload_many = .{
+    queueTransferIntent(app, snapshot, layout, .{ .upload_many = .{
         .local_path = first_dir,
         .remote_path = snapshot.path,
         .entries = entries,
-    } };
+    } }, intent);
 }
 
-fn registerDropTarget(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, rect: dvui.Rect.Physical) void {
-    if (kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
+fn registerDropTarget(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, path_busy: bool, rect: dvui.Rect.Physical) void {
+    if (kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
     app.registerFileDropTarget(.{
         .x = rect.x,
         .y = rect.y,
@@ -922,6 +949,79 @@ fn renderDropTooltip(kind: PaneKind, app: *const App, snapshot: remote_file.File
         .padding = .all(0),
         .margin = .all(0),
     });
+}
+
+fn queueTransferIntent(app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, candidate: ?remote_file.FilePanelIntent, intent: *?remote_file.FilePanelIntent) void {
+    const transfer_intent = candidate orelse return;
+    var message_buf: [160]u8 = undefined;
+    if (transferConflictMessage(app, snapshot, transfer_intent, &message_buf)) |message| {
+        layout.transfer_confirm.set(transfer_intent, message);
+        return;
+    }
+    intent.* = transfer_intent;
+}
+
+fn transferConflictMessage(app: *const App, snapshot: remote_file.FilePaneSnapshot, intent: remote_file.FilePanelIntent, buf: []u8) ?[]const u8 {
+    return switch (intent) {
+        .upload => |item| if (remoteNameExists(snapshot, item.name))
+            std.fmt.bufPrint(buf, "Remote item '{s}' already exists. Overwrite it?", .{item.name}) catch "Remote item already exists. Overwrite it?"
+        else
+            null,
+        .upload_many => |item| conflictMessageForRemoteBatch(snapshot, item.entries, buf),
+        .download => |item| if (localTargetExists(app, item.local_path, item.name))
+            std.fmt.bufPrint(buf, "Local item '{s}' already exists. Overwrite it?", .{item.name}) catch "Local item already exists. Overwrite it?"
+        else
+            null,
+        .download_many => |item| conflictMessageForLocalBatch(app, item.local_path, item.entries, buf),
+        else => null,
+    };
+}
+
+fn conflictMessageForRemoteBatch(snapshot: remote_file.FilePaneSnapshot, entries: []const remote_file.FileBatchEntry, buf: []u8) ?[]const u8 {
+    var count: usize = 0;
+    var first: []const u8 = "";
+    for (entries) |entry| {
+        if (!remoteNameExists(snapshot, entry.name)) continue;
+        if (count == 0) first = entry.name;
+        count += 1;
+    }
+    if (count == 0) return null;
+    if (count == 1) {
+        return std.fmt.bufPrint(buf, "Remote item '{s}' already exists. Overwrite it?", .{first}) catch "Remote item already exists. Overwrite it?";
+    }
+    return std.fmt.bufPrint(buf, "{d} remote items already exist. Overwrite them?", .{count}) catch "Remote items already exist. Overwrite them?";
+}
+
+fn conflictMessageForLocalBatch(app: *const App, local_path: []const u8, entries: []const remote_file.FileBatchEntry, buf: []u8) ?[]const u8 {
+    var count: usize = 0;
+    var first: []const u8 = "";
+    for (entries) |entry| {
+        if (!localTargetExists(app, local_path, entry.name)) continue;
+        if (count == 0) first = entry.name;
+        count += 1;
+    }
+    if (count == 0) return null;
+    if (count == 1) {
+        return std.fmt.bufPrint(buf, "Local item '{s}' already exists. Overwrite it?", .{first}) catch "Local item already exists. Overwrite it?";
+    }
+    return std.fmt.bufPrint(buf, "{d} local items already exist. Overwrite them?", .{count}) catch "Local items already exist. Overwrite them?";
+}
+
+fn remoteNameExists(snapshot: remote_file.FilePaneSnapshot, name: []const u8) bool {
+    return entryByName(snapshot, name) != null;
+}
+
+fn localTargetExists(app: *const App, local_path: []const u8, name: []const u8) bool {
+    const io = app.io orelse return false;
+    const arena = dvui.currentWindow().arena();
+    const base = if (local_path.len > 0) local_path else app.config.download_path;
+    const full_path = std.fs.path.join(arena, &.{ base, name }) catch return false;
+    if (std.fs.path.isAbsolute(full_path)) {
+        std.Io.Dir.accessAbsolute(io, full_path, .{}) catch return false;
+        return true;
+    }
+    std.Io.Dir.cwd().access(io, full_path, .{}) catch return false;
+    return true;
 }
 
 fn selectedEntriesForAction(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, fallback: remote_file.RemoteFileEntry) usize {
@@ -1104,13 +1204,16 @@ fn emptyRow(text: []const u8, palette: theme.Palette, id_extra: usize) void {
     });
 }
 
-fn handleEntryContextMenu(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn handleEntryContextMenu(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     const can_mutate = kind == .remote and snapshot.state == .ready;
+    const entry_busy = app.remoteEntryTransferBusy(snapshot.path, entry.name);
     const action = context_menu.entry(palette, .{
         .rect = rect,
         .can_mutate = can_mutate,
         .capabilities = snapshot.capabilities,
-        .download_busy = app.remoteDownloadBusy(snapshot.path, entry.name),
+        .kind = entry.kind,
+        .entry_busy = entry_busy,
+        .path_busy = path_busy,
         .id_extra = id_extra,
     }) orelse return;
 
@@ -1119,26 +1222,33 @@ fn handleEntryContextMenu(kind: PaneKind, app: *App, snapshot: remote_file.FileP
         .new_folder => layout.startCreate(.new_folder),
         .rename => layout.startRename(entry.name),
         .delete => layout.setDeletePending(entry.name, entry.kind, action.anchor),
-        .download => intent.* = downloadIntent(snapshot, layout, entry),
-        .upload => intent.* = uploadFilesIntent(snapshot),
-        .upload_folder => intent.* = uploadFolderIntent(snapshot),
+        .edit => intent.* = .{ .open_edit = .{
+            .pane = .remote,
+            .path = snapshot.path,
+            .name = entry.name,
+            .size = entry.size,
+        } },
+        .download => queueTransferIntent(app, snapshot, layout, downloadIntent(snapshot, layout, entry), intent),
+        .upload => queueTransferIntent(app, snapshot, layout, uploadFilesIntent(snapshot), intent),
+        .upload_folder => queueTransferIntent(app, snapshot, layout, uploadFolderIntent(snapshot), intent),
         .details => layout.details.show(snapshot, entry),
     }
 }
 
-fn handleBlankContextMenu(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn handleBlankContextMenu(app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     const action = context_menu.blank(palette, .{
         .rect = rect,
         .can_mutate = snapshot.state == .ready,
         .capabilities = snapshot.capabilities,
+        .path_busy = path_busy,
         .id_extra = id_extra,
     }) orelse return;
 
     switch (action) {
         .new_file => layout.startCreate(.new_file),
         .new_folder => layout.startCreate(.new_folder),
-        .upload => intent.* = uploadFilesIntent(snapshot),
-        .upload_folder => intent.* = uploadFolderIntent(snapshot),
+        .upload => queueTransferIntent(app, snapshot, layout, uploadFilesIntent(snapshot), intent),
+        .upload_folder => queueTransferIntent(app, snapshot, layout, uploadFolderIntent(snapshot), intent),
     }
 }
 

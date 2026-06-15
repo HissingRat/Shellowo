@@ -78,6 +78,19 @@ const TransferByteProgress = struct {
     }
 };
 
+const EditorByteProgress = struct {
+    worker: *SshWorkspaceWorker,
+    total: ?u64,
+
+    fn reporter(self: *EditorByteProgress) ssh.FileProgressReporter {
+        return .{ .context = self, .vtable = &editor_byte_progress_vtable };
+    }
+
+    fn report(self: *EditorByteProgress, completed_bytes: u64) void {
+        self.worker.markEditorProgress(completed_bytes, self.total);
+    }
+};
+
 const DownloadThread = struct {
     thread: std.Thread,
     done: *std.atomic.Value(bool),
@@ -145,6 +158,20 @@ const PtySlot = struct {
             self.emulator = null;
         }
         self.setState(.stopped);
+    }
+
+    fn disconnectRuntime(self: *PtySlot, err: ssh_session.Error) void {
+        if (self.state() == .stopped) return;
+        self.last_error = err;
+        if (self.shell) |shell| {
+            shell.close();
+            self.shell = null;
+        }
+        if (self.emulator) |emulator| {
+            emulator.deinit();
+            self.emulator = null;
+        }
+        self.setState(.failed);
     }
 
     fn queueInput(self: *PtySlot, allocator: std.mem.Allocator, bytes: []const u8) !void {
@@ -315,6 +342,15 @@ pub const SshWorkspaceWorker = struct {
     file_dir_caches: std.ArrayList(FileDirectoryCache) = .empty,
     file_error: [max_file_error]u8 = undefined,
     file_error_len: usize = 0,
+    editor_state: remote_file.FileEditorState = .closed,
+    editor_path: []u8 = &.{},
+    editor_name: []u8 = &.{},
+    editor_content: []u8 = &.{},
+    editor_error: [max_file_error]u8 = undefined,
+    editor_error_len: usize = 0,
+    editor_progress_done: u64 = 0,
+    editor_progress_total: ?u64 = null,
+    editor_version: u64 = 0,
     file_selected_name: [max_file_selection]u8 = undefined,
     file_selected_name_len: usize = 0,
     file_tree_load_path: [max_file_path]u8 = undefined,
@@ -365,6 +401,7 @@ pub const SshWorkspaceWorker = struct {
         self.file_dir_caches.deinit(self.allocator);
         self.clearPendingFileIntentsLocked();
         self.pending_file_intents.deinit(self.allocator);
+        self.clearEditorLocked();
         self.transfer_progress.deinit(self.allocator);
         self.unlockFile();
         self.download_threads.deinit(self.allocator);
@@ -561,6 +598,22 @@ pub const SshWorkspaceWorker = struct {
         };
     }
 
+    pub fn fileEditorSnapshot(self: *SshWorkspaceWorker) remote_file.FileEditorSnapshot {
+        self.lockFile();
+        defer self.unlockFile();
+
+        return .{
+            .state = self.editor_state,
+            .path = self.editor_path,
+            .name = self.editor_name,
+            .content = self.editor_content,
+            .error_summary = self.editorErrorLocked(),
+            .progress_done = self.editor_progress_done,
+            .progress_total = self.editor_progress_total,
+            .version = self.editor_version,
+        };
+    }
+
     pub fn queueFileIntent(self: *SshWorkspaceWorker, intent: remote_file.FilePanelIntent) !void {
         const owned = try self.cloneFileIntent(intent);
         errdefer self.freeFileIntent(owned);
@@ -672,7 +725,6 @@ pub const SshWorkspaceWorker = struct {
             return;
         };
         defer client.close();
-        defer self.closeAllSlots();
 
         self.setState(.connected);
         var buffer: [8192]u8 = undefined;
@@ -680,6 +732,7 @@ pub const SshWorkspaceWorker = struct {
         while (!self.stop_requested.load(.acquire)) {
             self.pumpSlots(client, &buffer, &input_buffer) catch |err| {
                 self.fail(err);
+                self.disconnectAllSlots(err);
                 return;
             };
             self.pumpMonitor(client);
@@ -687,6 +740,7 @@ pub const SshWorkspaceWorker = struct {
         }
 
         self.setState(.stopping);
+        self.closeAllSlots();
         self.setState(.stopped);
     }
 
@@ -842,6 +896,18 @@ pub const SshWorkspaceWorker = struct {
         for (self.slots.items) |slot| slot.closeRuntime();
     }
 
+    fn disconnectAllSlots(self: *SshWorkspaceWorker, err: ssh_session.Error) void {
+        self.lockSlots();
+        defer self.unlockSlots();
+        for (self.slots.items) |slot| {
+            if (slot.close_requested.load(.acquire)) {
+                slot.closeRuntime();
+            } else {
+                slot.disconnectRuntime(err);
+            }
+        }
+    }
+
     fn pumpMonitor(self: *SshWorkspaceWorker, client: ssh.Client) void {
         if (self.monitor_elapsed_ms < monitor_interval_ms) {
             self.monitor_elapsed_ms += 1;
@@ -980,6 +1046,17 @@ pub const SshWorkspaceWorker = struct {
                 },
                 .chmod => |chmod| if (chmod.pane == .remote) {
                     self.chmodRemoteEntry(sftp, chmod.path, chmod.permissions);
+                },
+                .open_edit => |edit| if (edit.pane == .remote) {
+                    self.openRemoteEditor(sftp, edit.path, edit.name, edit.size);
+                },
+                .save_edit => |edit| if (edit.pane == .remote) {
+                    self.saveRemoteEditor(sftp, edit.path, edit.content);
+                },
+                .close_edit => |pane| if (pane == .remote) {
+                    self.lockFile();
+                    defer self.unlockFile();
+                    self.clearEditorLocked();
                 },
                 .delete => |target| if (target.pane == .remote) {
                     self.deleteRemoteEntry(sftp, target.path, target.name, target.kind orelse .file);
@@ -1137,6 +1214,13 @@ pub const SshWorkspaceWorker = struct {
             return;
         };
         defer self.allocator.free(full_path);
+        if (self.remoteEntryExists(sftp, parent_path, name) catch {
+            self.storeFileNotice("File create failed");
+            return;
+        }) {
+            self.storeFileNotice("File already exists");
+            return;
+        }
         sftp.writeFile(full_path, "") catch {
             self.storeFileNotice("File create failed");
             return;
@@ -1151,6 +1235,13 @@ pub const SshWorkspaceWorker = struct {
             return;
         };
         defer self.allocator.free(full_path);
+        if (self.remoteEntryExists(sftp, parent_path, name) catch {
+            self.storeFileNotice("Folder create failed");
+            return;
+        }) {
+            self.storeFileNotice("Folder already exists");
+            return;
+        }
         sftp.mkdir(full_path) catch {
             self.storeFileNotice("Folder create failed");
             return;
@@ -1198,6 +1289,55 @@ pub const SshWorkspaceWorker = struct {
             self.storeFileNotice("Permission update failed");
             return;
         };
+        const parent = parentPath(path);
+        self.invalidatePathCaches(parent);
+        self.file_refresh_requested.store(true, .release);
+    }
+
+    fn openRemoteEditor(self: *SshWorkspaceWorker, sftp: ssh.Sftp, parent_path: []const u8, name: []const u8, size: ?u64) void {
+        const full_path = joinRemotePath(self.allocator, parent_path, name) catch {
+            self.storeEditorOpenError(parent_path, name, "Editor open failed");
+            return;
+        };
+        defer self.allocator.free(full_path);
+        if (size) |value| {
+            if (value > remote_file.max_editor_bytes) {
+                self.storeEditorOpenError(full_path, name, "File is too large to edit");
+                return;
+            }
+        }
+        self.storeEditorLoading(full_path, name, size);
+
+        var progress = EditorByteProgress{ .worker = self, .total = size };
+        progress.report(0);
+        const bytes = sftp.readFileWithProgress(self.allocator, full_path, progress.reporter()) catch {
+            self.storeEditorOpenError(full_path, name, "Editor open failed");
+            return;
+        };
+        defer self.allocator.free(bytes);
+
+        if (bytes.len > remote_file.max_editor_bytes) {
+            self.storeEditorOpenError(full_path, name, "File is too large to edit");
+            return;
+        }
+        if (std.mem.indexOfScalar(u8, bytes, 0) != null) {
+            self.storeEditorOpenError(full_path, name, "Binary file cannot be edited");
+            return;
+        }
+        self.storeEditorContent(full_path, name, bytes, null);
+    }
+
+    fn saveRemoteEditor(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, content: []const u8) void {
+        if (content.len > remote_file.max_editor_bytes) {
+            self.storeEditorInlineError("File is too large to save");
+            return;
+        }
+        sftp.writeFile(path, content) catch {
+            self.storeEditorInlineError("Save failed");
+            return;
+        };
+        const name = baseName(path);
+        self.storeEditorContent(path, name, content, "Saved");
         const parent = parentPath(path);
         self.invalidatePathCaches(parent);
         self.file_refresh_requested.store(true, .release);
@@ -1786,6 +1926,10 @@ pub const SshWorkspaceWorker = struct {
         return if (self.file_error_len == 0) null else self.file_error[0..self.file_error_len];
     }
 
+    fn editorErrorLocked(self: *const SshWorkspaceWorker) ?[]const u8 {
+        return if (self.editor_error_len == 0) null else self.editor_error[0..self.editor_error_len];
+    }
+
     fn fileSelectedNameLocked(self: *const SshWorkspaceWorker) ?[]const u8 {
         return if (self.file_selected_name_len == 0) null else self.file_selected_name[0..self.file_selected_name_len];
     }
@@ -1800,6 +1944,7 @@ pub const SshWorkspaceWorker = struct {
             .can_delete = self.file_state == .ready,
             .can_upload = self.file_state == .ready,
             .can_download = self.file_state == .ready,
+            .can_edit = self.file_state == .ready,
         };
     }
 
@@ -1854,6 +1999,121 @@ pub const SshWorkspaceWorker = struct {
         const len = @min(self.file_error.len, message.len);
         if (len > 0) @memcpy(self.file_error[0..len], message[0..len]);
         self.file_error_len = len;
+    }
+
+    fn clearEditorLocked(self: *SshWorkspaceWorker) void {
+        if (self.editor_path.len > 0) self.allocator.free(self.editor_path);
+        if (self.editor_name.len > 0) self.allocator.free(self.editor_name);
+        if (self.editor_content.len > 0) self.allocator.free(self.editor_content);
+        self.editor_path = &.{};
+        self.editor_name = &.{};
+        self.editor_content = &.{};
+        self.editor_error_len = 0;
+        self.editor_state = .closed;
+        self.editor_version += 1;
+    }
+
+    fn storeEditorLoading(self: *SshWorkspaceWorker, path: []const u8, name: []const u8, total: ?u64) void {
+        const owned_path = self.allocator.dupe(u8, path) catch {
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+        errdefer self.allocator.free(owned_path);
+        const owned_name = self.allocator.dupe(u8, name) catch {
+            self.allocator.free(owned_path);
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+
+        self.lockFile();
+        defer self.unlockFile();
+        self.clearEditorLocked();
+        self.editor_path = owned_path;
+        self.editor_name = owned_name;
+        self.editor_state = .loading;
+        self.editor_progress_done = 0;
+        self.editor_progress_total = total;
+        self.editor_version += 1;
+    }
+
+    fn storeEditorOpenError(self: *SshWorkspaceWorker, path: []const u8, name: []const u8, message: []const u8) void {
+        const owned_path = self.allocator.dupe(u8, path) catch {
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+        errdefer self.allocator.free(owned_path);
+        const owned_name = self.allocator.dupe(u8, name) catch {
+            self.allocator.free(owned_path);
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+
+        self.lockFile();
+        defer self.unlockFile();
+        self.clearEditorLocked();
+        self.editor_path = owned_path;
+        self.editor_name = owned_name;
+        self.editor_state = .failed;
+        self.editor_progress_done = 0;
+        self.editor_progress_total = null;
+        self.setEditorErrorLocked(message);
+        self.editor_version += 1;
+    }
+
+    fn storeEditorContent(self: *SshWorkspaceWorker, path: []const u8, name: []const u8, content: []const u8, notice: ?[]const u8) void {
+        const owned_path = self.allocator.dupe(u8, path) catch {
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+        errdefer self.allocator.free(owned_path);
+        const owned_name = self.allocator.dupe(u8, name) catch {
+            self.allocator.free(owned_path);
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+        errdefer self.allocator.free(owned_name);
+        const owned_content = self.allocator.dupe(u8, content) catch {
+            self.allocator.free(owned_path);
+            self.allocator.free(owned_name);
+            self.storeEditorInlineError("OutOfMemory");
+            return;
+        };
+
+        self.lockFile();
+        defer self.unlockFile();
+        self.clearEditorLocked();
+        self.editor_path = owned_path;
+        self.editor_name = owned_name;
+        self.editor_content = owned_content;
+        self.editor_state = .ready;
+        self.editor_progress_done = @intCast(content.len);
+        self.editor_progress_total = @intCast(content.len);
+        if (notice) |message| {
+            self.setEditorErrorLocked(message);
+        } else {
+            self.editor_error_len = 0;
+        }
+        self.editor_version += 1;
+    }
+
+    fn storeEditorInlineError(self: *SshWorkspaceWorker, message: []const u8) void {
+        self.lockFile();
+        defer self.unlockFile();
+        self.setEditorErrorLocked(message);
+        if (self.editor_state == .closed) self.editor_state = .failed;
+    }
+
+    fn setEditorErrorLocked(self: *SshWorkspaceWorker, message: []const u8) void {
+        const len = @min(self.editor_error.len, message.len);
+        if (len > 0) @memcpy(self.editor_error[0..len], message[0..len]);
+        self.editor_error_len = len;
+    }
+
+    fn markEditorProgress(self: *SshWorkspaceWorker, done: u64, total: ?u64) void {
+        self.lockFile();
+        defer self.unlockFile();
+        self.editor_progress_done = done;
+        if (total) |value| self.editor_progress_total = value;
     }
 
     fn markTransferProgress(self: *SshWorkspaceWorker, transfer_id: ?u64, status: transfer_core.TransferStatus, progress: f32, bytes_done: u64, bytes_total: ?u64) void {
@@ -1978,6 +2238,18 @@ pub const SshWorkspaceWorker = struct {
                 .path = try self.allocator.dupe(u8, chmod.path),
                 .permissions = chmod.permissions,
             } },
+            .open_edit => |edit| .{ .open_edit = .{
+                .pane = edit.pane,
+                .path = try self.allocator.dupe(u8, edit.path),
+                .name = try self.allocator.dupe(u8, edit.name),
+                .size = edit.size,
+            } },
+            .save_edit => |edit| .{ .save_edit = .{
+                .pane = edit.pane,
+                .path = try self.allocator.dupe(u8, edit.path),
+                .content = try self.allocator.dupe(u8, edit.content),
+            } },
+            .close_edit => |pane| .{ .close_edit = pane },
             .delete => |target| .{ .delete = try self.cloneEntryTarget(target) },
             .upload => |transfer| .{ .upload = try self.cloneTransferIntent(transfer) },
             .upload_many => |transfer| .{ .upload_many = try self.cloneBatchTransferIntent(transfer) },
@@ -2038,6 +2310,15 @@ pub const SshWorkspaceWorker = struct {
                 self.allocator.free(rename.new_name);
             },
             .chmod => |chmod| self.allocator.free(chmod.path),
+            .open_edit => |edit| {
+                self.allocator.free(edit.path);
+                self.allocator.free(edit.name);
+            },
+            .save_edit => |edit| {
+                self.allocator.free(edit.path);
+                self.allocator.free(edit.content);
+            },
+            .close_edit => {},
             .delete => |target| self.freeEntryTarget(target),
             .upload => |transfer| self.freeTransferIntent(transfer),
             .upload_many => |transfer| self.freeBatchTransferIntent(transfer),
@@ -2064,6 +2345,15 @@ pub const SshWorkspaceWorker = struct {
         self.allocator.free(transfer.entries);
     }
 
+    fn remoteEntryExists(self: *SshWorkspaceWorker, sftp: ssh.Sftp, parent_path: []const u8, name: []const u8) !bool {
+        const entries = try sftp.list(self.allocator, parent_path);
+        defer self.freeRemoteEntries(entries);
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return true;
+        }
+        return false;
+    }
+
     fn freeRemoteEntries(self: *SshWorkspaceWorker, entries: []remote_file.RemoteFileEntry) void {
         for (entries) |entry| self.allocator.free(entry.name);
         self.allocator.free(entries);
@@ -2076,6 +2366,12 @@ fn parentPath(path: []const u8) []const u8 {
     const idx = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return "/";
     if (idx == 0) return "/";
     return trimmed[0..idx];
+}
+
+fn baseName(path: []const u8) []const u8 {
+    const trimmed = trimRightSlash(path);
+    const idx = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return trimmed;
+    return trimmed[idx + 1 ..];
 }
 
 fn joinRemotePath(allocator: std.mem.Allocator, base: []const u8, name: []const u8) ![]const u8 {
@@ -2152,6 +2448,7 @@ fn directoryEntryExists(entries: []const remote_file.RemoteFileEntry, name: []co
 const progress_vtable: ssh.ConnectProgressReporter.VTable = .{ .report = SshWorkspaceWorker.reportProgress };
 const cancel_token_vtable: ssh.CancelToken.VTable = .{ .canceled = SshWorkspaceWorker.canceled };
 const byte_progress_vtable: ssh.FileProgressReporter.VTable = .{ .report = reportTransferBytes };
+const editor_byte_progress_vtable: ssh.FileProgressReporter.VTable = .{ .report = reportEditorBytes };
 
 fn reportTransferBytes(context: *anyopaque, completed_bytes: u64, total_bytes: ?u64) bool {
     const state: *TransferByteProgress = @ptrCast(@alignCast(context));
@@ -2165,6 +2462,13 @@ fn reportTransferBytes(context: *anyopaque, completed_bytes: u64, total_bytes: ?
         total,
     );
     return true;
+}
+
+fn reportEditorBytes(context: *anyopaque, completed_bytes: u64, total_bytes: ?u64) bool {
+    const state: *EditorByteProgress = @ptrCast(@alignCast(context));
+    const total = state.total orelse total_bytes;
+    state.worker.markEditorProgress(completed_bytes, total);
+    return !state.worker.stop_requested.load(.acquire);
 }
 
 fn transferErrorCanceled(err: anyerror) bool {
@@ -2225,4 +2529,33 @@ test "workspace worker owns one initial terminal slot" {
 
     try std.testing.expectEqual(@as(usize, 1), worker.visibleSlotCount());
     try std.testing.expect(worker.firstVisibleSlotId() != null);
+}
+
+test "pty slot keeps cached snapshot after disconnect" {
+    const allocator = std.testing.allocator;
+    const slot = try PtySlot.create(allocator, 1, 1);
+    defer slot.destroy(allocator);
+
+    const cells = try allocator.alloc(terminal.Cell, 4);
+    cells[0] = .{ .codepoint = 'o' };
+    cells[1] = .{ .codepoint = 'w' };
+    cells[2] = .{ .codepoint = 'o' };
+    cells[3] = .{};
+    slot.snapshot_cache = .{
+        .allocator = allocator,
+        .size = .{ .cols = 2, .rows = 2 },
+        .cells = cells,
+        .cursor = .{},
+    };
+    slot.setState(.connected);
+
+    slot.disconnectRuntime(ssh_session.Error.ChannelClosed);
+
+    try std.testing.expectEqual(State.failed, slot.state());
+    try std.testing.expect(slot.visible());
+
+    var snapshot = (try slot.copySnapshot(allocator)).?;
+    defer snapshot.deinit();
+    try std.testing.expectEqual(@as(u21, 'o'), snapshot.cells[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'w'), snapshot.cells[1].codepoint);
 }

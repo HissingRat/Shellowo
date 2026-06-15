@@ -661,20 +661,15 @@ pub fn retryTransfer(self: *App, transfer_id: u64) void {
     self.message = "Transfer retry started";
 }
 
-pub fn remoteDownloadBusy(self: *const App, remote_path: []const u8, name: []const u8) bool {
+pub fn remoteEntryTransferBusy(self: *const App, remote_path: []const u8, name: []const u8) bool {
     for (self.transfers.items) |task| {
         if (task.status != .pending and task.status != .running) continue;
         const record = self.retryRecord(task.id) orelse continue;
         switch (record.intent) {
-            .download => |item| {
-                if (std.mem.eql(u8, item.remote_path, remote_path) and std.mem.eql(u8, item.name, name)) return true;
-            },
-            .download_many => |item| {
-                if (!std.mem.eql(u8, item.remote_path, remote_path)) continue;
-                for (item.entries) |entry| {
-                    if (std.mem.eql(u8, entry.name, name)) return true;
-                }
-            },
+            .download => |item| if (remoteEntryMatches(item.remote_path, item.name, remote_path, name)) return true,
+            .upload => |item| if (remoteEntryMatches(item.remote_path, item.name, remote_path, name)) return true,
+            .download_many => |item| if (batchContainsRemoteEntry(item, remote_path, name)) return true,
+            .upload_many => |item| if (batchContainsRemoteEntry(item, remote_path, name)) return true,
             else => {},
         }
     }
@@ -686,14 +681,39 @@ pub fn transferBusyInRemotePath(self: *const App, remote_path: []const u8) bool 
         if (task.status != .pending and task.status != .running) continue;
         const record = self.retryRecord(task.id) orelse continue;
         switch (record.intent) {
-            .download => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
-            .download_many => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
-            .upload => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
-            .upload_many => |item| if (std.mem.eql(u8, item.remote_path, remote_path)) return true,
+            .download => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
+            .download_many => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
+            .upload => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
+            .upload_many => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
             else => {},
         }
     }
     return false;
+}
+
+fn remoteEntryMatches(task_path: []const u8, task_name: []const u8, remote_path: []const u8, name: []const u8) bool {
+    return std.mem.eql(u8, task_path, remote_path) and std.mem.eql(u8, task_name, name);
+}
+
+fn batchContainsRemoteEntry(item: remote_file.FileBatchTransferIntent, remote_path: []const u8, name: []const u8) bool {
+    if (!std.mem.eql(u8, item.remote_path, remote_path)) return false;
+    for (item.entries) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
+fn remotePathOverlaps(a: []const u8, b: []const u8) bool {
+    if (a.len == 0 or b.len == 0) return false;
+    return std.mem.eql(u8, a, b) or remotePathIsAncestor(a, b) or remotePathIsAncestor(b, a);
+}
+
+fn remotePathIsAncestor(parent: []const u8, child: []const u8) bool {
+    if (parent.len == 0 or child.len == 0) return false;
+    if (std.mem.eql(u8, parent, child)) return true;
+    if (std.mem.eql(u8, parent, "/")) return child.len > 1 and child[0] == '/';
+    if (!std.mem.startsWith(u8, child, parent)) return false;
+    return child.len > parent.len and child[parent.len] == '/';
 }
 
 fn syncTransferProgress(self: *App) void {
@@ -994,6 +1014,9 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
         .create_directory => "Creating folder",
         .rename => "Renaming file",
         .chmod => "Updating permissions",
+        .open_edit => "Opening editor",
+        .save_edit => "Saving file",
+        .close_edit => "Closing editor",
         .delete => "Deleting file",
         .upload, .upload_many => "Uploading file",
         .download, .download_many => "Downloading file",

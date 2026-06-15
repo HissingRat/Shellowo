@@ -3,13 +3,9 @@ const dvui = @import("dvui");
 const App = @import("app/App.zig");
 const libssh2_backend = @import("protocols/libssh2_backend.zig");
 const sdl_app = @import("platform/sdl_app.zig");
-const ui_theme = @import("ui/theme.zig");
+const ui_fonts = @import("ui/fonts.zig");
 const screen = @import("ui/screen.zig");
 
-const zed_font_bytes = @embedFile("shellowo-zed-font");
-const zed_font_italic_bytes = @embedFile("shellowo-zed-italic-font");
-const zed_font_bold_bytes = @embedFile("shellowo-zed-bold-font");
-const cjk_font_bytes = @embedFile("shellowo-cjk-font");
 const min_idle_fps: i32 = 4;
 const min_idle_frame_interval_us: i32 = std.time.us_per_s / min_idle_fps;
 
@@ -39,7 +35,7 @@ var app_state: ?App = null;
 fn appInit(window: *dvui.Window) !void {
     const init = dvui.App.main_init orelse return error.MissingProcessInit;
     try libssh2_backend.init();
-    loadEmbeddedFonts(window);
+    ui_fonts.loadEmbedded(window);
     app_state = App.initPersistent(gpa_instance.allocator(), init.io) catch |err| {
         libssh2_backend.deinit();
         return err;
@@ -104,37 +100,4 @@ fn maintainMinIdleRefreshRate() void {
     if (dvui.timerDoneOrNone(timer_id)) {
         dvui.timer(timer_id, min_idle_frame_interval_us);
     }
-}
-
-fn loadEmbeddedFonts(window: *dvui.Window) void {
-    var zed_loaded = true;
-    window.addFont(ui_theme.cjk_font_family, cjk_font_bytes, null) catch return;
-    window.addFont(ui_theme.zed_font_family, zed_font_bytes, null) catch {
-        zed_loaded = false;
-    };
-    addFontSource(window, ui_theme.zed_font_family, zed_font_bold_bytes, .bold, .normal) catch {};
-    addFontSource(window, ui_theme.zed_font_family, zed_font_italic_bytes, .normal, .italic) catch {};
-
-    var current_theme = window.theme;
-    const primary_family = if (zed_loaded) ui_theme.zed_font_family else ui_theme.cjk_font_family;
-    current_theme.font_body = current_theme.font_body.withFamily(primary_family).withSize(ui_theme.font_sizes.body);
-    current_theme.font_heading = current_theme.font_heading.withFamily(primary_family).withWeight(.normal).withSize(ui_theme.font_sizes.heading);
-    current_theme.font_title = current_theme.font_title.withFamily(primary_family).withWeight(.normal).withSize(ui_theme.font_sizes.title);
-    current_theme.font_mono = current_theme.font_mono.withFamily(primary_family).withSize(ui_theme.font_sizes.body);
-    window.themeSet(current_theme);
-}
-
-fn addFontSource(
-    window: *dvui.Window,
-    family: []const u8,
-    ttf_bytes: []const u8,
-    weight: dvui.Font.Weight,
-    style: dvui.Font.Style,
-) std.mem.Allocator.Error!void {
-    try window.fonts.database.append(window.gpa, .{
-        .family = dvui.Font.array(family),
-        .weight = weight,
-        .style = style,
-        .bytes = ttf_bytes,
-    });
 }
