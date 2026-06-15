@@ -24,6 +24,7 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - 非敏感 profile JSON 持久化
 - SSH workspace tab 与 libssh2-backed SSH runtime
 - PTY shell channel、libvterm terminal rendering、resize/input/selection 基础路径
+- terminal runtime 在异常断线后保留最后 screen/scrollback snapshot；主动关闭仍释放 runtime
 - SFTP 文件面板：远端目录树、右侧文件表、基础 mutation、上传/下载任务
 - 全局 transfer task 摘要、进度、取消和文件面板内任务弹窗
 - 设置与主题系统基础：`owoConfig.json`、Light/Dark、窗口/布局尺寸和下载路径持久化

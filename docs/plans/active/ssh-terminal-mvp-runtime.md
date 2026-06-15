@@ -117,7 +117,7 @@ DVUI workspace
 验收：
 
 - 打开 tab 后 UI 主线程不卡死。
-- 断线后 tab status 进入 failed/closed，不崩溃。
+- 断线后 tab status 进入 failed/closed，不崩溃，并保留最后 terminal screen/scrollback snapshot 供 UI 继续渲染。
 - close tab 能释放 session、channel、terminal emulator。
 
 ### 4. 将 session registry 从 mock 迁移到 runtime-aware

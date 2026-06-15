@@ -196,7 +196,7 @@ SSH PTY channel
 
 - [x] 支持 OSC title 更新。
 - [ ] 将远端 title 或 cwd 作为 tab/status panel 可选信息。
-- [ ] 断线后保留最后 screen 和 scrollback。
+- [x] 断线后保留最后 screen 和 scrollback。
 
 验收：
 
@@ -253,7 +253,7 @@ SSH PTY channel
 第三阶段：稳定性和长期体验
 
 1. Title / cwd 状态。
-2. 断线保留上下文。
+2. 断线保留上下文。已完成基础版：异常断线保留 terminal snapshot cache，主动关闭仍释放 runtime。
 3. 性能优化。
 4. terminal fixture 和回归基线。
 
