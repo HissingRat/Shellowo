@@ -14,9 +14,12 @@ const network_tooltip_font_size: f32 = 9;
 const network_chart_height: f32 = 86;
 const network_axis_width: f32 = 34;
 const network_axis_font_size: f32 = 9;
-const network_bar_gap: f32 = 0.5;
-const network_min_bar_width: f32 = 1.5;
-const network_target_bar_slot_width: f32 = 3;
+const network_target_bar_slot_width: f32 = 4;
+const network_min_scale_max: u64 = 5 * 1024;
+const network_line_thickness: f32 = 1.25;
+const network_point_size: f32 = 3;
+const network_line_alpha: f32 = 0.55;
+const network_point_alpha: f32 = 0.82;
 const network_header_icon_gap: f32 = 4;
 const network_header_group_gap: f32 = 14;
 const network_header_y_offset: f32 = -3;
@@ -222,25 +225,16 @@ fn networkChart(monitor: status_panel.MonitorSnapshot, palette: theme.Palette, i
     const len = @min(network.history_len, status_panel.max_network_points);
     const slot_count = networkSlotCount(plot_rect.w);
     if (slot_count == 0 or len == 0) return;
-    const max_value = networkScaleMax(network, len);
+    const max_value = networkScaleMax(network, len, slot_count);
     drawNetworkGrid(chart_rect, plot_rect, max_value, palette, content_rs.s);
 
-    const slot_width = plot_rect.w / @as(f32, @floatFromInt(slot_count));
-    const gap = network_bar_gap * content_rs.s;
-    const bar_width = @max(network_min_bar_width * content_rs.s, slot_width - gap * 2);
     const hover_slot = if (hovered) hoveredNetworkSlot(plot_rect, slot_count) else null;
-    for (0..slot_count) |idx| {
-        const source_index = visibleNetworkSourceIndex(len, idx, slot_count) orelse continue;
-        const tx_height = networkBarHeight(network.tx_history[source_index], max_value, plot_rect.h);
-        const rx_height = networkBarHeight(network.rx_history[source_index], max_value, plot_rect.h);
-        const x = plot_rect.x + @as(f32, @floatFromInt(idx)) * slot_width + gap;
-        drawNetworkBar(plot_rect, x, bar_width, tx_height, networkTxColor(palette), hover_slot != null and hover_slot.? == idx);
-        drawNetworkBar(plot_rect, x, bar_width, rx_height, networkRxColor(palette), hover_slot != null and hover_slot.? == idx);
-    }
+    drawNetworkLine(plot_rect, network.tx_history[0..len], max_value, slot_count, networkTxColor(palette), content_rs.s);
+    drawNetworkLine(plot_rect, network.rx_history[0..len], max_value, slot_count, networkRxColor(palette), content_rs.s);
 
     if (hover_slot) |slot| {
         const source_index = visibleNetworkSourceIndex(len, slot, slot_count) orelse return;
-        const x = plot_rect.x + (@as(f32, @floatFromInt(slot)) + 0.5) * slot_width;
+        const x = networkPointX(plot_rect, slot, slot_count);
         const points = [_]dvui.Point.Physical{
             .{ .x = x, .y = plot_rect.y },
             .{ .x = x, .y = plot_rect.y + plot_rect.h },
@@ -249,6 +243,8 @@ fn networkChart(monitor: status_panel.MonitorSnapshot, palette: theme.Palette, i
             .thickness = content_rs.s,
             .color = palette.text_subtle,
         });
+        drawNetworkPoint(plot_rect, x, network.tx_history[source_index], max_value, networkTxColor(palette), content_rs.s);
+        drawNetworkPoint(plot_rect, x, network.rx_history[source_index], max_value, networkRxColor(palette), content_rs.s);
         networkTooltip(plot_rect, network, source_index, palette);
     }
 }
@@ -348,26 +344,18 @@ fn networkHeader(chart_rect: dvui.Rect.Physical, maybe_network: ?status_panel.Ne
     const left_x = chart_rect.x + chart_rect.w / 8;
     const min_right_x = left_x + tx_group_width + network_header_group_gap;
     const right_x = @max(min_right_x, chart_rect.x + chart_rect.w / 2 + chart_rect.w / 8);
-    _ = renderNetworkHeaderPart("↑", left_x, y, font, networkTxTextColor(palette));
-    _ = renderNetworkHeaderPart(tx_text, left_x + tx_icon_width + value_gap, y, font, networkTxTextColor(palette));
-    _ = renderNetworkHeaderPart("↓", right_x, y, font, networkRxTextColor(palette));
-    _ = renderNetworkHeaderPart(rx_text, right_x + rx_icon_width + value_gap, y, font, networkRxTextColor(palette));
+    _ = renderNetworkHeaderPart("↑", left_x, y, font, networkTxColor(palette));
+    _ = renderNetworkHeaderPart(tx_text, left_x + tx_icon_width + value_gap, y, font, networkTxColor(palette));
+    _ = renderNetworkHeaderPart("↓", right_x, y, font, networkRxColor(palette));
+    _ = renderNetworkHeaderPart(rx_text, right_x + rx_icon_width + value_gap, y, font, networkRxColor(palette));
 }
 
 fn networkTxColor(palette: theme.Palette) dvui.Color {
     return palette.accent;
 }
 
-fn networkRxColor(palette: theme.Palette) dvui.Color {
-    return blendColor(palette.accent, palette.text_subtle, 0.45);
-}
-
-fn networkTxTextColor(palette: theme.Palette) dvui.Color {
-    return palette.accent;
-}
-
-fn networkRxTextColor(palette: theme.Palette) dvui.Color {
-    return blendColor(palette.accent, palette.muted_text, 0.45);
+fn networkRxColor(_: theme.Palette) dvui.Color {
+    return .{ .r = 0x45, .g = 0xd6, .b = 0xb5, .a = 0xff };
 }
 
 fn blendColor(a: dvui.Color, b: dvui.Color, amount_b: f32) dvui.Color {
@@ -460,40 +448,57 @@ fn drawDashedLine(x0: f32, y: f32, x1: f32, color: dvui.Color, scale: f32) void 
     }
 }
 
-fn networkScaleMax(network: status_panel.NetworkMetric, len: usize) u64 {
-    var max_value = @max(network.rx_bytes_per_sec, network.tx_bytes_per_sec);
-    for (network.rx_history[0..len]) |value| max_value = @max(max_value, value);
-    for (network.tx_history[0..len]) |value| max_value = @max(max_value, value);
-    return niceNetworkScale(@max(max_value, 1));
-}
-
-fn niceNetworkScale(value: u64) u64 {
-    const units = [_]u64{ 1, 1024, 1024 * 1024, 1024 * 1024 * 1024 };
-    const steps = [_]u64{ 15, 30, 45, 60, 90, 120 };
-    for (units) |unit| {
-        for (steps) |step| {
-            const candidate = step * unit;
-            if (candidate >= value) return candidate;
-        }
+fn networkScaleMax(network: status_panel.NetworkMetric, len: usize, slot_count: usize) u64 {
+    var max_value: u64 = 1;
+    for (0..slot_count) |slot| {
+        const source_index = visibleNetworkSourceIndex(len, slot, slot_count) orelse continue;
+        max_value = @max(max_value, network.rx_history[source_index]);
+        max_value = @max(max_value, network.tx_history[source_index]);
     }
-    return value;
+    return @max(max_value, network_min_scale_max);
 }
 
-fn networkBarHeight(value: u64, max_value: u64, plot_height: f32) f32 {
-    if (max_value == 0 or value == 0) return 0;
+fn networkValueY(plot_rect: dvui.Rect.Physical, value: u64, max_value: u64) f32 {
+    if (max_value == 0) return plot_rect.y + plot_rect.h;
     const ratio = @as(f32, @floatFromInt(value)) / @as(f32, @floatFromInt(max_value));
-    return @max(1, plot_height * @min(1, ratio));
+    return plot_rect.y + plot_rect.h - plot_rect.h * @min(1, ratio);
 }
 
-fn drawNetworkBar(plot_rect: dvui.Rect.Physical, x: f32, width: f32, height: f32, color: dvui.Color, hovered: bool) void {
-    if (height <= 0) return;
+fn drawNetworkLine(plot_rect: dvui.Rect.Physical, history: []const u64, max_value: u64, slot_count: usize, color: dvui.Color, scale: f32) void {
+    var points: [status_panel.max_network_points]dvui.Point.Physical = undefined;
+    var point_count: usize = 0;
+    for (0..slot_count) |slot| {
+        const source_index = visibleNetworkSourceIndex(history.len, slot, slot_count) orelse continue;
+        points[point_count] = .{
+            .x = networkPointX(plot_rect, slot, slot_count),
+            .y = networkValueY(plot_rect, history[source_index], max_value),
+        };
+        point_count += 1;
+    }
+    if (point_count == 0) return;
+    if (point_count == 1) {
+        drawPoint(points[0], color, scale);
+        return;
+    }
+    dvui.Path.stroke(.{ .points = points[0..point_count] }, .{
+        .thickness = @max(1, network_line_thickness * scale),
+        .color = color.opacity(network_line_alpha),
+    });
+}
+
+fn drawNetworkPoint(plot_rect: dvui.Rect.Physical, x: f32, value: u64, max_value: u64, color: dvui.Color, scale: f32) void {
+    drawPoint(.{ .x = x, .y = networkValueY(plot_rect, value, max_value) }, color, scale);
+}
+
+fn drawPoint(point: dvui.Point.Physical, color: dvui.Color, scale: f32) void {
+    const size = @max(2, network_point_size * scale);
     const rect = dvui.Rect.Physical{
-        .x = x,
-        .y = plot_rect.y + plot_rect.h - height,
-        .w = width,
-        .h = height,
+        .x = point.x - size / 2,
+        .y = point.y - size / 2,
+        .w = size,
+        .h = size,
     };
-    rect.fill(.all(0), .{ .color = color.opacity(if (hovered) 1.0 else 0.82), .fade = 0 });
+    rect.fill(.all(size / 2), .{ .color = color.opacity(network_point_alpha), .fade = 0 });
 }
 
 fn uptimeText(buffer: []u8, maybe_seconds: ?u64) []const u8 {
@@ -511,15 +516,11 @@ fn networkSlotCount(chart_width: f32) usize {
     return @min(status_panel.max_network_points, slot_count);
 }
 
-fn sampledHistoryValue(history: []const f32, slot_index: usize, slot_count: usize) f32 {
-    if (history.len == 0 or slot_count == 0) return 0;
-    return history[sampledHistoryIndex(history.len, slot_index, slot_count)];
-}
-
-fn sampledHistoryIndex(history_len: usize, slot_index: usize, slot_count: usize) usize {
-    if (history_len == 0 or slot_count == 0) return 0;
-    const numerator = slot_index * history_len;
-    return @min(history_len - 1, numerator / slot_count);
+fn networkPointX(plot_rect: dvui.Rect.Physical, slot_index: usize, slot_count: usize) f32 {
+    if (slot_count <= 1) return plot_rect.x + plot_rect.w;
+    const denom = @as(f32, @floatFromInt(slot_count - 1));
+    const t = @as(f32, @floatFromInt(slot_index)) / denom;
+    return plot_rect.x + plot_rect.w * t;
 }
 
 fn visibleNetworkSourceIndex(history_len: usize, slot_index: usize, slot_count: usize) ?usize {

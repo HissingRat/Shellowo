@@ -4,6 +4,10 @@ set +e
 SAMPLE_SEC=0.5
 SAMPLE_MS=500
 
+now_ms() {
+    awk '{ printf "%.0f\n", $1 * 1000; exit }' /proc/uptime 2>/dev/null
+}
+
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/ /g'
 }
@@ -27,6 +31,34 @@ read_cpu() {
 }
 
 read_net() {
+    if [ -d /sys/class/net ]; then
+        rx=0
+        tx=0
+        found=0
+        for iface_path in /sys/class/net/*; do
+            [ -d "$iface_path" ] || continue
+            iface=${iface_path##*/}
+            [ "$iface" = "lo" ] && continue
+
+            rx_file=$iface_path/statistics/rx_bytes
+            tx_file=$iface_path/statistics/tx_bytes
+            [ -r "$rx_file" ] && [ -r "$tx_file" ] || continue
+
+            read -r iface_rx < "$rx_file"
+            read -r iface_tx < "$tx_file"
+            case "$iface_rx" in ''|*[!0-9]*) iface_rx=0 ;; esac
+            case "$iface_tx" in ''|*[!0-9]*) iface_tx=0 ;; esac
+
+            rx=$((rx + iface_rx))
+            tx=$((tx + iface_tx))
+            found=1
+        done
+        if [ "$found" = "1" ]; then
+            printf "%s %s\n" "$rx" "$tx"
+            return
+        fi
+    fi
+
     awk -F'[: ]+' '
         NR > 2 && $2 != "lo" {
             rx += $3
@@ -142,9 +174,15 @@ uptime_seconds=${uptime_seconds:-0}
 
 cpu_a=$(read_cpu)
 net_a=$(read_net)
+sample_start_ms=$(now_ms)
 sleep "$SAMPLE_SEC"
+sample_end_ms=$(now_ms)
 cpu_b=$(read_cpu)
 net_b=$(read_net)
+sample_elapsed_ms=$((sample_end_ms - sample_start_ms))
+if [ "$sample_elapsed_ms" -le 0 ]; then
+    sample_elapsed_ms=$SAMPLE_MS
+fi
 
 set -- $cpu_a
 cpu_total_a=${1:-0}
@@ -172,9 +210,9 @@ net_rx_b=${1:-0}
 net_tx_b=${2:-0}
 
 net_json=$(
-    awk -v rxa="$net_rx_a" -v txa="$net_tx_a" -v rxb="$net_rx_b" -v txb="$net_tx_b" -v s="$SAMPLE_SEC" 'BEGIN {
-        rx = int((rxb - rxa) / s)
-        tx = int((txb - txa) / s)
+    awk -v rxa="$net_rx_a" -v txa="$net_tx_a" -v rxb="$net_rx_b" -v txb="$net_tx_b" -v ms="$sample_elapsed_ms" 'BEGIN {
+        rx = int((rxb - rxa) * 1000 / ms)
+        tx = int((txb - txa) * 1000 / ms)
         if (rx < 0) rx = 0
         if (tx < 0) tx = 0
         printf "\"network\":{\"rx_bytes_per_sec\":%d,\"tx_bytes_per_sec\":%d}", rx, tx
