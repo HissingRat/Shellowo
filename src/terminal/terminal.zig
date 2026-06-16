@@ -81,12 +81,49 @@ pub const MouseEvent = union(enum) {
     },
 };
 
+pub const DirtyRows = struct {
+    start: u16 = 0,
+    end: u16 = 0,
+
+    pub fn empty(self: DirtyRows) bool {
+        return self.end <= self.start;
+    }
+};
+
+pub const max_dirty_rects = 32;
+
+pub const DirtyRect = struct {
+    start_row: u16 = 0,
+    end_row: u16 = 0,
+    start_col: u16 = 0,
+    end_col: u16 = 0,
+
+    pub fn empty(self: DirtyRect) bool {
+        return self.end_row <= self.start_row or self.end_col <= self.start_col;
+    }
+};
+
+pub const DirtyRects = struct {
+    items: [max_dirty_rects]DirtyRect = [_]DirtyRect{.{}} ** max_dirty_rects,
+    len: usize = 0,
+    overflow: bool = false,
+
+    pub fn empty(self: DirtyRects) bool {
+        return self.len == 0 and !self.overflow;
+    }
+};
+
 pub const Snapshot = struct {
     allocator: std.mem.Allocator,
+    generation: u64 = 0,
     size: Size,
     cells: []Cell,
     scrollback_cells: []Cell = &.{},
     scrollback_rows: usize = 0,
+    dirty_rows: DirtyRows = .{},
+    dirty_rects: DirtyRects = .{},
+    scrollback_dirty: bool = false,
+    cursor_dirty: bool = false,
     alternate_screen: bool = false,
     bracketed_paste: bool = false,
     mouse_mode: MouseMode = .none,

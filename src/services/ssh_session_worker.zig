@@ -4,6 +4,8 @@ const ssh = @import("../protocols/ssh.zig");
 const terminal = @import("../terminal/terminal.zig");
 const ssh_session = @import("ssh_session.zig");
 
+const max_pending_input_bytes = 1024 * 1024;
+
 pub const State = enum(u8) {
     idle,
     starting,
@@ -27,6 +29,7 @@ pub const SshSessionWorker = struct {
     stop_requested: std.atomic.Value(bool) = .init(false),
     snapshot_lock: std.atomic.Mutex = .unlocked,
     snapshot_cache: ?terminal.Snapshot = null,
+    snapshot_generation: u64 = 0,
     input_lock: std.atomic.Mutex = .unlocked,
     pending_input: std.ArrayList(u8) = .empty,
     mouse_lock: std.atomic.Mutex = .unlocked,
@@ -87,6 +90,8 @@ pub const SshSessionWorker = struct {
     pub fn queueInput(self: *SshSessionWorker, bytes: []const u8) !void {
         self.lockInput();
         defer self.unlockInput();
+        const remaining = max_pending_input_bytes - @min(self.pending_input.items.len, max_pending_input_bytes);
+        if (bytes.len > remaining) return error.InputQueueFull;
         try self.pending_input.appendSlice(self.allocator, bytes);
     }
 
@@ -118,6 +123,7 @@ pub const SshSessionWorker = struct {
         const title = if (cached.title) |title| try allocator.dupe(u8, title) else null;
         return .{
             .allocator = allocator,
+            .generation = cached.generation,
             .size = cached.size,
             .cells = cells,
             .scrollback_cells = scrollback_cells,
@@ -146,7 +152,9 @@ pub const SshSessionWorker = struct {
         var buffer: [8192]u8 = undefined;
         var input_buffer: [4096]u8 = undefined;
         while (!self.stop_requested.load(.acquire)) {
+            var active = false;
             if (self.drainResize()) |size| {
+                active = true;
                 session.resize(size) catch |err| switch (err) {
                     ssh.Error.WouldBlock => {},
                     else => {
@@ -157,30 +165,35 @@ pub const SshSessionWorker = struct {
                 };
             }
 
-            const input_len = self.drainInput(&input_buffer);
-            if (input_len > 0) {
-                _ = session.writeInput(input_buffer[0..input_len]) catch |err| switch (err) {
-                    ssh.Error.WouldBlock => {},
-                    else => {
-                        self.last_error = err;
-                        self.setState(.failed);
-                        return;
-                    },
-                };
-            }
+            active = (self.writePendingInput(&session, &input_buffer) catch |err| {
+                self.last_error = err;
+                self.setState(.failed);
+                return;
+            }) or active;
 
             while (self.drainMouse()) |mouse| {
-                _ = session.writeMouse(self.allocator, mouse) catch |err| switch (err) {
-                    ssh.Error.WouldBlock => break,
-                    else => {
-                        self.last_error = err;
-                        self.setState(.failed);
-                        return;
-                    },
+                active = true;
+                const bytes = session.encodeMouse(self.allocator, mouse) catch |err| {
+                    self.last_error = err;
+                    self.setState(.failed);
+                    return;
                 };
+                defer self.allocator.free(bytes);
+                if (bytes.len == 0) continue;
+                self.queueInput(bytes) catch {
+                    self.last_error = ssh_session.Error.ConnectionFailed;
+                    self.setState(.failed);
+                    return;
+                };
+                active = (self.writePendingInput(&session, &input_buffer) catch |err| {
+                    self.last_error = err;
+                    self.setState(.failed);
+                    return;
+                }) or active;
             }
 
             if (self.clear_scrollback_requested.swap(false, .acq_rel)) {
+                active = true;
                 session.clearScrollback() catch |err| {
                     self.last_error = err;
                     self.setState(.failed);
@@ -190,7 +203,7 @@ pub const SshSessionWorker = struct {
 
             const read_len = session.pumpReadOnce(&buffer) catch |err| switch (err) {
                 ssh.Error.WouldBlock => {
-                    yieldThread();
+                    if (!active) yieldThread();
                     continue;
                 },
                 else => {
@@ -200,10 +213,11 @@ pub const SshSessionWorker = struct {
                 },
             };
             if (read_len > 0 or session.dirty) {
+                active = true;
                 self.cacheSnapshot(&session) catch {};
                 session.dirty = false;
             }
-            yieldThread();
+            if (!active) yieldThread();
         }
 
         self.setState(.stopping);
@@ -224,6 +238,8 @@ pub const SshSessionWorker = struct {
         if (self.snapshot_cache) |*cached| {
             cached.deinit();
         }
+        self.snapshot_generation +%= 1;
+        shot.generation = self.snapshot_generation;
         self.snapshot_cache = shot;
     }
 
@@ -235,6 +251,7 @@ pub const SshSessionWorker = struct {
             cached.deinit();
             self.snapshot_cache = null;
         }
+        self.snapshot_generation +%= 1;
     }
 
     fn lockSnapshot(self: *SshSessionWorker) void {
@@ -247,15 +264,34 @@ pub const SshSessionWorker = struct {
         self.snapshot_lock.unlock();
     }
 
-    fn drainInput(self: *SshSessionWorker, buffer: []u8) usize {
+    fn writePendingInput(self: *SshSessionWorker, session: *ssh_session.SshSession, buffer: []u8) ssh_session.Error!bool {
+        const input_len = self.peekInput(buffer);
+        if (input_len == 0) return false;
+        const written = session.writeInput(buffer[0..input_len]) catch |err| switch (err) {
+            ssh.Error.WouldBlock => return true,
+            else => return err,
+        };
+        if (written > 0) self.consumeInput(written);
+        return true;
+    }
+
+    fn peekInput(self: *SshSessionWorker, buffer: []u8) usize {
         self.lockInput();
         defer self.unlockInput();
 
         const len = @min(buffer.len, self.pending_input.items.len);
         if (len == 0) return 0;
         @memcpy(buffer[0..len], self.pending_input.items[0..len]);
-        self.pending_input.replaceRangeAssumeCapacity(0, len, &.{});
         return len;
+    }
+
+    fn consumeInput(self: *SshSessionWorker, len: usize) void {
+        self.lockInput();
+        defer self.unlockInput();
+
+        const consumed = @min(len, self.pending_input.items.len);
+        if (consumed == 0) return;
+        self.pending_input.replaceRangeAssumeCapacity(0, consumed, &.{});
     }
 
     fn drainMouse(self: *SshSessionWorker) ?terminal.MouseEvent {
@@ -333,4 +369,42 @@ test "worker owns a cloned connection profile" {
 
     try std.testing.expectEqual(State.idle, worker.state());
     try std.testing.expect(worker.connection.base.host.ptr != connection.base.host.ptr);
+}
+
+test "session worker input queue only consumes bytes after confirmed write" {
+    var fake_options = ssh_session.Options{
+        .connector = .{ .context = undefined, .vtable = undefined },
+        .terminal_factory = .{ .context = undefined, .vtable = undefined },
+        .host_key_policy = .insecure_accept_any,
+    };
+    _ = &fake_options;
+
+    var draft = profile.ProfileDraft{};
+    draft.reset();
+    profile.setBuffer(&draft.name, "Worker SSH");
+    profile.setBuffer(&draft.host, "example.test");
+    profile.setBuffer(&draft.username, "dev");
+    profile.setBuffer(&draft.password, "pw");
+
+    const connection = try draft.toProfile(std.testing.allocator, 1);
+    defer connection.deinit(std.testing.allocator);
+
+    const worker = try SshSessionWorker.create(std.testing.allocator, connection, fake_options);
+    defer worker.destroy();
+
+    try worker.queueInput("abcdef");
+
+    var buffer: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), worker.peekInput(&buffer));
+    try std.testing.expectEqualStrings("abcd", buffer[0..4]);
+
+    try std.testing.expectEqual(@as(usize, 4), worker.peekInput(&buffer));
+    try std.testing.expectEqualStrings("abcd", buffer[0..4]);
+
+    worker.consumeInput(2);
+    try std.testing.expectEqual(@as(usize, 4), worker.peekInput(&buffer));
+    try std.testing.expectEqualStrings("cdef", buffer[0..4]);
+
+    worker.consumeInput(32);
+    try std.testing.expectEqual(@as(usize, 0), worker.peekInput(&buffer));
 }

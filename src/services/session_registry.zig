@@ -188,6 +188,11 @@ pub const MockSessionRegistry = struct {
         return worker.copySnapshot(allocator, slot_id);
     }
 
+    pub fn sshSnapshotGeneration(self: *MockSessionRegistry, tab_id: u64, slot_id: u64) ?u64 {
+        const worker = self.sshWorkspace(tab_id) orelse return null;
+        return worker.snapshotGeneration(slot_id);
+    }
+
     pub fn statusPanelSnapshot(self: *MockSessionRegistry, tab_id: u64) status_panel.StatusPanelSnapshot {
         const worker = self.sshWorkspace(tab_id) orelse return status_panel.unavailable();
         return worker.statusPanelSnapshot();

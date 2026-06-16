@@ -31,7 +31,29 @@ typedef struct {
 typedef struct {
     int row;
     int col;
+    bool visible;
 } ShellowVTermCursor;
+
+typedef struct {
+    int start_row;
+    int end_row;
+    int start_col;
+    int end_col;
+} ShellowVTermDirtyRect;
+
+enum {
+    SHELLOW_VTERM_MAX_DIRTY_RECTS = 32,
+};
+
+typedef struct {
+    int start_row;
+    int end_row;
+    ShellowVTermDirtyRect rects[SHELLOW_VTERM_MAX_DIRTY_RECTS];
+    int len;
+    bool overflow;
+    bool scrollback_dirty;
+    bool cursor_dirty;
+} ShellowVTermDirtyRows;
 
 ShellowVTerm *shellow_vterm_new(int rows, int cols);
 void shellow_vterm_free(ShellowVTerm *terminal);
@@ -40,6 +62,8 @@ void shellow_vterm_resize(ShellowVTerm *terminal, int rows, int cols);
 int shellow_vterm_get_cell(ShellowVTerm *terminal, int row, int col, ShellowVTermCell *out_cell);
 int shellow_vterm_scrollback_rows(ShellowVTerm *terminal);
 int shellow_vterm_get_scrollback_cell(ShellowVTerm *terminal, int row, int col, ShellowVTermCell *out_cell);
+ShellowVTermDirtyRows shellow_vterm_dirty_rows(ShellowVTerm *terminal);
+void shellow_vterm_clear_dirty(ShellowVTerm *terminal);
 ShellowVTermCursor shellow_vterm_get_cursor(ShellowVTerm *terminal);
 bool shellow_vterm_is_altscreen_active(ShellowVTerm *terminal);
 bool shellow_vterm_is_bracketed_paste_enabled(ShellowVTerm *terminal);

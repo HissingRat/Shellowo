@@ -1,3 +1,4 @@
+const std = @import("std");
 const dvui = @import("dvui");
 
 const App = @import("../app/App.zig");
@@ -57,12 +58,12 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     });
     defer main.deinit();
 
-    var snapshot = app.sessions.copySshSnapshot(app.allocator, tab.id) catch null;
-    defer if (snapshot) |*shot| shot.deinit();
-
     var slot_buffer: [64]terminal_slot.TerminalSlotSummary = undefined;
     const slots = app.sessions.terminalSlots(tab.id, &slot_buffer);
     const active_slot_id = app.sessions.activeTerminalSlotId(tab.id);
+    const frame_time_ns = dvui.frameTimeNS();
+    const snapshot = app.cachedSshSnapshot(tab.id, active_slot_id, frame_time_ns);
+    schedulePendingTerminalSnapshot(app, tab.id, active_slot_id, frame_time_ns);
     topSeparator(palette, 634);
     if (terminal_slot_bar.show(slots, palette, .{
         .id_extra = 635,
@@ -115,4 +116,12 @@ fn topSeparator(palette: theme.Palette, id_extra: usize) void {
         .id_extra = id_extra,
     });
     defer line.deinit();
+}
+
+fn schedulePendingTerminalSnapshot(app: *const App, tab_id: u64, slot_id: ?terminal_slot.TerminalSlotId, now_ns: i128) void {
+    const delay_ns = app.terminalSnapshotPendingDelayNs(tab_id, slot_id, now_ns) orelse return;
+    const delay_us: i32 = @intCast(@max(@as(i128, 1), @divTrunc(delay_ns, std.time.ns_per_us)));
+    const timer_id = dvui.currentWindow().data().id.update("terminal_snapshot_present");
+    dvui.timer(timer_id, delay_us);
+    dvui.refresh(null, @src(), timer_id);
 }

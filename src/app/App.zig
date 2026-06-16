@@ -16,6 +16,9 @@ const ui_theme = @import("../ui/theme.zig");
 
 const App = @This();
 
+const terminal_snapshot_max_fps: i128 = 60;
+const terminal_snapshot_min_interval_ns: i128 = std.time.ns_per_s / terminal_snapshot_max_fps;
+
 const GroupExpansion = struct {
     name: []const u8,
     expanded: bool,
@@ -33,6 +36,24 @@ const TransferRetryRecord = struct {
     intent: remote_file.FilePanelIntent,
 };
 
+const TerminalSnapshotCache = struct {
+    tab_id: ?u64 = null,
+    slot_id: ?u64 = null,
+    generation: u64 = 0,
+    pending_generation: ?u64 = null,
+    last_present_ns: i128 = 0,
+    snapshot: ?terminal.Snapshot = null,
+
+    fn deinit(self: *TerminalSnapshotCache) void {
+        if (self.snapshot) |*snapshot| snapshot.deinit();
+        self.* = .{};
+    }
+
+    fn clear(self: *TerminalSnapshotCache) void {
+        self.deinit();
+    }
+};
+
 allocator: std.mem.Allocator,
 io: ?std.Io = null,
 config: app_config.Config,
@@ -44,6 +65,7 @@ terminal_backend: libvterm_backend.Backend,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
 transfer_retries: std.ArrayList(TransferRetryRecord) = .empty,
 native_events: std.ArrayList(native_event.NativeEvent) = .empty,
+terminal_snapshot_cache: TerminalSnapshotCache = .{},
 file_drag_active: bool = false,
 file_drag_point: native_event.Point = .{},
 file_drop_target_active: bool = false,
@@ -129,6 +151,7 @@ pub fn deinit(self: *App) void {
     }
     self.group_expansions.deinit(self.allocator);
     self.sessions.deinit();
+    self.terminal_snapshot_cache.deinit();
     self.persistKnownHosts();
     self.profiles.deinit();
     self.known_hosts.deinit();
@@ -486,6 +509,7 @@ pub fn toggleGroup(self: *App, group_name: []const u8) void {
 
 pub fn openProfile(self: *App, id: u64) void {
     self.selected_profile_id = id;
+    self.terminal_snapshot_cache.clear();
     const item = self.profiles.get(id) orelse {
         self.message = "Profile not found";
         return;
@@ -520,6 +544,11 @@ pub fn currentTitle(self: *App) []const u8 {
     return "Shellowo";
 }
 
+pub fn closeTab(self: *App, tab_id: u64) void {
+    self.terminal_snapshot_cache.clear();
+    self.sessions.closeTab(tab_id);
+}
+
 pub fn sendTerminalBytes(self: *App, tab_id: u64, bytes: []const u8) void {
     if (bytes.len == 0) return;
     self.sessions.sendSshInput(tab_id, bytes) catch {
@@ -550,6 +579,7 @@ pub fn clearTerminalScrollback(self: *App, tab_id: u64) void {
 }
 
 pub fn createTerminalSlot(self: *App, tab_id: u64) void {
+    self.terminal_snapshot_cache.clear();
     _ = self.sessions.createTerminalSlot(tab_id) catch {
         self.message = "Could not create terminal";
         return;
@@ -558,6 +588,7 @@ pub fn createTerminalSlot(self: *App, tab_id: u64) void {
 }
 
 pub fn activateTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
+    self.terminal_snapshot_cache.clear();
     if (!self.sessions.activateTerminalSlot(tab_id, slot_id)) {
         self.message = "Terminal not found";
         return;
@@ -566,6 +597,7 @@ pub fn activateTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
 }
 
 pub fn closeTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
+    self.terminal_snapshot_cache.clear();
     if (!self.sessions.closeTerminalSlot(tab_id, slot_id)) {
         self.message = "Terminal not found";
         return;
@@ -574,6 +606,7 @@ pub fn closeTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
 }
 
 pub fn reconnectTab(self: *App, tab_id: u64) void {
+    self.terminal_snapshot_cache.clear();
     const tab = self.sessions.tabById(tab_id) orelse {
         self.message = "Workspace tab not found";
         return;
@@ -583,6 +616,66 @@ pub fn reconnectTab(self: *App, tab_id: u64) void {
 
 pub fn filePanelSnapshot(self: *App, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
     return self.sessions.filePanelSnapshot(tab_id, tree_buffer, remote_buffer);
+}
+
+pub fn cachedSshSnapshot(self: *App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?terminal.Snapshot {
+    const active_slot_id = slot_id orelse {
+        self.terminal_snapshot_cache.clear();
+        return null;
+    };
+    const generation = self.sessions.sshSnapshotGeneration(tab_id, active_slot_id) orelse {
+        self.terminal_snapshot_cache.clear();
+        return null;
+    };
+
+    if (self.terminal_snapshot_cache.snapshot != null and
+        self.terminal_snapshot_cache.tab_id == tab_id and
+        self.terminal_snapshot_cache.slot_id == active_slot_id and
+        self.terminal_snapshot_cache.generation == generation)
+    {
+        self.terminal_snapshot_cache.pending_generation = null;
+        return self.terminal_snapshot_cache.snapshot.?;
+    }
+
+    if (self.terminal_snapshot_cache.snapshot != null and
+        self.terminal_snapshot_cache.tab_id == tab_id and
+        self.terminal_snapshot_cache.slot_id == active_slot_id and
+        now_ns - self.terminal_snapshot_cache.last_present_ns < terminal_snapshot_min_interval_ns)
+    {
+        self.terminal_snapshot_cache.pending_generation = generation;
+        return self.terminal_snapshot_cache.snapshot.?;
+    }
+
+    const snapshot = self.sessions.copySshSnapshot(self.allocator, tab_id) catch {
+        self.terminal_snapshot_cache.clear();
+        return null;
+    } orelse {
+        self.terminal_snapshot_cache.clear();
+        return null;
+    };
+
+    if (self.terminal_snapshot_cache.snapshot) |*cached| cached.deinit();
+    self.terminal_snapshot_cache = .{
+        .tab_id = tab_id,
+        .slot_id = active_slot_id,
+        .generation = snapshot.generation,
+        .pending_generation = null,
+        .last_present_ns = now_ns,
+        .snapshot = snapshot,
+    };
+    return self.terminal_snapshot_cache.snapshot.?;
+}
+
+pub fn terminalSnapshotPendingDelayNs(self: *const App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?i128 {
+    const active_slot_id = slot_id orelse return null;
+    if (self.terminal_snapshot_cache.snapshot == null) return null;
+    if (self.terminal_snapshot_cache.tab_id != tab_id) return null;
+    if (self.terminal_snapshot_cache.slot_id != active_slot_id) return null;
+    _ = self.terminal_snapshot_cache.pending_generation orelse return null;
+
+    const elapsed = now_ns - self.terminal_snapshot_cache.last_present_ns;
+    if (elapsed >= terminal_snapshot_min_interval_ns) return 0;
+    return terminal_snapshot_min_interval_ns - elapsed;
 }
 
 pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePanelIntent) void {

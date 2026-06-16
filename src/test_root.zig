@@ -13,5 +13,6 @@ comptime {
     _ = @import("services/ssh_session_worker.zig");
     _ = @import("services/ssh_workspace_worker.zig");
     _ = @import("terminal/libvterm_backend.zig");
+    _ = @import("terminal/predictive.zig");
     _ = @import("terminal/terminal.zig");
 }

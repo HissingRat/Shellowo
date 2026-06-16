@@ -287,7 +287,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
             .none => {},
             .activate => app.sessions.activate(tab.id),
             .close => {
-                app.sessions.closeTab(tab.id);
+                app.closeTab(tab.id);
                 break;
             },
         }

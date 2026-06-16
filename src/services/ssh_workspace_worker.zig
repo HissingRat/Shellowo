@@ -31,6 +31,7 @@ const max_file_tree_nodes = 512;
 const max_file_path = 512;
 const max_file_error = 96;
 const max_file_selection = 256;
+const max_pending_input_bytes = 1024 * 1024;
 
 const FileTreeNode = struct {
     path: []const u8,
@@ -105,6 +106,7 @@ const PtySlot = struct {
     emulator: ?terminal.Emulator = null,
     snapshot_lock: std.atomic.Mutex = .unlocked,
     snapshot_cache: ?terminal.Snapshot = null,
+    snapshot_generation: u64 = 0,
     input_lock: std.atomic.Mutex = .unlocked,
     pending_input: std.ArrayList(u8) = .empty,
     mouse_lock: std.atomic.Mutex = .unlocked,
@@ -177,6 +179,8 @@ const PtySlot = struct {
     fn queueInput(self: *PtySlot, allocator: std.mem.Allocator, bytes: []const u8) !void {
         self.lockInput();
         defer self.unlockInput();
+        const remaining = max_pending_input_bytes - @min(self.pending_input.items.len, max_pending_input_bytes);
+        if (bytes.len > remaining) return error.InputQueueFull;
         try self.pending_input.appendSlice(allocator, bytes);
     }
 
@@ -190,6 +194,12 @@ const PtySlot = struct {
         self.lockResize();
         defer self.unlockResize();
         self.pending_resize = size;
+    }
+
+    fn retryResize(self: *PtySlot, size: ssh.PtySize) void {
+        self.lockResize();
+        defer self.unlockResize();
+        if (self.pending_resize == null) self.pending_resize = size;
     }
 
     fn queueClearScrollback(self: *PtySlot) void {
@@ -208,6 +218,7 @@ const PtySlot = struct {
         const cached_title_copy = if (cached.title) |snapshot_title| try allocator.dupe(u8, snapshot_title) else null;
         return .{
             .allocator = allocator,
+            .generation = cached.generation,
             .size = cached.size,
             .cells = cells,
             .scrollback_cells = scrollback_cells,
@@ -229,6 +240,8 @@ const PtySlot = struct {
         defer self.unlockSnapshot();
 
         if (self.snapshot_cache) |*cached| cached.deinit();
+        self.snapshot_generation +%= 1;
+        shot.generation = self.snapshot_generation;
         self.updateTitleCache(shot.title orelse "");
         self.snapshot_cache = shot;
     }
@@ -241,6 +254,13 @@ const PtySlot = struct {
             cached.deinit();
             self.snapshot_cache = null;
         }
+        self.snapshot_generation +%= 1;
+    }
+
+    fn snapshotGeneration(self: *PtySlot) u64 {
+        self.lockSnapshot();
+        defer self.unlockSnapshot();
+        return self.snapshot_generation;
     }
 
     fn title(self: *PtySlot) []const u8 {
@@ -255,15 +275,23 @@ const PtySlot = struct {
         self.title_len = len;
     }
 
-    fn drainInput(self: *PtySlot, buffer: []u8) usize {
+    fn peekInput(self: *PtySlot, buffer: []u8) usize {
         self.lockInput();
         defer self.unlockInput();
 
         const len = @min(buffer.len, self.pending_input.items.len);
         if (len == 0) return 0;
         @memcpy(buffer[0..len], self.pending_input.items[0..len]);
-        self.pending_input.replaceRangeAssumeCapacity(0, len, &.{});
         return len;
+    }
+
+    fn consumeInput(self: *PtySlot, len: usize) void {
+        self.lockInput();
+        defer self.unlockInput();
+
+        const consumed = @min(len, self.pending_input.items.len);
+        if (consumed == 0) return;
+        self.pending_input.replaceRangeAssumeCapacity(0, consumed, &.{});
     }
 
     fn drainMouse(self: *PtySlot) ?terminal.MouseEvent {
@@ -322,9 +350,11 @@ pub const SshWorkspaceWorker = struct {
     options: ssh_session.Options,
     thread: ?std.Thread = null,
     file_thread: ?std.Thread = null,
+    monitor_thread: ?std.Thread = null,
     download_threads: std.ArrayList(DownloadThread) = .empty,
     thread_done: std.atomic.Value(bool) = .init(true),
     file_thread_done: std.atomic.Value(bool) = .init(true),
+    monitor_thread_done: std.atomic.Value(bool) = .init(true),
     state_raw: std.atomic.Value(u8) = .init(@intFromEnum(State.idle)),
     stop_requested: std.atomic.Value(bool) = .init(false),
     slots_lock: std.atomic.Mutex = .unlocked,
@@ -425,6 +455,13 @@ pub const SshWorkspaceWorker = struct {
             self.join();
             return err;
         };
+        self.monitor_thread_done.store(false, .release);
+        self.monitor_thread = std.Thread.spawn(.{}, runMonitor, .{self}) catch |err| {
+            self.monitor_thread_done.store(true, .release);
+            self.requestStop();
+            self.join();
+            return err;
+        };
     }
 
     pub fn requestStop(self: *SshWorkspaceWorker) void {
@@ -440,6 +477,10 @@ pub const SshWorkspaceWorker = struct {
         if (self.file_thread) |thread| {
             thread.join();
             self.file_thread = null;
+        }
+        if (self.monitor_thread) |thread| {
+            thread.join();
+            self.monitor_thread = null;
         }
         for (self.download_threads.items) |download_thread| {
             download_thread.thread.join();
@@ -465,12 +506,19 @@ pub const SshWorkspaceWorker = struct {
                 self.file_thread = null;
             }
         }
+        if (self.monitor_thread) |thread| {
+            if (self.monitor_thread_done.load(.acquire)) {
+                thread.join();
+                self.monitor_thread = null;
+            }
+        }
         if (self.file_thread == null) self.reapDownloadThreads();
     }
 
     pub fn canDestroyWithoutBlocking(self: *const SshWorkspaceWorker) bool {
         if (self.thread != null and !self.thread_done.load(.acquire)) return false;
         if (self.file_thread != null and !self.file_thread_done.load(.acquire)) return false;
+        if (self.monitor_thread != null and !self.monitor_thread_done.load(.acquire)) return false;
         for (self.download_threads.items) |download_thread| {
             if (!download_thread.done.load(.acquire)) return false;
         }
@@ -557,6 +605,11 @@ pub const SshWorkspaceWorker = struct {
     pub fn copySnapshot(self: *SshWorkspaceWorker, allocator: std.mem.Allocator, slot_id: terminal_slot.TerminalSlotId) !?terminal.Snapshot {
         const slot = self.slotById(slot_id) orelse return null;
         return slot.copySnapshot(allocator);
+    }
+
+    pub fn snapshotGeneration(self: *SshWorkspaceWorker, slot_id: terminal_slot.TerminalSlotId) ?u64 {
+        const slot = self.slotById(slot_id) orelse return null;
+        return slot.snapshotGeneration();
     }
 
     pub fn statusPanelSnapshot(self: *SshWorkspaceWorker) status_panel.StatusPanelSnapshot {
@@ -730,13 +783,12 @@ pub const SshWorkspaceWorker = struct {
         var buffer: [8192]u8 = undefined;
         var input_buffer: [4096]u8 = undefined;
         while (!self.stop_requested.load(.acquire)) {
-            self.pumpSlots(client, &buffer, &input_buffer) catch |err| {
+            const active = self.pumpSlots(client, &buffer, &input_buffer) catch |err| {
                 self.fail(err);
                 self.disconnectAllSlots(err);
                 return;
             };
-            self.pumpMonitor(client);
-            sleepMs(1);
+            if (!active) sleepMs(1);
         }
 
         self.setState(.stopping);
@@ -783,21 +835,52 @@ pub const SshWorkspaceWorker = struct {
         }
     }
 
-    fn pumpSlots(self: *SshWorkspaceWorker, client: ssh.Client, read_buffer: []u8, input_buffer: []u8) ssh_session.Error!void {
-        self.lockSlots();
-        defer self.unlockSlots();
+    fn runMonitor(self: *SshWorkspaceWorker) void {
+        defer self.monitor_thread_done.store(true, .release);
+        const ssh_profile = self.connection;
+        const endpoint = ssh.Endpoint{ .host = ssh_profile.base.host, .port = ssh_profile.base.port };
+        const auth = ssh_session.authFromProfile(ssh_profile) catch |err| {
+            self.storeMonitorError(@errorName(err));
+            return;
+        };
+        const client = self.options.connector.connect(self.allocator, .{
+            .endpoint = endpoint,
+            .auth = auth,
+            .host_key_policy = self.options.host_key_policy,
+            .host_key_verifier = self.options.host_key_verifier,
+            .cancel_token = self.cancelToken(),
+            .timeout_ms = @intCast(self.options.timeout_ms),
+        }) catch |err| {
+            self.storeMonitorError(@errorName(err));
+            return;
+        };
+        defer client.close();
 
-        for (self.slots.items) |slot| {
+        while (!self.stop_requested.load(.acquire)) {
+            self.pumpMonitor(client);
+            sleepMs(1);
+        }
+    }
+
+    fn pumpSlots(self: *SshWorkspaceWorker, client: ssh.Client, read_buffer: []u8, input_buffer: []u8) ssh_session.Error!bool {
+        var active = false;
+        var index: usize = 0;
+        while (self.slotByIndex(index)) |slot| : (index += 1) {
             if (slot.close_requested.load(.acquire)) {
                 slot.closeRuntime();
+                active = true;
                 continue;
             }
             switch (slot.state()) {
-                .starting => try self.openSlot(client, slot),
-                .connected => try self.pumpSlot(slot, read_buffer, input_buffer),
+                .starting => {
+                    try self.openSlot(client, slot);
+                    active = true;
+                },
+                .connected => active = (try self.pumpSlot(slot, read_buffer, input_buffer)) or active,
                 else => {},
             }
         }
+        return active;
     }
 
     fn openSlot(self: *SshWorkspaceWorker, client: ssh.Client, slot: *PtySlot) ssh_session.Error!void {
@@ -826,15 +909,17 @@ pub const SshWorkspaceWorker = struct {
         try slot.cacheSnapshot(self.allocator);
     }
 
-    fn pumpSlot(self: *SshWorkspaceWorker, slot: *PtySlot, read_buffer: []u8, input_buffer: []u8) ssh_session.Error!void {
-        const shell = slot.shell orelse return;
-        const emulator = slot.emulator orelse return;
+    fn pumpSlot(self: *SshWorkspaceWorker, slot: *PtySlot, read_buffer: []u8, input_buffer: []u8) ssh_session.Error!bool {
+        const shell = slot.shell orelse return false;
+        const emulator = slot.emulator orelse return false;
+        var active = false;
         var dirty = false;
 
         if (slot.drainResize()) |size| {
+            active = true;
             emulator.resize(.{ .cols = size.cols, .rows = size.rows }) catch return ssh_session.Error.TerminalInitFailed;
             shell.resize(size) catch |err| switch (err) {
-                ssh.Error.WouldBlock => {},
+                ssh.Error.WouldBlock => slot.retryResize(size),
                 else => {
                     slot.last_error = err;
                     slot.setState(.failed);
@@ -844,33 +929,18 @@ pub const SshWorkspaceWorker = struct {
             dirty = true;
         }
 
-        const input_len = slot.drainInput(input_buffer);
-        if (input_len > 0) {
-            _ = shell.write(input_buffer[0..input_len]) catch |err| switch (err) {
-                ssh.Error.WouldBlock => {},
-                else => {
-                    slot.last_error = err;
-                    slot.setState(.failed);
-                    return err;
-                },
-            };
-        }
-
         while (slot.drainMouse()) |mouse| {
+            active = true;
             const bytes = emulator.mouse(self.allocator, mouse) catch return ssh_session.Error.TerminalWriteFailed;
             defer self.allocator.free(bytes);
             if (bytes.len == 0) continue;
-            _ = shell.write(bytes) catch |err| switch (err) {
-                ssh.Error.WouldBlock => break,
-                else => {
-                    slot.last_error = err;
-                    slot.setState(.failed);
-                    return err;
-                },
-            };
+            slot.queueInput(self.allocator, bytes) catch return ssh_session.Error.ConnectionFailed;
         }
 
+        active = (try self.writePendingInput(slot, shell, input_buffer)) or active;
+
         if (slot.clear_scrollback_requested.swap(false, .acq_rel)) {
+            active = true;
             emulator.clearScrollback() catch return ssh_session.Error.TerminalWriteFailed;
             dirty = true;
         }
@@ -884,22 +954,40 @@ pub const SshWorkspaceWorker = struct {
             },
         };
         if (read_len > 0) {
+            active = true;
             _ = emulator.write(read_buffer[0..read_len]) catch return ssh_session.Error.TerminalWriteFailed;
             dirty = true;
         }
         if (dirty) try slot.cacheSnapshot(self.allocator);
+        return active or dirty;
+    }
+
+    fn writePendingInput(self: *SshWorkspaceWorker, slot: *PtySlot, shell: ssh.Shell, input_buffer: []u8) ssh_session.Error!bool {
+        _ = self;
+        const input_len = slot.peekInput(input_buffer);
+        if (input_len == 0) return false;
+        const written = shell.write(input_buffer[0..input_len]) catch |err| switch (err) {
+            ssh.Error.WouldBlock => return true,
+            else => {
+                slot.last_error = err;
+                slot.setState(.failed);
+                return err;
+            },
+        };
+        if (written > 0) slot.consumeInput(written);
+        return true;
     }
 
     fn closeAllSlots(self: *SshWorkspaceWorker) void {
-        self.lockSlots();
-        defer self.unlockSlots();
-        for (self.slots.items) |slot| slot.closeRuntime();
+        var index: usize = 0;
+        while (self.slotByIndex(index)) |slot| : (index += 1) {
+            slot.closeRuntime();
+        }
     }
 
     fn disconnectAllSlots(self: *SshWorkspaceWorker, err: ssh_session.Error) void {
-        self.lockSlots();
-        defer self.unlockSlots();
-        for (self.slots.items) |slot| {
+        var index: usize = 0;
+        while (self.slotByIndex(index)) |slot| : (index += 1) {
             if (slot.close_requested.load(.acquire)) {
                 slot.closeRuntime();
             } else {
@@ -1857,6 +1945,13 @@ pub const SshWorkspaceWorker = struct {
         return null;
     }
 
+    fn slotByIndex(self: *SshWorkspaceWorker, index: usize) ?*PtySlot {
+        self.lockSlots();
+        defer self.unlockSlots();
+        if (index >= self.slots.items.len) return null;
+        return self.slots.items[index];
+    }
+
     fn nextOrdinalLocked(self: *SshWorkspaceWorker) u16 {
         var max: u16 = 0;
         for (self.slots.items) |slot| max = @max(max, slot.ordinal);
@@ -2558,4 +2653,26 @@ test "pty slot keeps cached snapshot after disconnect" {
     defer snapshot.deinit();
     try std.testing.expectEqual(@as(u21, 'o'), snapshot.cells[0].codepoint);
     try std.testing.expectEqual(@as(u21, 'w'), snapshot.cells[1].codepoint);
+}
+
+test "pty slot input queue only consumes bytes after confirmed write" {
+    const allocator = std.testing.allocator;
+    const slot = try PtySlot.create(allocator, 1, 1);
+    defer slot.destroy(allocator);
+
+    try slot.queueInput(allocator, "abcdef");
+
+    var buffer: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), slot.peekInput(&buffer));
+    try std.testing.expectEqualStrings("abcd", buffer[0..4]);
+
+    try std.testing.expectEqual(@as(usize, 4), slot.peekInput(&buffer));
+    try std.testing.expectEqualStrings("abcd", buffer[0..4]);
+
+    slot.consumeInput(2);
+    try std.testing.expectEqual(@as(usize, 4), slot.peekInput(&buffer));
+    try std.testing.expectEqualStrings("cdef", buffer[0..4]);
+
+    slot.consumeInput(32);
+    try std.testing.expectEqual(@as(usize, 0), slot.peekInput(&buffer));
 }

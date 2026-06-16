@@ -160,14 +160,18 @@ pub const SshSession = struct {
 
     pub fn writeMouse(self: *SshSession, allocator: std.mem.Allocator, event: terminal.MouseEvent) Error!usize {
         const shell = self.shell orelse return Error.ChannelClosed;
-        const emulator = self.emulator orelse return Error.TerminalInitFailed;
-        const bytes = emulator.mouse(allocator, event) catch return Error.TerminalWriteFailed;
+        const bytes = try self.encodeMouse(allocator, event);
         defer allocator.free(bytes);
         if (bytes.len == 0) return 0;
         return shell.write(bytes) catch |err| {
             self.fail(err);
             return err;
         };
+    }
+
+    pub fn encodeMouse(self: *SshSession, allocator: std.mem.Allocator, event: terminal.MouseEvent) Error![]u8 {
+        const emulator = self.emulator orelse return Error.TerminalInitFailed;
+        return emulator.mouse(allocator, event) catch return Error.TerminalWriteFailed;
     }
 
     pub fn clearScrollback(self: *SshSession) Error!void {

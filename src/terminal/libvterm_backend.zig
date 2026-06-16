@@ -64,6 +64,7 @@ fn snapshot(context: *anyopaque, allocator: std.mem.Allocator) terminal.Error!te
     errdefer allocator.free(scrollback_cells);
 
     const cursor_pos = c.shellow_vterm_get_cursor(self.vt);
+    const dirty = c.shellow_vterm_dirty_rows(self.vt);
     const raw_title = std.mem.span(c.shellow_vterm_title(self.vt));
     const title = allocator.dupe(u8, raw_title) catch return terminal.Error.SnapshotFailed;
     errdefer allocator.free(title);
@@ -82,22 +83,28 @@ fn snapshot(context: *anyopaque, allocator: std.mem.Allocator) terminal.Error!te
         }
     }
 
-    return .{
+    const snapshot_out = terminal.Snapshot{
         .allocator = allocator,
         .size = self.size,
         .cells = cells,
         .scrollback_cells = scrollback_cells,
         .scrollback_rows = scrollback_rows,
+        .dirty_rows = dirtyRows(dirty, self.size.rows),
+        .dirty_rects = dirtyRects(dirty, self.size.rows, self.size.cols),
+        .scrollback_dirty = dirty.scrollback_dirty,
+        .cursor_dirty = dirty.cursor_dirty,
         .alternate_screen = alternate_screen,
         .bracketed_paste = c.shellow_vterm_is_bracketed_paste_enabled(self.vt),
         .mouse_mode = convertMouseMode(c.shellow_vterm_mouse_mode(self.vt)),
         .cursor = .{
             .row = clampCursor(cursor_pos.row, self.size.rows),
             .col = clampCursor(cursor_pos.col, self.size.cols),
-            .visible = true,
+            .visible = cursor_pos.visible,
         },
         .title = title,
     };
+    c.shellow_vterm_clear_dirty(self.vt);
+    return snapshot_out;
 }
 
 fn scrollbackRows(vt: *c.ShellowVTerm) usize {
@@ -212,6 +219,53 @@ fn convertMouseMode(raw: c_int) terminal.MouseMode {
         3 => .move,
         else => .none,
     };
+}
+
+fn dirtyRows(raw: c.ShellowVTermDirtyRows, rows: u16) terminal.DirtyRows {
+    if (raw.end_row <= raw.start_row or rows == 0) return .{};
+    const start = clampDirtyRow(raw.start_row, rows);
+    const end = clampDirtyRow(raw.end_row, rows);
+    if (end <= start) return .{};
+    return .{ .start = start, .end = end };
+}
+
+fn dirtyRects(raw: c.ShellowVTermDirtyRows, rows: u16, cols: u16) terminal.DirtyRects {
+    var out: terminal.DirtyRects = .{
+        .overflow = raw.overflow,
+    };
+    if (rows == 0 or cols == 0) return out;
+
+    const raw_len: usize = if (raw.len <= 0) 0 else @intCast(raw.len);
+    const len = @min(raw_len, out.items.len);
+    for (0..len) |i| {
+        const rect = raw.rects[i];
+        const start_row = clampDirtyRow(rect.start_row, rows);
+        const end_row = clampDirtyRow(rect.end_row, rows);
+        const start_col = clampDirtyCol(rect.start_col, cols);
+        const end_col = clampDirtyCol(rect.end_col, cols);
+        if (end_row <= start_row or end_col <= start_col) continue;
+        out.items[out.len] = .{
+            .start_row = start_row,
+            .end_row = end_row,
+            .start_col = start_col,
+            .end_col = end_col,
+        };
+        out.len += 1;
+    }
+    if (raw_len > out.items.len) out.overflow = true;
+    return out;
+}
+
+fn clampDirtyRow(value: c_int, limit: u16) u16 {
+    if (value <= 0) return 0;
+    const casted: u16 = std.math.cast(u16, value) orelse return limit;
+    return @min(casted, limit);
+}
+
+fn clampDirtyCol(value: c_int, limit: u16) u16 {
+    if (value <= 0) return 0;
+    const casted: u16 = std.math.cast(u16, value) orelse return limit;
+    return @min(casted, limit);
 }
 
 fn mouseModifiers(modifiers: terminal.MouseModifiers) c_int {
@@ -378,6 +432,51 @@ test "libvterm backend exposes bracketed paste mode" {
     var disabled = try emulator.snapshot(std.testing.allocator);
     defer disabled.deinit();
     try std.testing.expect(!disabled.bracketed_paste);
+}
+
+test "libvterm backend exposes dirty rows" {
+    var backend = Backend{ .allocator = std.testing.allocator };
+    const emulator = try backend.create(.{ .cols = 8, .rows = 3 });
+    defer emulator.deinit();
+
+    var initial = try emulator.snapshot(std.testing.allocator);
+    initial.deinit();
+
+    _ = try emulator.write("abc");
+
+    var written = try emulator.snapshot(std.testing.allocator);
+    try std.testing.expect(!written.dirty_rows.empty());
+    try std.testing.expect(!written.dirty_rects.empty());
+    try std.testing.expect(written.dirty_rows.start <= 0);
+    try std.testing.expect(written.dirty_rows.end >= 1);
+    try std.testing.expectEqual(@as(u16, 0), written.dirty_rects.items[0].start_row);
+    try std.testing.expect(written.dirty_rects.items[0].end_col > 0);
+    try std.testing.expect(!written.scrollback_dirty);
+    try std.testing.expect(written.cursor_dirty);
+    written.deinit();
+
+    var clean = try emulator.snapshot(std.testing.allocator);
+    defer clean.deinit();
+    try std.testing.expect(clean.dirty_rows.empty());
+    try std.testing.expect(clean.dirty_rects.empty());
+    try std.testing.expect(!clean.scrollback_dirty);
+    try std.testing.expect(!clean.cursor_dirty);
+}
+
+test "libvterm backend marks scrollback dirty" {
+    var backend = Backend{ .allocator = std.testing.allocator };
+    const emulator = try backend.create(.{ .cols = 8, .rows = 2 });
+    defer emulator.deinit();
+
+    var initial = try emulator.snapshot(std.testing.allocator);
+    initial.deinit();
+
+    _ = try emulator.write("one\r\ntwo\r\nthree\r\n");
+
+    var shot = try emulator.snapshot(std.testing.allocator);
+    defer shot.deinit();
+    try std.testing.expect(shot.scrollback_rows > 0);
+    try std.testing.expect(shot.scrollback_dirty);
 }
 
 test "libvterm backend reports SGR mouse bytes" {

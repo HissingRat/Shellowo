@@ -35,6 +35,7 @@ const paste_queue_capacity: usize = 512 * 1024;
 const paste_queue_timer_us: i32 = 16_000;
 const bracketed_paste_start = "\x1b[200~";
 const bracketed_paste_end = "\x1b[201~";
+const local_echo_capacity: usize = 512;
 const multi_click_window_ns: i128 = 500 * std.time.ns_per_ms;
 const context_menu_font_size: f32 = terminal_font_size;
 const context_menu_item_height: f32 = 18;
@@ -43,6 +44,7 @@ const search_max_matches: usize = 512;
 const search_bar_width: f32 = 260;
 const search_bar_height: f32 = 34;
 const search_bar_font_size: f32 = 10;
+const row_render_cache_capacity: usize = 256;
 
 const TerminalRun = struct {
     row: f32,
@@ -74,6 +76,24 @@ const TerminalSearchMatches = struct {
     overflow: bool = false,
 };
 
+const TerminalRowRenderCacheEntry = struct {
+    generation: u64 = std.math.maxInt(u64),
+    absolute_row: usize = std.math.maxInt(usize),
+    scrollback_rows: usize = std.math.maxInt(usize),
+    cols: u16 = 0,
+    has_backgrounds: bool = true,
+};
+
+const LocalEchoState = struct {
+    active: bool = false,
+    base_generation: u64 = 0,
+    base_scrollback_rows: usize = 0,
+    row: u16 = 0,
+    start_col: u16 = 0,
+    text: [local_echo_capacity]u8 = std.mem.zeroes([local_echo_capacity]u8),
+    len: usize = 0,
+};
+
 const TerminalViewport = struct {
     last_size: ?terminal.Size = null,
     scroll_offset: usize = 0,
@@ -93,6 +113,14 @@ const TerminalViewport = struct {
     search_scroll_to_active: bool = false,
     search_query: [search_query_capacity]u8 = std.mem.zeroes([search_query_capacity]u8),
     search_active_index: usize = 0,
+    search_cache_generation: u64 = std.math.maxInt(u64),
+    search_cache_query: [search_query_capacity]u8 = std.mem.zeroes([search_query_capacity]u8),
+    search_cache_query_len: usize = 0,
+    search_cache_total_rows: usize = 0,
+    search_cache_cols: u16 = 0,
+    search_cache_matches: TerminalSearchMatches = .{},
+    row_render_cache: [row_render_cache_capacity]TerminalRowRenderCacheEntry = [_]TerminalRowRenderCacheEntry{.{}} ** row_render_cache_capacity,
+    local_echo: LocalEchoState = .{},
     pending_paste: [paste_queue_capacity]u8 = std.mem.zeroes([paste_queue_capacity]u8),
     pending_paste_len: usize = 0,
     pending_paste_offset: usize = 0,
@@ -201,6 +229,7 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.S
     }));
     defer host.deinit();
     const viewport = viewportState(host.data());
+    reconcileLocalEcho(viewport, snapshot);
     processTerminalInput(app, tab, host.data(), viewport, snapshot);
     drainPendingPaste(app, tab, host.data().id, viewport);
 
@@ -211,7 +240,7 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.S
     const total_rows = snapshot.scrollback_rows + @as(usize, snapshot.size.rows);
     const rows = visibleRows(crs, total_rows);
     var start_row = visibleStartRow(total_rows, rows, viewport.scroll_offset);
-    const search_matches = computeSearchMatches(snapshot, viewport);
+    const search_matches = cachedSearchMatches(snapshot, viewport);
     clampSearchActiveIndex(viewport, search_matches);
     if (viewport.search_scroll_to_active and search_matches.len > 0) {
         scrollToSearchMatch(viewport, crs, snapshot, search_matches.items[viewport.search_active_index]);
@@ -226,8 +255,9 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.S
     for (0..rows) |i| {
         renderTerminalSnapshotRow(snapshot, crs, viewport, search_matches, start_row + i, @as(f32, @floatFromInt(i)), palette);
     }
+    renderLocalEcho(snapshot, crs, start_row, rows, viewport, palette);
     renderImeComposition(snapshot, crs, start_row, rows, viewport, palette);
-    renderCursor(snapshot, crs, start_row, rows, viewport.scroll_offset, palette, host.data().id);
+    renderCursor(snapshot, crs, start_row, rows, viewport, palette, host.data().id);
     scrollbar(app, tab, host.data(), viewport, crs, total_rows, rows, start_row, palette);
     terminalContextMenu(app, tab, viewport, crs, snapshot, palette, id_extra + 2, host.data().id);
     terminalSearchBar(viewport, crs, snapshot, search_matches, palette, id_extra + 20, host.data().id);
@@ -509,7 +539,9 @@ fn renderTerminalLine(text: []const u8, crs: dvui.RectScale, row: f32, palette: 
 fn renderTerminalSnapshotRow(snapshot: terminal.Snapshot, crs: dvui.RectScale, viewport: *TerminalViewport, search_matches: TerminalSearchMatches, absolute_row: usize, visible_row: f32, palette: theme.Palette) void {
     if (crs.r.empty()) return;
 
-    renderTerminalBackgrounds(snapshot, crs, viewport, absolute_row, visible_row, palette);
+    if (viewport.selection != null or rowHasBackgrounds(snapshot, viewport, absolute_row, palette)) {
+        renderTerminalBackgrounds(snapshot, crs, viewport, absolute_row, visible_row, palette);
+    }
     renderTerminalSearchHighlights(crs, search_matches, viewport.search_active_index, absolute_row, visible_row, palette);
 
     var run_buf: [1024]u8 = undefined;
@@ -541,6 +573,59 @@ fn renderTerminalSnapshotRow(snapshot: terminal.Snapshot, crs: dvui.RectScale, v
     }
 }
 
+fn rowHasBackgrounds(snapshot: terminal.Snapshot, viewport: *TerminalViewport, absolute_row: usize, palette: theme.Palette) bool {
+    const idx = absolute_row % viewport.row_render_cache.len;
+    const cached = viewport.row_render_cache[idx];
+    if (canReuseRowRenderCache(snapshot, cached, absolute_row)) {
+        return cached.has_backgrounds;
+    }
+
+    const has_backgrounds = computeRowHasBackgrounds(snapshot, absolute_row, palette);
+    viewport.row_render_cache[idx] = .{
+        .generation = snapshot.generation,
+        .absolute_row = absolute_row,
+        .scrollback_rows = snapshot.scrollback_rows,
+        .cols = snapshot.size.cols,
+        .has_backgrounds = has_backgrounds,
+    };
+    return has_backgrounds;
+}
+
+fn canReuseRowRenderCache(snapshot: terminal.Snapshot, cached: TerminalRowRenderCacheEntry, absolute_row: usize) bool {
+    if (cached.absolute_row != absolute_row) return false;
+    if (cached.cols != snapshot.size.cols) return false;
+    if (cached.scrollback_rows != snapshot.scrollback_rows) return false;
+    if (cached.generation == snapshot.generation) return true;
+
+    if (absolute_row < snapshot.scrollback_rows) return !snapshot.scrollback_dirty;
+    if (snapshot.scrollback_dirty) return false;
+
+    const screen_row = absolute_row - snapshot.scrollback_rows;
+    if (screen_row >= snapshot.size.rows) return false;
+    if (!snapshot.dirty_rects.empty()) return !rowTouchesDirtyRects(snapshot.dirty_rects, @intCast(screen_row));
+    if (snapshot.dirty_rows.empty()) return true;
+    return screen_row < snapshot.dirty_rows.start or screen_row >= snapshot.dirty_rows.end;
+}
+
+fn rowTouchesDirtyRects(rects: terminal.DirtyRects, screen_row: u16) bool {
+    if (rects.overflow) return true;
+    for (rects.items[0..rects.len]) |rect| {
+        if (screen_row >= rect.start_row and screen_row < rect.end_row) return true;
+    }
+    return false;
+}
+
+fn computeRowHasBackgrounds(snapshot: terminal.Snapshot, absolute_row: usize, palette: theme.Palette) bool {
+    var col: u16 = 0;
+    while (col < snapshot.size.cols) {
+        const cell = snapshotDisplayCell(snapshot, absolute_row, col) orelse break;
+        const width = @min(cellDisplayWidth(cell), snapshot.size.cols - col);
+        if (cell.width != 0 and terminalBackgroundColor(cell.style, palette) != null) return true;
+        col += width;
+    }
+    return false;
+}
+
 fn renderTerminalBackgrounds(snapshot: terminal.Snapshot, crs: dvui.RectScale, viewport: *TerminalViewport, absolute_row: usize, visible_row: f32, palette: theme.Palette) void {
     var col: u16 = 0;
     while (col < snapshot.size.cols) {
@@ -560,8 +645,9 @@ fn renderTerminalBackgrounds(snapshot: terminal.Snapshot, crs: dvui.RectScale, v
 }
 
 fn renderTerminalSearchHighlights(crs: dvui.RectScale, matches: TerminalSearchMatches, active_index: usize, absolute_row: usize, visible_row: f32, palette: theme.Palette) void {
-    for (matches.items[0..matches.len], 0..) |match, idx| {
-        if (match.row != absolute_row) continue;
+    var idx = firstSearchMatchForRow(matches, absolute_row);
+    while (idx < matches.len and matches.items[idx].row == absolute_row) : (idx += 1) {
+        const match = matches.items[idx];
         const active = idx == active_index;
         const fill = if (active)
             blendColor(palette.accent, palette.app_bg, 0.22).opacity(0.72)
@@ -571,9 +657,93 @@ fn renderTerminalSearchHighlights(crs: dvui.RectScale, matches: TerminalSearchMa
     }
 }
 
-fn computeSearchMatches(snapshot: terminal.Snapshot, viewport: *TerminalViewport) TerminalSearchMatches {
-    var matches = TerminalSearchMatches{};
+fn firstSearchMatchForRow(matches: TerminalSearchMatches, row: usize) usize {
+    var left: usize = 0;
+    var right: usize = matches.len;
+    while (left < right) {
+        const mid = left + (right - left) / 2;
+        if (matches.items[mid].row < row) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
+
+fn cachedSearchMatches(snapshot: terminal.Snapshot, viewport: *TerminalViewport) TerminalSearchMatches {
     const query = terminalSearchQuery(viewport);
+    if (viewport.search_cache_generation == snapshot.generation and
+        viewport.search_cache_query_len == query.len and
+        std.mem.eql(u8, viewport.search_cache_query[0..viewport.search_cache_query_len], query))
+    {
+        return viewport.search_cache_matches;
+    }
+
+    const total_rows = snapshot.scrollback_rows + @as(usize, snapshot.size.rows);
+    if (canUpdateSearchCacheIncrementally(snapshot, viewport, query, total_rows)) {
+        updateSearchCacheDirtyRows(snapshot, viewport, query);
+        viewport.search_cache_generation = snapshot.generation;
+        return viewport.search_cache_matches;
+    }
+
+    viewport.search_cache_generation = snapshot.generation;
+    viewport.search_cache_query_len = @min(query.len, viewport.search_cache_query.len);
+    if (viewport.search_cache_query_len > 0) {
+        @memcpy(viewport.search_cache_query[0..viewport.search_cache_query_len], query[0..viewport.search_cache_query_len]);
+    }
+    viewport.search_cache_matches = computeSearchMatches(snapshot, query);
+    viewport.search_cache_total_rows = total_rows;
+    viewport.search_cache_cols = snapshot.size.cols;
+    return viewport.search_cache_matches;
+}
+
+fn canUpdateSearchCacheIncrementally(snapshot: terminal.Snapshot, viewport: *TerminalViewport, query: []const u8, total_rows: usize) bool {
+    if (viewport.search_cache_generation == std.math.maxInt(u64)) return false;
+    if (viewport.search_cache_query_len != query.len) return false;
+    if (!std.mem.eql(u8, viewport.search_cache_query[0..viewport.search_cache_query_len], query)) return false;
+    if (query.len == 0) return false;
+    if (snapshot.scrollback_dirty or snapshot.dirty_rows.empty()) return false;
+    if (viewport.search_cache_total_rows != total_rows) return false;
+    if (viewport.search_cache_cols != snapshot.size.cols) return false;
+    if (viewport.search_cache_matches.overflow) return false;
+    return true;
+}
+
+fn updateSearchCacheDirtyRows(snapshot: terminal.Snapshot, viewport: *TerminalViewport, query: []const u8) void {
+    const dirty_start = snapshot.scrollback_rows + @as(usize, snapshot.dirty_rows.start);
+    const dirty_end = snapshot.scrollback_rows + @as(usize, snapshot.dirty_rows.end);
+    removeSearchMatchesInRows(&viewport.search_cache_matches, dirty_start, dirty_end);
+
+    var row = dirty_start;
+    while (row < dirty_end and !viewport.search_cache_matches.overflow) : (row += 1) {
+        appendRowSearchMatches(snapshot, row, query, &viewport.search_cache_matches);
+    }
+    sortSearchMatches(&viewport.search_cache_matches);
+}
+
+fn removeSearchMatchesInRows(matches: *TerminalSearchMatches, start_row: usize, end_row: usize) void {
+    var write_idx: usize = 0;
+    for (matches.items[0..matches.len]) |item| {
+        if (item.row >= start_row and item.row < end_row) continue;
+        matches.items[write_idx] = item;
+        write_idx += 1;
+    }
+    matches.len = write_idx;
+}
+
+fn sortSearchMatches(matches: *TerminalSearchMatches) void {
+    std.mem.sort(TerminalSearchMatch, matches.items[0..matches.len], {}, searchMatchLessThan);
+}
+
+fn searchMatchLessThan(context: void, a: TerminalSearchMatch, b: TerminalSearchMatch) bool {
+    _ = context;
+    if (a.row != b.row) return a.row < b.row;
+    return a.col < b.col;
+}
+
+fn computeSearchMatches(snapshot: terminal.Snapshot, query: []const u8) TerminalSearchMatches {
+    var matches = TerminalSearchMatches{};
     if (query.len == 0) return matches;
 
     const total_rows = snapshot.scrollback_rows + @as(usize, snapshot.size.rows);
@@ -674,6 +844,44 @@ fn renderTerminalRun(run: TerminalRun, crs: dvui.RectScale, palette: theme.Palet
     }) catch {};
 }
 
+fn renderLocalEcho(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, viewport: *TerminalViewport, palette: theme.Palette) void {
+    if (!viewport.local_echo.active or viewport.local_echo.len == 0) return;
+    if (viewport.scroll_offset != 0) return;
+
+    const absolute_row = viewport.local_echo.base_scrollback_rows + @as(usize, viewport.local_echo.row);
+    if (absolute_row < start_row or absolute_row >= start_row + rows) return;
+
+    const visible_row = @as(f32, @floatFromInt(absolute_row - start_row));
+    renderTerminalRun(.{
+        .row = visible_row,
+        .start_col = viewport.local_echo.start_col,
+        .end_col = predictedCursorCol(viewport, snapshot.size.cols),
+        .style = .{},
+        .text = viewport.local_echo.text[0..viewport.local_echo.len],
+    }, crs, palette);
+}
+
+fn reconcileLocalEcho(viewport: *TerminalViewport, snapshot: terminal.Snapshot) void {
+    if (!viewport.local_echo.active) return;
+    if (viewport.local_echo.base_generation != snapshot.generation) {
+        clearLocalEcho(viewport);
+        return;
+    }
+    if (snapshot.alternate_screen or snapshot.bracketed_paste or snapshot.mouse_mode != .none) {
+        clearLocalEcho(viewport);
+    }
+}
+
+fn clearLocalEcho(viewport: *TerminalViewport) void {
+    viewport.local_echo = .{};
+}
+
+fn predictedCursorCol(viewport: *const TerminalViewport, cols: u16) u16 {
+    if (!viewport.local_echo.active) return 0;
+    const advanced = viewport.local_echo.start_col +| @as(u16, @intCast(@min(viewport.local_echo.len, std.math.maxInt(u16))));
+    return @min(advanced, cols);
+}
+
 fn renderImeComposition(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, viewport: *TerminalViewport, palette: theme.Palette) void {
     if (viewport.ime_composition_len == 0 or rows == 0 or crs.r.empty()) return;
     if (viewport.scroll_offset != 0) return;
@@ -730,13 +938,17 @@ fn terminalTextRect(crs: dvui.RectScale, row: f32) dvui.Rect.Physical {
     };
 }
 
-fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, scroll_offset: usize, palette: theme.Palette, id: dvui.Id) void {
+fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, viewport: *TerminalViewport, palette: theme.Palette, id: dvui.Id) void {
     if (dvui.focusedWidgetId() != id) return;
-    if (scroll_offset != 0) return;
+    if (viewport.scroll_offset != 0) return;
     if (!snapshot.cursor.visible or rows == 0 or crs.r.empty()) return;
 
-    const cursor_row = snapshot.scrollback_rows + @as(usize, snapshot.cursor.row);
+    const cursor_row = if (viewport.local_echo.active)
+        viewport.local_echo.base_scrollback_rows + @as(usize, viewport.local_echo.row)
+    else
+        snapshot.scrollback_rows + @as(usize, snapshot.cursor.row);
     if (cursor_row < start_row or cursor_row >= start_row + rows) return;
+    const cursor_col = if (viewport.local_echo.active) predictedCursorCol(viewport, snapshot.size.cols) else snapshot.cursor.col;
 
     dvui.timer(id, cursor_blink_timer_us);
     const frame_time = dvui.frameTimeNS();
@@ -744,7 +956,7 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
 
     const visible_row = cursor_row - start_row;
     const cell_width = terminalCellWidth() * crs.s;
-    const x = crs.r.x + @as(f32, @floatFromInt(snapshot.cursor.col)) * cell_width;
+    const x = crs.r.x + @as(f32, @floatFromInt(cursor_col)) * cell_width;
     const line_top = crs.r.y + @as(f32, @floatFromInt(visible_row)) * terminal_line_height * crs.s;
     const glyph_height = theme.textFont("M", terminal_font_size).textSize("M").h * crs.s;
     const y = line_top + glyph_height - (cursor_underline_height + cursor_underline_lift) * crs.s;
@@ -1337,6 +1549,7 @@ fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.Widg
                     clearImeComposition(viewport);
                     clearTerminalSelection(viewport);
                     viewport.scroll_offset = 0;
+                    if (snapshot) |snap| applyLocalEchoBytes(viewport, snap, value.txt);
                     handleTerminalBytes(app, tab, value.txt);
                     event.handle(@src(), data);
                 },
@@ -1351,7 +1564,7 @@ fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.Widg
                         continue;
                     }
                 }
-                if (handleTerminalKey(app, tab, key)) {
+                if (handleTerminalKey(app, tab, key, snapshot, viewport)) {
                     viewport.scroll_offset = 0;
                     clearTerminalSelection(viewport);
                     event.handle(@src(), data);
@@ -1503,6 +1716,142 @@ fn drainPendingPaste(app: *App, tab: workspace.WorkspaceTab, terminal_id: dvui.I
 fn clearPendingPaste(viewport: *TerminalViewport) void {
     viewport.pending_paste_len = 0;
     viewport.pending_paste_offset = 0;
+}
+
+fn applyLocalEchoBytes(viewport: *TerminalViewport, snapshot: terminal.Snapshot, bytes: []const u8) void {
+    if (bytes.len == 0) return;
+    if (!localEchoEnvironmentSafe(viewport, snapshot)) {
+        clearLocalEcho(viewport);
+        return;
+    }
+
+    for (bytes) |byte| {
+        switch (byte) {
+            0x20...0x7e => {
+                if (!ensureLocalEchoStarted(viewport, snapshot)) return;
+                if (viewport.local_echo.len >= viewport.local_echo.text.len) return;
+                if (predictedCursorCol(viewport, snapshot.size.cols) >= snapshot.size.cols) return;
+                viewport.local_echo.text[viewport.local_echo.len] = byte;
+                viewport.local_echo.len += 1;
+            },
+            0x7f, 0x08 => {
+                if (!viewport.local_echo.active) {
+                    if (!ensureLocalEchoStarted(viewport, snapshot)) return;
+                }
+                if (viewport.local_echo.len > 0) {
+                    viewport.local_echo.len -= 1;
+                } else {
+                    clearLocalEcho(viewport);
+                    return;
+                }
+            },
+            '\r', '\n' => {
+                clearLocalEcho(viewport);
+                return;
+            },
+            else => {
+                clearLocalEcho(viewport);
+                return;
+            },
+        }
+    }
+}
+
+fn ensureLocalEchoStarted(viewport: *TerminalViewport, snapshot: terminal.Snapshot) bool {
+    if (viewport.local_echo.active) return true;
+    if (!canStartLocalEcho(viewport, snapshot)) return false;
+
+    viewport.local_echo = .{
+        .active = true,
+        .base_generation = snapshot.generation,
+        .base_scrollback_rows = snapshot.scrollback_rows,
+        .row = snapshot.cursor.row,
+        .start_col = snapshot.cursor.col,
+    };
+    return true;
+}
+
+fn localEchoEnvironmentSafe(viewport: *const TerminalViewport, snapshot: terminal.Snapshot) bool {
+    if (snapshot.alternate_screen or snapshot.bracketed_paste or snapshot.mouse_mode != .none) return false;
+    if (!snapshot.cursor.visible) return false;
+    if (viewport.scroll_offset != 0 or viewport.selection != null or viewport.search_open) return false;
+    if (viewport.pending_paste_len != 0) return false;
+    return true;
+}
+
+fn canStartLocalEcho(viewport: *const TerminalViewport, snapshot: terminal.Snapshot) bool {
+    if (!localEchoEnvironmentSafe(viewport, snapshot)) return false;
+    if (snapshot.cursor.row >= snapshot.size.rows or snapshot.cursor.col >= snapshot.size.cols) return false;
+    if (!cursorAtLineEnd(snapshot)) return false;
+    if (lineLooksSensitivePrompt(snapshot)) return false;
+    return lineLooksShellPrompt(snapshot);
+}
+
+fn cursorAtLineEnd(snapshot: terminal.Snapshot) bool {
+    const absolute_row = snapshot.scrollback_rows + @as(usize, snapshot.cursor.row);
+    var col = snapshot.cursor.col;
+    while (col < snapshot.size.cols) : (col += 1) {
+        const cell = snapshotDisplayCell(snapshot, absolute_row, col) orelse return false;
+        if (cell.width != 0 and !isBlankCell(cell)) return false;
+    }
+    return true;
+}
+
+fn lineLooksShellPrompt(snapshot: terminal.Snapshot) bool {
+    var buffer: [256]u8 = undefined;
+    const line = linePrefixAscii(snapshot, &buffer);
+    const trimmed = trimRightAsciiWhitespace(line);
+    if (trimmed.len == 0) return false;
+    return switch (trimmed[trimmed.len - 1]) {
+        '$', '#', '%', '>' => true,
+        else => false,
+    };
+}
+
+fn trimRightAsciiWhitespace(bytes: []const u8) []const u8 {
+    var end = bytes.len;
+    while (end > 0 and (bytes[end - 1] == ' ' or bytes[end - 1] == '\t')) {
+        end -= 1;
+    }
+    return bytes[0..end];
+}
+
+fn lineLooksSensitivePrompt(snapshot: terminal.Snapshot) bool {
+    var buffer: [256]u8 = undefined;
+    const line = linePrefixAscii(snapshot, &buffer);
+    return asciiContainsIgnoreCase(line, "password") or
+        asciiContainsIgnoreCase(line, "passphrase") or
+        asciiContainsIgnoreCase(line, "otp") or
+        asciiContainsIgnoreCase(line, "token");
+}
+
+fn linePrefixAscii(snapshot: terminal.Snapshot, buffer: []u8) []const u8 {
+    const absolute_row = snapshot.scrollback_rows + @as(usize, snapshot.cursor.row);
+    var len: usize = 0;
+    var col: u16 = 0;
+    while (col < snapshot.cursor.col and len < buffer.len) : (col += 1) {
+        const cell = snapshotDisplayCell(snapshot, absolute_row, col) orelse break;
+        if (cell.width == 0) continue;
+        buffer[len] = if (cell.codepoint >= 0x20 and cell.codepoint <= 0x7e) @intCast(cell.codepoint) else ' ';
+        len += 1;
+    }
+    return buffer[0..len];
+}
+
+fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var matched = true;
+        for (needle, 0..) |needle_byte, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle_byte)) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
+    return false;
 }
 
 fn copySelectionToClipboard(allocator: std.mem.Allocator, snapshot: terminal.Snapshot, viewport: *TerminalViewport) void {
@@ -1702,7 +2051,7 @@ fn handleTerminalBytes(app: *App, tab: workspace.WorkspaceTab, bytes: []const u8
     app.sendTerminalBytes(tab.id, bytes);
 }
 
-fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key) bool {
+fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key, snapshot: ?terminal.Snapshot, viewport: *TerminalViewport) bool {
     var bytes: []const u8 = "";
     var ctrl_buf: [1]u8 = undefined;
 
@@ -1732,6 +2081,7 @@ fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key
         };
     }
 
+    if (snapshot) |snap| applyLocalEchoBytes(viewport, snap, bytes);
     handleTerminalBytes(app, tab, bytes);
     return true;
 }
