@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const app_config = @import("config.zig");
 const native_event = @import("native_event.zig");
 const profile = @import("../core/profile.zig");
@@ -697,7 +698,7 @@ pub fn cancelTransfer(self: *App, transfer_id: u64) void {
     if (self.transferIndex(transfer_id)) |idx| {
         self.transfers.items[idx].status = .canceled;
         self.transfers.items[idx].progress = 1;
-        self.transfers.items[idx].finished_ns = nowNs();
+        self.transfers.items[idx].finished_ns = self.nowNs();
         self.transfers.items[idx].bytes_per_sec = 0;
     }
     self.message = "Transfer canceled";
@@ -716,7 +717,7 @@ pub fn retryTransfer(self: *App, transfer_id: u64) void {
     };
     errdefer self.freeRetryIntent(queued_intent);
 
-    const now = nowNs();
+    const now = self.nowNs();
     const new_id = self.next_transfer_id;
     self.next_transfer_id += 1;
     setTransferIntentId(&queued_intent, new_id);
@@ -879,7 +880,7 @@ fn appendOwnedTransferTitle(self: *App, tab_id: u64, direction: transfer.Transfe
     const retry_intent = try self.cloneRetryIntent(intent);
     errdefer self.freeRetryIntent(retry_intent);
     const id = self.next_transfer_id;
-    const now = nowNs();
+    const now = self.nowNs();
     try self.transfers.append(self.allocator, .{
         .id = id,
         .tab_id = tab_id,
@@ -898,7 +899,7 @@ fn appendOwnedTransferTitle(self: *App, tab_id: u64, direction: transfer.Transfe
 
 fn applyTransferProgress(self: *App, idx: usize, update: transfer.TransferProgress) void {
     var task = &self.transfers.items[idx];
-    const now = nowNs();
+    const now = self.nowNs();
     const is_terminal = update.status == .completed or update.status == .failed or update.status == .canceled;
     if (!is_terminal and update.bytes_done >= task.last_sample_bytes and now - task.last_sample_ns >= transfer_speed_sample_ns) {
         const delta_bytes = update.bytes_done - task.last_sample_bytes;
@@ -1033,13 +1034,30 @@ fn setTransferIntentId(intent: *remote_file.FilePanelIntent, id: u64) void {
     }
 }
 
-fn nowNs() i128 {
-    var ts: std.posix.timespec = undefined;
-    switch (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts))) {
-        .SUCCESS => return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec,
-        else => return 0,
+fn nowNs(self: *const App) i128 {
+    if (self.io) |io| {
+        const timestamp = std.Io.Clock.awake.now(io);
+        return timestamp.nanoseconds;
+    }
+
+    if (builtin.os.tag == .windows) {
+        return 0;
+    } else {
+        var ts: std.posix.timespec = undefined;
+        switch (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts))) {
+            .SUCCESS => return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec,
+            else => return 0,
+        }
     }
 }
+
+// fn nowNs() i128 {
+//     var ts: std.posix.timespec = undefined;
+//     switch (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts))) {
+//         .SUCCESS => return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec,
+//         else => return 0,
+//     }
+// }
 
 fn selectFirstProfile(self: *App) void {
     if (self.profiles.items().len == 0) return;
