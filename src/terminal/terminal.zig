@@ -139,12 +139,16 @@ pub const Snapshot = struct {
 
     pub fn cellAt(self: Snapshot, row: u16, col: u16) ?Cell {
         if (row >= self.size.rows or col >= self.size.cols) return null;
-        return self.cells[@as(usize, row) * @as(usize, self.size.cols) + @as(usize, col)];
+        const idx = @as(usize, row) * @as(usize, self.size.cols) + @as(usize, col);
+        if (idx >= self.cells.len) return null;
+        return self.cells[idx];
     }
 
     pub fn scrollbackCellAt(self: Snapshot, row: usize, col: u16) ?Cell {
         if (row >= self.scrollback_rows or col >= self.size.cols) return null;
-        return self.scrollback_cells[row * @as(usize, self.size.cols) + @as(usize, col)];
+        const idx = row * @as(usize, self.size.cols) + @as(usize, col);
+        if (idx >= self.scrollback_cells.len) return null;
+        return self.scrollback_cells[idx];
     }
 };
 
@@ -210,4 +214,21 @@ test "snapshot cell lookup bounds checks" {
 
     try std.testing.expect(snapshot.cellAt(1, 1) != null);
     try std.testing.expect(snapshot.cellAt(2, 0) == null);
+    try std.testing.expect(snapshot.scrollbackCellAt(0, 0) == null);
+}
+
+test "snapshot cell lookup tolerates short backing slices" {
+    const cells = try std.testing.allocator.alloc(Cell, 1);
+    defer std.testing.allocator.free(cells);
+    @memset(cells, .{});
+
+    const snapshot = Snapshot{
+        .allocator = std.testing.allocator,
+        .size = .{ .cols = 2, .rows = 2 },
+        .cells = cells,
+        .cursor = .{},
+    };
+
+    try std.testing.expect(snapshot.cellAt(0, 0) != null);
+    try std.testing.expect(snapshot.cellAt(1, 1) == null);
 }

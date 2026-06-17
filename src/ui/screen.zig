@@ -1,6 +1,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const App = @import("../app/App.zig");
+const predictive = @import("../terminal/predictive.zig");
 const profile = @import("../core/profile.zig");
 const workspace = @import("../core/workspace.zig");
 const config_panel = @import("config_panel.zig");
@@ -336,7 +337,7 @@ fn topBarSettingsButton(bytes: []const u8, name: []const u8, opts: dvui.Options,
 fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {
     const window_rect = dvui.windowRect();
     const popup_w: f32 = 430;
-    const popup_h: f32 = 105;
+    const popup_h: f32 = 138;
     const rect: dvui.Rect.Natural = .{
         .x = @max(12, window_rect.w - popup_w - 12),
         .y = 40,
@@ -364,12 +365,13 @@ fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extr
     }
 
     settingThemeRow(app, state, palette, id_extra + 10);
-    settingDownloadRow(app, popup_w, palette, id_extra + 40);
-    settingMasterPasswordRow(app, state, palette, id_extra + 80);
+    settingPredictionRow(app, palette, id_extra + 40);
+    settingDownloadRow(app, popup_w, palette, id_extra + 80);
+    settingMasterPasswordRow(app, state, palette, id_extra + 120);
 
     if (state.master_password_popup != .none) {
         const before_enabled = app.masterPasswordEnabled();
-        switch (master_password_popup.show(app, state.master_password_popup, palette, id_extra + 120)) {
+        switch (master_password_popup.show(app, state.master_password_popup, palette, id_extra + 160)) {
             .none => {},
             .close => state.master_password_popup = .none,
             .enabled => {
@@ -382,6 +384,57 @@ fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extr
             },
         }
     }
+}
+
+fn settingPredictionRow(app: *App, palette: theme.Palette, id_extra: usize) void {
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .height(24),
+        .max_size_content = .height(24),
+        .padding = .all(0),
+        .margin = .{ .y = 7 },
+        .id_extra = id_extra,
+    });
+    defer row.deinit();
+
+    settingLabel("Prediction", 86, palette, id_extra + 1);
+    predictionModeButton(app, "Off", .off, 44, palette, id_extra + 2);
+    spacer(@src(), 5, id_extra + 3);
+    predictionModeButton(app, "Safe", .safe, 48, palette, id_extra + 4);
+    spacer(@src(), 5, id_extra + 5);
+    predictionModeButton(app, "Auto", .auto, 50, palette, id_extra + 6);
+    spacer(@src(), 5, id_extra + 7);
+    predictionModeButton(app, "Aggressive", .aggressive, 88, palette, id_extra + 8);
+}
+
+fn predictionModeButton(app: *App, label: []const u8, mode: predictive.PredictionMode, width: f32, palette: theme.Palette, id_extra: usize) void {
+    const active = (app.config.terminal_prediction.enabled and app.config.terminal_prediction.mode == mode) or (mode == .off and !app.config.terminal_prediction.enabled);
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = width, .h = 22 },
+        .max_size_content = .{ .w = width, .h = 22 },
+        .padding = .{ .x = 6, .y = 0, .w = 6, .h = 0 },
+        .corner_radius = .all(4),
+        .id_extra = id_extra,
+    }, palette, .{
+        .variant = if (active) .solid else .ghost,
+        .intent = if (active) .primary else .neutral,
+        .state = if (active) .selected else .normal,
+        .font_size = 10,
+    }));
+    bw.processEvents();
+    bw.drawBackground();
+    dvui.labelNoFmt(@src(), label, .{ .align_x = 0.5, .align_y = 0.5 }, bw.data().options.strip().override(bw.style()).override(.{
+        .expand = .both,
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+    }));
+    if (bw.clicked()) {
+        app.setTerminalPredictionMode(mode);
+    }
+    bw.drawFocus();
+    bw.deinit();
 }
 
 fn settingThemeRow(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {

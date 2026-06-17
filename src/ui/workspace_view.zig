@@ -60,10 +60,7 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
 
     var slot_buffer: [64]terminal_slot.TerminalSlotSummary = undefined;
     const slots = app.sessions.terminalSlots(tab.id, &slot_buffer);
-    const active_slot_id = app.sessions.activeTerminalSlotId(tab.id);
-    const frame_time_ns = dvui.frameTimeNS();
-    const snapshot = app.cachedSshSnapshot(tab.id, active_slot_id, frame_time_ns);
-    schedulePendingTerminalSnapshot(app, tab.id, active_slot_id, frame_time_ns);
+    var active_slot_id = app.sessions.activeTerminalSlotId(tab.id);
     topSeparator(palette, 634);
     if (terminal_slot_bar.show(slots, palette, .{
         .id_extra = 635,
@@ -76,6 +73,12 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
         }
     }
     topSeparator(palette, 636);
+
+    if (app.sessions.tabById(tab.id) == null) return;
+    active_slot_id = app.sessions.activeTerminalSlotId(tab.id);
+    const frame_time_ns = dvui.frameTimeNS();
+    const snapshot = app.cachedSshSnapshot(tab.id, active_slot_id, frame_time_ns);
+    schedulePendingTerminalSnapshot(app, tab.id, active_slot_id, frame_time_ns);
 
     terminal_panel.show(app, tab, palette, .{
         .id_extra = 640,

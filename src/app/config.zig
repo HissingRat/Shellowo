@@ -1,4 +1,5 @@
 const std = @import("std");
+const predictive = @import("../terminal/predictive.zig");
 const ui_theme = @import("../ui/theme.zig");
 
 pub const config_file_name = "owoConfig.json";
@@ -23,6 +24,30 @@ pub const FileColumnWidths = struct {
     owner: f32 = 100,
 };
 
+pub const TerminalPredictionConfig = struct {
+    enabled: bool = true,
+    mode: predictive.PredictionMode = .auto,
+    predict_in_alt_screen: bool = true,
+    predict_printable: bool = true,
+    predict_backspace: bool = true,
+    predict_enter: bool = true,
+    predict_tab: bool = false,
+    predict_arrow_keys: bool = false,
+
+    pub fn toCore(self: TerminalPredictionConfig) predictive.PredictionConfig {
+        return .{
+            .enabled = self.enabled,
+            .mode = self.mode,
+            .predict_in_alt_screen = self.predict_in_alt_screen,
+            .predict_printable = self.predict_printable,
+            .predict_backspace = self.predict_backspace,
+            .predict_enter = self.predict_enter,
+            .predict_tab = self.predict_tab,
+            .predict_arrow_keys = self.predict_arrow_keys,
+        };
+    }
+};
+
 pub const Config = struct {
     allocator: std.mem.Allocator,
     config_path: []u8,
@@ -31,6 +56,7 @@ pub const Config = struct {
     window_size: WindowSize = .{},
     workspace: WorkspaceLayout = .{},
     file_columns: FileColumnWidths = .{},
+    terminal_prediction: TerminalPredictionConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator, io: ?std.Io) !Config {
         var config = try defaults(allocator, io);
@@ -67,6 +93,16 @@ pub const Config = struct {
             .window = self.window_size,
             .workspace = self.workspace,
             .file_columns = self.file_columns,
+            .terminal_prediction = .{
+                .enabled = self.terminal_prediction.enabled,
+                .mode = predictionModeLabel(self.terminal_prediction.mode),
+                .predict_in_alt_screen = self.terminal_prediction.predict_in_alt_screen,
+                .predict_printable = self.terminal_prediction.predict_printable,
+                .predict_backspace = self.terminal_prediction.predict_backspace,
+                .predict_enter = self.terminal_prediction.predict_enter,
+                .predict_tab = self.terminal_prediction.predict_tab,
+                .predict_arrow_keys = self.terminal_prediction.predict_arrow_keys,
+            },
             .download_path = self.download_path,
         };
 
@@ -83,7 +119,19 @@ const PersistedConfig = struct {
     window: ?WindowSize = null,
     workspace: ?WorkspaceLayout = null,
     file_columns: ?FileColumnWidths = null,
+    terminal_prediction: ?PersistedPredictionConfig = null,
     download_path: ?[]const u8 = null,
+};
+
+const PersistedPredictionConfig = struct {
+    enabled: ?bool = null,
+    mode: ?[]const u8 = null,
+    predict_in_alt_screen: ?bool = null,
+    predict_printable: ?bool = null,
+    predict_backspace: ?bool = null,
+    predict_enter: ?bool = null,
+    predict_tab: ?bool = null,
+    predict_arrow_keys: ?bool = null,
 };
 
 fn defaults(allocator: std.mem.Allocator, io: ?std.Io) !Config {
@@ -127,6 +175,16 @@ fn applyPersisted(config: *Config, persisted: PersistedConfig) !void {
             config.download_path = owned;
         }
     }
+    if (persisted.terminal_prediction) |prediction| {
+        if (prediction.enabled) |enabled| config.terminal_prediction.enabled = enabled;
+        if (prediction.mode) |mode_label| config.terminal_prediction.mode = predictionModeFromLabel(mode_label) orelse config.terminal_prediction.mode;
+        if (prediction.predict_in_alt_screen) |value| config.terminal_prediction.predict_in_alt_screen = value;
+        if (prediction.predict_printable) |value| config.terminal_prediction.predict_printable = value;
+        if (prediction.predict_backspace) |value| config.terminal_prediction.predict_backspace = value;
+        if (prediction.predict_enter) |value| config.terminal_prediction.predict_enter = value;
+        if (prediction.predict_tab) |value| config.terminal_prediction.predict_tab = value;
+        if (prediction.predict_arrow_keys) |value| config.terminal_prediction.predict_arrow_keys = value;
+    }
 }
 
 fn exeSiblingPath(allocator: std.mem.Allocator, io: ?std.Io, name: []const u8) ![]u8 {
@@ -168,6 +226,23 @@ fn positiveOrDefault(value: f32, default_value: f32) f32 {
 fn themeModeFromLabel(label: []const u8) ?ui_theme.ThemeMode {
     if (std.ascii.eqlIgnoreCase(label, "dark")) return .dark;
     if (std.ascii.eqlIgnoreCase(label, "light")) return .light;
+    return null;
+}
+
+pub fn predictionModeLabel(mode: predictive.PredictionMode) []const u8 {
+    return switch (mode) {
+        .off => "off",
+        .safe => "safe",
+        .auto => "auto",
+        .aggressive => "aggressive",
+    };
+}
+
+pub fn predictionModeFromLabel(label: []const u8) ?predictive.PredictionMode {
+    if (std.ascii.eqlIgnoreCase(label, "off")) return .off;
+    if (std.ascii.eqlIgnoreCase(label, "safe")) return .safe;
+    if (std.ascii.eqlIgnoreCase(label, "auto")) return .auto;
+    if (std.ascii.eqlIgnoreCase(label, "aggressive")) return .aggressive;
     return null;
 }
 

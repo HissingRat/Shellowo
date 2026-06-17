@@ -13,6 +13,7 @@ const ssh_session = @import("../services/ssh_session.zig");
 const known_hosts_store = @import("../security/known_hosts.zig");
 const libvterm_backend = @import("../terminal/libvterm_backend.zig");
 const terminal = @import("../terminal/terminal.zig");
+const predictive = @import("../terminal/predictive.zig");
 const ui_theme = @import("../ui/theme.zig");
 
 const App = @This();
@@ -44,14 +45,23 @@ const TerminalSnapshotCache = struct {
     pending_generation: ?u64 = null,
     last_present_ns: i128 = 0,
     snapshot: ?terminal.Snapshot = null,
+    predictive_state: ?predictive.DualState = null,
 
     fn deinit(self: *TerminalSnapshotCache) void {
         if (self.snapshot) |*snapshot| snapshot.deinit();
+        if (self.predictive_state) |*state| state.deinit();
         self.* = .{};
     }
 
     fn clear(self: *TerminalSnapshotCache) void {
         self.deinit();
+    }
+
+    fn ensurePredictive(self: *TerminalSnapshotCache, allocator: std.mem.Allocator) *predictive.DualState {
+        if (self.predictive_state == null) {
+            self.predictive_state = predictive.DualState.init(allocator);
+        }
+        return &self.predictive_state.?;
     }
 };
 
@@ -277,6 +287,15 @@ pub fn setDownloadPath(self: *App, path: []const u8) void {
     };
     self.allocator.free(self.config.download_path);
     self.config.download_path = owned;
+    self.persistConfig();
+}
+
+pub fn setTerminalPredictionMode(self: *App, mode: predictive.PredictionMode) void {
+    self.config.terminal_prediction.mode = mode;
+    self.config.terminal_prediction.enabled = mode != .off;
+    if (self.terminal_snapshot_cache.predictive_state) |*state| {
+        state.prediction_policy.applyConfig(self.config.terminal_prediction.toCore());
+    }
     self.persistConfig();
 }
 
@@ -655,16 +674,50 @@ pub fn cachedSshSnapshot(self: *App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?
         return null;
     };
 
-    if (self.terminal_snapshot_cache.snapshot) |*cached| cached.deinit();
-    self.terminal_snapshot_cache = .{
-        .tab_id = tab_id,
-        .slot_id = active_slot_id,
-        .generation = snapshot.generation,
-        .pending_generation = null,
-        .last_present_ns = now_ns,
-        .snapshot = snapshot,
+    const state = self.terminal_snapshot_cache.ensurePredictive(self.allocator);
+    state.prediction_policy.config = self.config.terminal_prediction.toCore();
+    _ = state.syncRealAt(snapshot, frameNsToMs(now_ns)) catch {
+        self.terminal_snapshot_cache.clear();
+        return null;
     };
+
+    if (self.terminal_snapshot_cache.snapshot) |*cached| cached.deinit();
+    self.terminal_snapshot_cache.tab_id = tab_id;
+    self.terminal_snapshot_cache.slot_id = active_slot_id;
+    self.terminal_snapshot_cache.generation = snapshot.generation;
+    self.terminal_snapshot_cache.pending_generation = null;
+    self.terminal_snapshot_cache.last_present_ns = now_ns;
+    self.terminal_snapshot_cache.snapshot = snapshot;
     return self.terminal_snapshot_cache.snapshot.?;
+}
+
+pub fn predictedSshSnapshot(self: *const App, tab_id: u64, slot_id: ?u64) ?terminal.Snapshot {
+    const active_slot_id = slot_id orelse return null;
+    if (self.terminal_snapshot_cache.tab_id != tab_id or self.terminal_snapshot_cache.slot_id != active_slot_id) return null;
+    const state = &(self.terminal_snapshot_cache.predictive_state orelse return null);
+    const predicted = state.predictedSnapshot() orelse return null;
+    return predicted.*;
+}
+
+pub fn decideTerminalPrediction(self: *App, tab_id: u64, slot_id: ?u64, snapshot: terminal.Snapshot, context: predictive.PredictionContext, bytes: []const u8, now_ns: i128) predictive.PredictionDecision {
+    const active_slot_id = slot_id orelse return .{ .allowed = false, .level = .disabled, .kind = predictive.classifyPrediction(bytes) };
+    if (self.terminal_snapshot_cache.tab_id != tab_id or self.terminal_snapshot_cache.slot_id != active_slot_id) {
+        return predictive.decidePrediction(snapshot, context, bytes, .disabled, self.config.terminal_prediction.toCore());
+    }
+    const state = self.terminal_snapshot_cache.ensurePredictive(self.allocator);
+    state.prediction_policy.config = self.config.terminal_prediction.toCore();
+    return state.decideCurrentPrediction(snapshot, context, bytes, frameNsToMs(now_ns));
+}
+
+pub fn recordTerminalPrediction(self: *App, tab_id: u64, slot_id: ?u64, bytes: []const u8, now_ns: i128) void {
+    const active_slot_id = slot_id orelse return;
+    if (self.terminal_snapshot_cache.tab_id != tab_id or self.terminal_snapshot_cache.slot_id != active_slot_id) return;
+    const state = self.terminal_snapshot_cache.ensurePredictive(self.allocator);
+    state.prediction_policy.config = self.config.terminal_prediction.toCore();
+    _ = state.recordLocalInput(bytes, frameNsToMs(now_ns)) catch {
+        self.message = "Terminal prediction paused";
+        return;
+    };
 }
 
 pub fn terminalSnapshotPendingDelayNs(self: *const App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?i128 {
@@ -1112,6 +1165,11 @@ fn terminalFactory(backend: *libvterm_backend.Backend) ssh_session.TerminalFacto
         .context = backend,
         .vtable = &terminal_factory_vtable,
     };
+}
+
+fn frameNsToMs(ns: i128) u64 {
+    if (ns <= 0) return 0;
+    return @intCast(@divTrunc(ns, std.time.ns_per_ms));
 }
 
 fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {

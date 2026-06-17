@@ -5,6 +5,7 @@ const App = @import("../../app/App.zig");
 const keybindings = @import("../../app/keybindings.zig");
 const ssh_session = @import("../../services/ssh_session.zig");
 const terminal = @import("../../terminal/terminal.zig");
+const predictive = @import("../../terminal/predictive.zig");
 const terminal_slot = @import("../../core/terminal_slot.zig");
 const workspace = @import("../../core/workspace.zig");
 const theme = @import("../theme.zig");
@@ -121,6 +122,7 @@ const TerminalViewport = struct {
     search_cache_matches: TerminalSearchMatches = .{},
     row_render_cache: [row_render_cache_capacity]TerminalRowRenderCacheEntry = [_]TerminalRowRenderCacheEntry{.{}} ** row_render_cache_capacity,
     local_echo: LocalEchoState = .{},
+    prediction_policy: predictive.PredictionPolicyState = .{},
     pending_paste: [paste_queue_capacity]u8 = std.mem.zeroes([paste_queue_capacity]u8),
     pending_paste_len: usize = 0,
     pending_paste_offset: usize = 0,
@@ -154,7 +156,7 @@ pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, opts
     defer panel.deinit();
 
     if (opts.snapshot) |snapshot| {
-        terminalSnapshot(app, tab, snapshot, palette, terminalHostIdExtra(opts.id_extra + 1, opts.active_slot_id));
+        terminalSnapshot(app, tab, snapshot, palette, terminalHostIdExtra(opts.id_extra + 1, opts.active_slot_id), opts.active_slot_id);
         return;
     }
 
@@ -208,14 +210,14 @@ fn terminalText(app: *App, tab: workspace.WorkspaceTab, text: []const u8, palett
     }));
     defer host.deinit();
     const viewport = viewportState(host.data());
-    processTerminalInput(app, tab, host.data(), viewport, null);
+    processTerminalInput(app, tab, host.data(), viewport, null, null);
 
     const crs = host.data().contentRectScale();
     syncTerminalResize(app, tab, viewport, crs);
     renderTerminalText(text, crs, palette);
 }
 
-fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.Snapshot, palette: theme.Palette, id_extra: usize) void {
+fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, real_snapshot: terminal.Snapshot, palette: theme.Palette, id_extra: usize, active_slot_id: ?terminal_slot.TerminalSlotId) void {
     var host = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
         .expand = .both,
         .min_size_content = .height(0),
@@ -229,9 +231,10 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.S
     }));
     defer host.deinit();
     const viewport = viewportState(host.data());
-    reconcileLocalEcho(viewport, snapshot);
-    processTerminalInput(app, tab, host.data(), viewport, snapshot);
+    reconcileLocalEcho(viewport, real_snapshot);
+    processTerminalInput(app, tab, host.data(), viewport, real_snapshot, active_slot_id);
     drainPendingPaste(app, tab, host.data().id, viewport);
+    const snapshot = app.predictedSshSnapshot(tab.id, active_slot_id) orelse real_snapshot;
 
     const crs = host.data().contentRectScale();
     syncTerminalResize(app, tab, viewport, crs);
@@ -255,7 +258,6 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, snapshot: terminal.S
     for (0..rows) |i| {
         renderTerminalSnapshotRow(snapshot, crs, viewport, search_matches, start_row + i, @as(f32, @floatFromInt(i)), palette);
     }
-    renderLocalEcho(snapshot, crs, start_row, rows, viewport, palette);
     renderImeComposition(snapshot, crs, start_row, rows, viewport, palette);
     renderCursor(snapshot, crs, start_row, rows, viewport, palette, host.data().id);
     scrollbar(app, tab, host.data(), viewport, crs, total_rows, rows, start_row, palette);
@@ -1505,14 +1507,17 @@ fn visibleStartRow(total_rows: usize, rows: usize, scroll_offset: usize) usize {
     return max_start - offset;
 }
 
-fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.WidgetData, viewport: *TerminalViewport, snapshot: ?terminal.Snapshot) void {
+fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.WidgetData, viewport: *TerminalViewport, snapshot: ?terminal.Snapshot, active_slot_id: ?terminal_slot.TerminalSlotId) void {
     dvui.tabIndexSet(data.id, data.options.tab_index, data.rectScale().r);
     if (dvui.focusedWidgetId() == data.id) {
         dvui.wantTextInput(terminalTextInputRect(data, snapshot, viewport).toNatural());
     }
 
     for (dvui.events()) |*event| {
-        if (!dvui.eventMatchSimple(event, data)) continue;
+        if (!dvui.eventMatchSimple(event, data)) {
+            if (handleHoveredTerminalControlKey(app, tab, data, viewport, event)) continue;
+            continue;
+        }
         switch (event.evt) {
             .mouse => |mouse| if (pointInTerminalSearchBar(viewport, data.contentRectScale(), mouse.p)) continue,
             else => {},
@@ -1549,7 +1554,12 @@ fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.Widg
                     clearImeComposition(viewport);
                     clearTerminalSelection(viewport);
                     viewport.scroll_offset = 0;
-                    if (snapshot) |snap| applyLocalEchoBytes(viewport, snap, value.txt);
+                    if (isTerminalControlBytes(value.txt)) {
+                        handleTerminalBytes(app, tab, value.txt);
+                        event.handle(@src(), data);
+                        continue;
+                    }
+                    if (snapshot) |snap| applyPredictiveInput(app, tab, active_slot_id, viewport, snap, value.txt);
                     handleTerminalBytes(app, tab, value.txt);
                     event.handle(@src(), data);
                 },
@@ -1564,7 +1574,7 @@ fn processTerminalInput(app: *App, tab: workspace.WorkspaceTab, data: *dvui.Widg
                         continue;
                     }
                 }
-                if (handleTerminalKey(app, tab, key, snapshot, viewport)) {
+                if (handleTerminalKey(app, tab, key, snapshot, active_slot_id, viewport)) {
                     viewport.scroll_offset = 0;
                     clearTerminalSelection(viewport);
                     event.handle(@src(), data);
@@ -1650,6 +1660,23 @@ fn handleTerminalShortcut(app: *App, tab: workspace.WorkspaceTab, key: dvui.Even
     return true;
 }
 
+fn handleHoveredTerminalControlKey(app: *App, tab: workspace.WorkspaceTab, data: *dvui.WidgetData, viewport: *TerminalViewport, event: *dvui.Event) bool {
+    if (viewport.search_open) return false;
+    if (!data.contentRectScale().r.contains(dvui.currentWindow().mouse_pt)) return false;
+    const key = switch (event.evt) {
+        .key => |key| key,
+        else => return false,
+    };
+    if (key.action == .up) return false;
+    if (keybindings.terminalShortcut(key) != null) return false;
+    const byte = terminalControlByte(key) orelse return false;
+    handleTerminalBytes(app, tab, (&[_]u8{byte})[0..]);
+    viewport.scroll_offset = 0;
+    clearTerminalSelection(viewport);
+    event.handle(@src(), data);
+    return true;
+}
+
 fn handleAlternateScreenWheel(app: *App, tab: workspace.WorkspaceTab, viewport: *TerminalViewport, ticks: f32) void {
     const lines = wheelTicksToRows(viewport, ticks);
     if (lines == 0) return;
@@ -1718,43 +1745,26 @@ fn clearPendingPaste(viewport: *TerminalViewport) void {
     viewport.pending_paste_offset = 0;
 }
 
-fn applyLocalEchoBytes(viewport: *TerminalViewport, snapshot: terminal.Snapshot, bytes: []const u8) void {
+fn applyPredictiveInput(app: *App, tab: workspace.WorkspaceTab, active_slot_id: ?terminal_slot.TerminalSlotId, viewport: *TerminalViewport, snapshot: terminal.Snapshot, bytes: []const u8) void {
     if (bytes.len == 0) return;
-    if (!localEchoEnvironmentSafe(viewport, snapshot)) {
+    const decision = app.decideTerminalPrediction(tab.id, active_slot_id, snapshot, localEchoContext(viewport, snapshot), bytes, dvui.frameTimeNS());
+    if (!decision.allowed) {
         clearLocalEcho(viewport);
         return;
     }
+    app.recordTerminalPrediction(tab.id, active_slot_id, bytes, dvui.frameTimeNS());
+}
 
-    for (bytes) |byte| {
-        switch (byte) {
-            0x20...0x7e => {
-                if (!ensureLocalEchoStarted(viewport, snapshot)) return;
-                if (viewport.local_echo.len >= viewport.local_echo.text.len) return;
-                if (predictedCursorCol(viewport, snapshot.size.cols) >= snapshot.size.cols) return;
-                viewport.local_echo.text[viewport.local_echo.len] = byte;
-                viewport.local_echo.len += 1;
-            },
-            0x7f, 0x08 => {
-                if (!viewport.local_echo.active) {
-                    if (!ensureLocalEchoStarted(viewport, snapshot)) return;
-                }
-                if (viewport.local_echo.len > 0) {
-                    viewport.local_echo.len -= 1;
-                } else {
-                    clearLocalEcho(viewport);
-                    return;
-                }
-            },
-            '\r', '\n' => {
-                clearLocalEcho(viewport);
-                return;
-            },
-            else => {
-                clearLocalEcho(viewport);
-                return;
-            },
-        }
-    }
+fn localEchoContext(viewport: *const TerminalViewport, snapshot: terminal.Snapshot) predictive.PredictionContext {
+    return .{
+        .shell_prompt = lineLooksShellPrompt(snapshot),
+        .sensitive_prompt = lineLooksSensitivePrompt(snapshot),
+        .cursor_at_line_end = cursorAtLineEnd(snapshot),
+        .selection_active = viewport.selection != null,
+        .search_active = viewport.search_open,
+        .scrolled_back = viewport.scroll_offset != 0,
+        .paste_active = viewport.pending_paste_len != 0,
+    };
 }
 
 fn ensureLocalEchoStarted(viewport: *TerminalViewport, snapshot: terminal.Snapshot) bool {
@@ -2051,15 +2061,14 @@ fn handleTerminalBytes(app: *App, tab: workspace.WorkspaceTab, bytes: []const u8
     app.sendTerminalBytes(tab.id, bytes);
 }
 
-fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key, snapshot: ?terminal.Snapshot, viewport: *TerminalViewport) bool {
+fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key, snapshot: ?terminal.Snapshot, active_slot_id: ?terminal_slot.TerminalSlotId, viewport: *TerminalViewport) bool {
     var bytes: []const u8 = "";
     var ctrl_buf: [1]u8 = undefined;
 
-    if (key.mod.control() and !key.mod.command()) {
-        if (controlByte(key.code)) |byte| {
-            ctrl_buf[0] = byte;
-            bytes = ctrl_buf[0..1];
-        }
+    if (terminalControlByte(key)) |byte| {
+        ctrl_buf[0] = byte;
+        handleTerminalBytes(app, tab, ctrl_buf[0..1]);
+        return true;
     }
 
     if (bytes.len == 0) {
@@ -2081,9 +2090,14 @@ fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key
         };
     }
 
-    if (snapshot) |snap| applyLocalEchoBytes(viewport, snap, bytes);
+    if (snapshot) |snap| applyPredictiveInput(app, tab, active_slot_id, viewport, snap, bytes);
     handleTerminalBytes(app, tab, bytes);
     return true;
+}
+
+fn terminalControlByte(key: dvui.Event.Key) ?u8 {
+    if (!key.mod.control() or key.mod.alt()) return null;
+    return controlByte(key.code);
 }
 
 fn controlByte(key: dvui.enums.Key) ?u8 {
@@ -2119,4 +2133,13 @@ fn controlByte(key: dvui.enums.Key) ?u8 {
         .right_bracket => 0x1d,
         else => null,
     };
+}
+
+fn isTerminalControlBytes(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    for (bytes) |byte| {
+        if (byte == '\t' or byte == '\n' or byte == '\r') continue;
+        if (byte >= 0x20 or byte == 0x1b) return false;
+    }
+    return true;
 }

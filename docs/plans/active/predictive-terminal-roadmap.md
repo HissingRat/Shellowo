@@ -243,7 +243,7 @@ Bracketed Paste
 
 当前进展：
 
-- [x] `src/ui/workspace/terminal_panel.zig` 增加 UI-local echo overlay，不修改 real terminal snapshot；真实远端 snapshot 仍然是唯一权威状态。
+- [x] `App.cachedSshSnapshot` 将 worker real snapshot 同步进 `DualState`，UI renderer 读取 `predictedSnapshot`；真实远端 snapshot 仍然是最终权威状态。
 - [x] 在普通 shell prompt 行尾下预测 printable ASCII 和 Backspace；输入仍同步进入 `App.sendTerminalBytes` / SSH write queue。
 - [x] snapshot generation 变化、进入 alternate screen、bracketed paste、mouse reporting、搜索/选区/滚动/粘贴队列等状态时清空或禁用预测，远端输出回来后自动回到真实画面。
 - [x] 通过 prompt 形态和敏感词过滤避免在 `password` / `passphrase` / `otp` / `token` 等提示下本地回显。
@@ -310,7 +310,7 @@ reconcile
 - [x] 小范围 cell 差异会按 dirty rect 从 real patch 到 predicted；size/mode/scrollback 等结构性差异会直接回滚到 real。
 - [x] 已加入 `src/test_root.zig`，覆盖 diff、local input prediction、real sync、结构性回滚。
 
-说明：Phase 4 当前完成的是 terminal 层双 snapshot / diff / reconcile 核心模型；UI 仍保留 Phase 3 的保守 overlay 路径。下一步 Phase 5 会把 pending input queue 接入 `DualState`，再逐步让 renderer 读取 predicted snapshot。
+说明：Phase 4 的 terminal 层双 snapshot / diff / reconcile 核心模型已接入当前 active terminal cache；UI renderer 已优先读取 `DualState.predictedSnapshot`。
 
 ## Diff 需要比较
 
@@ -350,12 +350,22 @@ const PendingInput = struct {
 
 ## 任务
 
-- [ ] 每次输入分配递增 id。
-- [ ] 输入进入 pending queue。
-- [ ] 输入同时进入 predicted_vterm。
-- [ ] 输入发送给 SSH。
-- [ ] 收到远端输出后尝试确认 pending input。
-- [ ] 超时未确认则降级预测。
+- [x] 每次输入分配递增 id。
+- [x] 输入进入 pending queue。
+- [x] 输入同时进入 predicted_vterm。
+- [x] 输入发送给 SSH。
+- [x] 收到远端输出后尝试确认 pending input。
+- [x] 超时未确认则降级预测。
+
+当前进展：
+
+- [x] `src/terminal/predictive.zig` 增加 `PredictionKind` 和 owned `PendingInput`，记录 id、timestamp、bytes、prediction kind。
+- [x] `DualState.recordLocalInput` 为每次本地输入分配递增 id，复制 bytes，进入 pending queue，并同步调用 `feedLocalInput` 更新 predicted snapshot。
+- [x] pending queue 设置总字节上限；超过上限会清空 pending 并回滚 predicted 到 real，避免网络卡顿时无限增长。
+- [x] `DualState.syncReal` 在远端真实 snapshot 到达时比较 real/predicted；一致则确认并清空 pending input，不一致则按 Phase 4 reconcile 后清空未确认预测。
+- [x] `DualState.expirePendingInputs` 支持按 timestamp/timeout 降级预测：超时后回滚 predicted 到 real 并清空 pending queue。
+- [x] UI 侧输入发送 SSH queue 仍沿用 Phase 0 已完成的 `App.sendTerminalBytes` / worker pending byte queue；预测记录通过 `App.recordTerminalPrediction` 进入 `DualState.recordLocalInput`。
+- [x] 已有测试覆盖 id 递增、pending bytes 统计、预测写入 predicted snapshot、远端确认清空、冲突清空、超时回滚和 prediction kind 分类。
 
 ## PredictionKind
 
@@ -446,10 +456,22 @@ Bracketed paste
 
 ## 任务
 
-- [ ] 给每种输入分类。
-- [ ] 给每个 session 维护当前 prediction level。
-- [ ] 冲突多时自动降级。
-- [ ] 稳定一段时间后自动升级。
+- [x] 给每种输入分类。
+- [x] 给每个 session 维护当前 prediction level。
+- [x] 冲突多时自动降级。
+- [x] 稳定一段时间后自动升级。
+
+当前进展：
+
+- [x] `src/terminal/predictive.zig` 增加 `PredictionLevel`：`safe_shell`、`readline`、`tui_insert`、`disabled`。
+- [x] `classifyPrediction` 覆盖 printable、Backspace、Enter、Tab、方向键、readline control 和 unknown。
+- [x] 新增 `PredictionContext` / `PredictionDecision` / `decidePrediction`，根据 snapshot mode、bracketed paste、mouse mode、敏感 prompt、选区、搜索、滚动、粘贴队列、输入类型和 prediction level 决定是否预测。
+- [x] `DualState` 增加 `PredictionPolicyState`，作为 session 级 prediction level 状态；`syncRealAt` 会根据 diff 自动记录稳定/冲突。
+- [x] 冲突多时自动降级；严重冲突会进入 `disabled` 并设置短 cooldown；稳定多次后自动从 `safe_shell` 升级到 `readline`，再到 `tui_insert`。
+- [x] `src/ui/workspace/terminal_panel.zig` 的输入预测已改为调用 App / terminal core 的 `decidePrediction` 和 `recordLocalInput`，当前默认跟随用户配置。
+- [x] 已有测试覆盖 level gate、alternate screen 下 Level 2 策略、disabled 禁止预测、冲突降级/cooldown 恢复、稳定升级。
+
+说明：真实远端 diff 已经通过 `App.cachedSshSnapshot` -> `DualState.syncRealAt` 反馈给当前 active terminal 的 prediction policy。
 
 ## 完成标准
 
@@ -478,13 +500,24 @@ Backspace 删除前一个 cell
 
 ## 任务
 
-- [ ] 检测 alternate screen。
-- [ ] alternate screen 下默认使用更保守的预测策略。
-- [ ] 对 printable char 做 cell-level optimistic insert。
-- [ ] 对 Backspace 做 cell-level optimistic delete。
-- [ ] 对 Enter 做保守预测。
-- [ ] 对 Tab 默认不预测或弱预测。
-- [ ] 远端输出一回来立即 reconcile。
+- [x] 检测 alternate screen。
+- [x] alternate screen 下默认使用更保守的预测策略。
+- [x] 对 printable char 做 cell-level optimistic insert。
+- [x] 对 Backspace 做 cell-level optimistic delete。
+- [x] 对 Enter 做保守预测。
+- [x] 对 Tab 默认不预测或弱预测。
+- [x] 远端输出一回来立即 reconcile。
+
+当前进展：
+
+- [x] `src/terminal/predictive.zig` 的 `decidePrediction` 已区分 normal screen / alternate screen；alternate screen 只有 `tui_insert` level 且配置允许时才预测。
+- [x] `DualState.recordLocalInput` 在 `tui_insert` level 下可对 alternate screen 做 cell-level printable insert 和 Backspace delete。
+- [x] Enter 采用保守预测：只在有下一行时移动 predicted cursor 到下一行行首，不猜 prompt 或程序语义。
+- [x] Tab 默认不预测，除非用户配置 `predict_tab = true`。
+- [x] 远端 real snapshot 到达时继续走 `syncRealAt` diff/reconcile，保证 TUI 预测失败能快速回到真实状态。
+- [x] 已有测试覆盖 alternate screen printable prediction、Enter conservative movement。
+
+说明：UI renderer 已切到 `DualState.predictedSnapshot`；TUI 预测是否启用取决于 prediction mode 和当前 policy level。
 
 ## Vim Insert Mode 示例
 
@@ -532,10 +565,19 @@ huge diff     -> 禁用预测一小段时间
 
 ## 任务
 
-- [ ] 实现 diff score。
-- [ ] 设置 rollback threshold。
-- [ ] 设置 prediction cooldown。
-- [ ] 大范围重绘时直接同步到 real。
+- [x] 实现 diff score。
+- [x] 设置 rollback threshold。
+- [x] 设置 prediction cooldown。
+- [x] 大范围重绘时直接同步到 real。
+
+当前进展：
+
+- [x] `diffScore` 对 cell mismatch、cursor、mode、scrollback、size、dirty rect overflow 加权评分。
+- [x] `assessDiff` 将 diff 分为 `patch`、`partial_rollback`、`full_rollback`、`disable_temporarily`。
+- [x] `PredictionConfig` 提供 `rollback_threshold`、`disable_threshold`、`cooldown_ms`。
+- [x] `DualState.patchPredictedFromReal` 在结构性 diff、full rollback 或 disable action 下直接 `predicted = real`。
+- [x] `PredictionPolicyState.observeDiff` 会在严重冲突时进入短 cooldown，并记录 rollback count。
+- [x] 已有测试覆盖 small/medium/large/huge diff action。
 
 ## 示例
 
@@ -579,9 +621,18 @@ RTT > 300ms     -> 更激进预测 + 更快 rollback
 
 ## 任务
 
-- [ ] 实现 RTT sampler。
-- [ ] 根据 RTT 自动调整 prediction level。
-- [ ] 给用户设置手动开关。
+- [x] 实现 RTT sampler。
+- [x] 根据 RTT 自动调整 prediction level。
+- [x] 给用户设置手动开关。
+
+当前进展：
+
+- [x] `RttSampler` 维护 last sample 和 smoothed RTT。
+- [x] `PredictionPolicyState.observeRtt` 根据 `RttSampler.suggestedLevel` 调整 prediction level。
+- [x] 低延迟保持保守，高 RTT 可建议 `tui_insert`。
+- [x] `PredictionConfig.mode` 提供 `off`、`safe`、`auto`、`aggressive` 手动策略。
+
+说明：RTT sampler core 已完成；真实 RTT 数据源还未接入 SSH keepalive / input echo timing。
 
 ## 完成标准
 
@@ -622,9 +673,17 @@ Rollback: 0
 
 ## 完成标准
 
-- 用户可以完全关闭预测。
-- 用户可以选择保守 / 自动 / 激进。
-- 出问题时容易排查。
+- [x] 用户可以完全关闭预测。
+- [x] 用户可以选择保守 / 自动 / 激进。
+- [x] 出问题时容易排查。
+
+当前进展：
+
+- [x] `PredictionConfig` 覆盖 `enabled`、`mode`、pending 限制、rollback/disable threshold、cooldown、alternate screen 和各输入类型开关。
+- [x] `PredictionPolicyState.applyConfig` 可应用配置并重置策略状态。
+- [x] `PendingInput` / `PredictionPolicyState` 暴露 pending count、pending bytes、rollback count、RTT sampler 等状态，便于后续状态栏/诊断面板展示。
+
+说明：配置已接入 `owoConfig.json` 持久化，并在 top bar settings popup 增加 Prediction: Off / Safe / Auto / Aggressive 入口；更细粒度开关后续可再扩展到完整设置页。
 
 ---
 
@@ -664,6 +723,12 @@ Local PTY on server
 先不要做。
 
 等 Shellow 普通 SSH 终端稳定后，再作为高级模式开发。
+
+当前进展：
+
+- [x] `RemoteAgentPlan` / `RemoteAgentMode` 已作为 capability stub 放入 `src/terminal/predictive.zig`。
+- [x] 默认保持 disabled；只有 proposed 且支持 state diff 时才视为 available。
+- [x] 未实现远端安装、协议、agent 传输或状态同步运行时，符合本阶段“先不要做”的路线图建议。
 
 ---
 
