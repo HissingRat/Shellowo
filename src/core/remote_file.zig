@@ -193,11 +193,18 @@ pub const FileSelectIntent = struct {
     additive: bool = false,
 };
 
+pub const FilePathIntent = struct {
+    pane: FilePaneTarget,
+    path: []const u8,
+    terminal_slot_id: ?u64 = null,
+};
+
 pub const FilePanelIntent = union(enum) {
     select: FileSelectIntent,
     toggle_tree: FileEntryTarget,
     refresh: FilePaneTarget,
     go_parent: FilePaneTarget,
+    go_path: FilePathIntent,
     open: FileEntryTarget,
     create_file: FileCreateFileIntent,
     create_directory: FileCreateDirectoryIntent,

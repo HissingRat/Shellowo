@@ -52,6 +52,7 @@ const max_owner_width: f32 = 180;
 const max_selected_entries: usize = 48;
 const max_selected_name_len: usize = 256;
 const edit_name_max_len: usize = 256;
+const path_entry_max_len: usize = 512;
 const toast_visible_ns: i128 = 2 * std.time.ns_per_s;
 const toast_fade_ns: i128 = 180 * std.time.ns_per_ms;
 const toast_tooltip_offset: dvui.Point.Natural = .{ .x = 12, .y = 14 };
@@ -61,6 +62,49 @@ const drop_tooltip_height: f32 = 22;
 const drop_tooltip_offset: dvui.Point.Natural = .{ .x = 14, .y = 16 };
 
 const ColumnWidths = app_config.FileColumnWidths;
+
+const PathBarState = struct {
+    editing: bool = false,
+    focus_requested: bool = false,
+    buffer: [path_entry_max_len]u8 = std.mem.zeroes([path_entry_max_len]u8),
+    observed_path: [path_entry_max_len]u8 = undefined,
+    observed_path_len: usize = 0,
+
+    fn observePath(self: *PathBarState, path: []const u8) void {
+        if (self.editing) return;
+        if (std.mem.eql(u8, self.observedPath(), path)) return;
+        self.setBuffer(path);
+        const len = @min(self.observed_path.len, path.len);
+        if (len > 0) @memcpy(self.observed_path[0..len], path[0..len]);
+        self.observed_path_len = len;
+    }
+
+    fn beginEdit(self: *PathBarState, path: []const u8) void {
+        self.setBuffer(path);
+        self.editing = true;
+        self.focus_requested = true;
+    }
+
+    fn cancelEdit(self: *PathBarState) void {
+        self.editing = false;
+        self.focus_requested = false;
+    }
+
+    fn text(self: *const PathBarState) []const u8 {
+        const end = std.mem.indexOfScalar(u8, &self.buffer, 0) orelse self.buffer.len;
+        return self.buffer[0..end];
+    }
+
+    fn observedPath(self: *const PathBarState) []const u8 {
+        return self.observed_path[0..self.observed_path_len];
+    }
+
+    fn setBuffer(self: *PathBarState, path: []const u8) void {
+        self.buffer = std.mem.zeroes([path_entry_max_len]u8);
+        const len = @min(path_entry_max_len - 1, path.len);
+        if (len > 0) @memcpy(self.buffer[0..len], path[0..len]);
+    }
+};
 
 const PaneLayoutState = struct {
     columns: ColumnWidths = .{},
@@ -245,7 +289,7 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
     }));
     defer root.deinit();
 
-    pathBar(opts.app, opts.snapshot.remote, palette, opts.id_extra + 10);
+    pathBar(opts.app, opts.snapshot.remote, palette, opts.id_extra + 10, &intent);
 
     var split = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
@@ -296,7 +340,7 @@ fn panelOptions(opts: Options) dvui.Options {
     return options;
 }
 
-fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palette, id_extra: usize) void {
+fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, theme.panel(.{
         .expand = .horizontal,
         .min_size_content = .height(toolbar_height),
@@ -305,16 +349,125 @@ fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palet
         .id_extra = id_extra,
     }, palette).override(.{ .color_fill = palette.topbar_bg }));
     defer bar.deinit();
+    const state = dvui.dataGetPtrDefault(null, bar.data().id, "file-path-bar", PathBarState, .{});
+    state.observePath(remote.path);
+    const editable = pathBarEditable(remote);
+    if (!editable and state.editing) state.cancelEdit();
 
-    dvui.label(@src(), "{s}", .{remote.path}, .{
-        .font = theme.textFont(remote.path, 10),
-        .color_text = palette.muted_text,
-        .expand = .horizontal,
-        .gravity_y = 0.5,
-        .id_extra = id_extra + 1,
-    });
+    if (state.editing) {
+        var te: dvui.TextEntryWidget = undefined;
+        te.init(@src(), .{
+            .text = .{ .buffer = &state.buffer },
+            .placeholder = remote.path,
+        }, theme.panel(.{
+            .expand = .horizontal,
+            .min_size_content = .height(toolbar_height - 8),
+            .max_size_content = .height(toolbar_height - 8),
+            .font = theme.textFont(remote.path, 10),
+            .padding = .{ .x = 6, .y = 2.5, .w = 6, .h = 0 },
+            .corner_radius = .all(3),
+            .id_extra = id_extra + 1,
+        }, palette).override(.{
+            .color_fill = palette.surface_bg,
+            .color_border = palette.surface_bg,
+        }));
+        if (state.focus_requested) {
+            dvui.focusWidget(te.data().id, null, null);
+            state.focus_requested = false;
+        }
+        te.processEvents();
+        const canceled = pathBarCancelPressed(te.data());
+        const entered = te.enter_pressed;
+        const focused = dvui.focusedWidgetIdInCurrentSubwindow() == te.data().id;
+        const path = std.mem.trim(u8, state.buffer[0..te.len], " \t\r\n");
+        drawPathTextEntry(&te);
+        te.deinit();
+
+        if (canceled) {
+            state.cancelEdit();
+        } else if (entered and path.len > 0) {
+            state.cancelEdit();
+            intent.* = .{ .go_path = .{ .pane = .remote, .path = path } };
+        } else if (!focused) {
+            state.cancelEdit();
+        }
+    } else {
+        var path_slot = dvui.box(@src(), .{}, .{
+            .expand = .horizontal,
+            .min_size_content = .height(toolbar_height),
+            .max_size_content = .height(toolbar_height),
+            .background = true,
+            .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
+            .corner_radius = .all(3),
+            .id_extra = id_extra + 1,
+            .color_fill = palette.topbar_bg,
+            .color_border = palette.topbar_bg,
+        });
+        defer path_slot.deinit();
+        var clicked = false;
+        const path_rect = path_slot.data().contentRectScale().r;
+        for (dvui.events()) |*event| {
+            if (!dvui.eventMatch(event, .{ .id = path_slot.data().id, .r = path_rect })) continue;
+            switch (event.evt) {
+                .mouse => |mouse| switch (mouse.action) {
+                    .release => if (mouse.button.pointer()) {
+                        event.handle(@src(), path_slot.data());
+                        clicked = true;
+                    },
+                    else => {},
+                },
+                else => {},
+            }
+        }
+        path_slot.drawBackground();
+        dvui.label(@src(), "{s}", .{remote.path}, .{
+            .font = theme.textFont(remote.path, 10),
+            .color_text = palette.muted_text,
+            .expand = .horizontal,
+            .gravity_y = 0.5,
+            .id_extra = id_extra + 2,
+        });
+        if (clicked and editable) {
+            state.beginEdit(remote.path);
+            dvui.refresh(null, @src(), path_slot.data().id);
+        }
+    }
 
     active_tasks_panel.showButton(app, palette, id_extra + 20);
+}
+
+fn pathBarEditable(remote: remote_file.FilePaneSnapshot) bool {
+    return remote.state == .ready or remote.state == .failed;
+}
+
+fn pathBarCancelPressed(data: *dvui.WidgetData) bool {
+    for (dvui.events()) |*event| {
+        if (event.handled or event.evt != .key) continue;
+        const key = event.evt.key;
+        if (key.action != .down and key.action != .repeat) continue;
+        if (key.code != .escape) continue;
+        event.handle(@src(), data);
+        dvui.focusWidget(null, null, event.num);
+        dvui.refresh(null, @src(), data.id);
+        return true;
+    }
+    return false;
+}
+
+fn drawPathTextEntry(te: *dvui.TextEntryWidget) void {
+    te.drawBeforeText();
+    if (te.len == 0) {
+        if (te.init_opts.placeholder) |placeholder| {
+            te.textLayout.addText(placeholder, .{ .color_text = te.textLayout.data().options.color(.text).opacity(0.65) });
+        }
+    } else {
+        te.textLayout.addText(te.text[0..te.len], te.data().options.strip());
+    }
+    te.textLayout.addTextDone(te.data().options.strip());
+    if (te.data().id == dvui.focusedWidgetId()) {
+        te.drawCursor();
+    }
+    dvui.clipSet(te.prevClip);
 }
 
 const PaneKind = enum { tree, remote };

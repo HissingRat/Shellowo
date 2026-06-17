@@ -740,6 +740,19 @@ pub const SshWorkspaceWorker = struct {
         try slot.queueInput(self.allocator, bytes);
     }
 
+    fn queueTerminalCd(self: *SshWorkspaceWorker, slot_id: ?terminal_slot.TerminalSlotId, path: []const u8) void {
+        const id = slot_id orelse return;
+        const command = shellCdCommand(self.allocator, path) catch {
+            self.storeFileNotice("Could not build cd command");
+            return;
+        };
+        defer self.allocator.free(command);
+        self.queueInput(id, command) catch {
+            self.storeFileNotice("Could not send cd command");
+            return;
+        };
+    }
+
     pub fn queueMouse(self: *SshWorkspaceWorker, slot_id: terminal_slot.TerminalSlotId, event: terminal.MouseEvent) !void {
         const slot = self.slotById(slot_id) orelse return ssh_session.Error.ChannelClosed;
         try slot.queueMouse(self.allocator, event);
@@ -828,6 +841,7 @@ pub const SshWorkspaceWorker = struct {
         };
         defer sftp.close();
 
+        self.initializeFileHome(client);
         self.requestFileRefresh();
         while (!self.stop_requested.load(.acquire)) {
             self.pumpFiles(sftp);
@@ -1032,20 +1046,7 @@ pub const SshWorkspaceWorker = struct {
     fn pumpFiles(self: *SshWorkspaceWorker, sftp: ssh.Sftp) void {
         self.reapDownloadThreads();
         self.drainFileIntents(sftp);
-        if (self.file_tree_load_requested.swap(false, .acq_rel)) {
-            const tree_path = blk: {
-                self.lockFile();
-                defer self.unlockFile();
-                break :blk self.allocator.dupe(u8, self.fileTreeLoadPathLocked()) catch {
-                    self.storeFileError("OutOfMemory");
-                    return;
-                };
-            };
-            defer self.allocator.free(tree_path);
-
-            const tree_entries = sftp.list(self.allocator, tree_path) catch return;
-            self.storeTreeEntries(tree_path, tree_entries);
-        }
+        self.pumpTreeLoad(sftp);
         if (!self.file_refresh_requested.swap(false, .acq_rel)) return;
 
         const path = blk: {
@@ -1064,6 +1065,44 @@ pub const SshWorkspaceWorker = struct {
             return;
         };
         self.storeFileEntries(entries);
+    }
+
+    fn pumpTreeLoad(self: *SshWorkspaceWorker, sftp: ssh.Sftp) void {
+        var tree_path_buf: [max_file_path]u8 = undefined;
+        const tree_path = blk: {
+            self.lockFile();
+            defer self.unlockFile();
+            const path = if (self.file_tree_load_requested.swap(false, .acq_rel))
+                self.fileTreeLoadPathLocked()
+            else
+                self.nextExpandedUnloadedTreePathLocked() orelse return;
+            const len = @min(tree_path_buf.len, path.len);
+            if (len > 0) @memcpy(tree_path_buf[0..len], path[0..len]);
+            break :blk tree_path_buf[0..len];
+        };
+
+        const tree_entries = sftp.list(self.allocator, tree_path) catch {
+            self.markTreePathLoaded(tree_path);
+            return;
+        };
+        self.storeTreeEntries(tree_path, tree_entries);
+    }
+
+    fn initializeFileHome(self: *SshWorkspaceWorker, client: ssh.Client) void {
+        const output = client.exec(self.allocator, .{
+            .command = "printf %s \"$HOME\"",
+            .max_output_bytes = max_file_path,
+            .timeout_ms = 1_000,
+        }) catch return;
+        defer self.allocator.free(output);
+
+        const home = std.mem.trim(u8, output, " \t\r\n");
+        if (!validRemoteDirectoryPath(home)) return;
+
+        self.lockFile();
+        defer self.unlockFile();
+        self.setFilePathLocked(home);
+        self.clearFileSelectionLocked();
     }
 
     fn drainFileIntents(self: *SshWorkspaceWorker, sftp: ssh.Sftp) void {
@@ -1106,6 +1145,18 @@ pub const SshWorkspaceWorker = struct {
                     if (!self.applyCachedFileEntriesLocked(parent)) {
                         self.file_refresh_requested.store(true, .release);
                     }
+                },
+                .go_path => |target| if (target.pane == .remote) {
+                    const entries = sftp.list(self.allocator, target.path) catch {
+                        self.storeFileNotice("Folder is unavailable");
+                        continue;
+                    };
+                    self.lockFile();
+                    self.setFilePathLocked(target.path);
+                    self.clearFileSelectionLocked();
+                    self.unlockFile();
+                    self.storeFileEntries(entries);
+                    self.queueTerminalCd(target.terminal_slot_id, target.path);
                 },
                 .open => |target| if (target.pane == .remote) {
                     const joined = if (target.name.len == 0)
@@ -1790,6 +1841,20 @@ pub const SshWorkspaceWorker = struct {
         }
     }
 
+    fn nextExpandedUnloadedTreePathLocked(self: *const SshWorkspaceWorker) ?[]const u8 {
+        for (self.file_tree_nodes.items) |node| {
+            if (node.expanded and !node.loaded) return node.path;
+        }
+        return null;
+    }
+
+    fn markTreePathLoaded(self: *SshWorkspaceWorker, path: []const u8) void {
+        self.lockFile();
+        defer self.unlockFile();
+        const idx = self.findTreeNodeIndexLocked(path) orelse return;
+        self.file_tree_nodes.items[idx].loaded = true;
+    }
+
     fn updateTreeFromEntriesLocked(self: *SshWorkspaceWorker, path: []const u8, entries: []const remote_file.RemoteFileEntry) !void {
         try self.ensureTreePathLocked(path);
         const node_idx = self.findTreeNodeIndexLocked(path) orelse return;
@@ -2311,6 +2376,11 @@ pub const SshWorkspaceWorker = struct {
             .toggle_tree => |target| .{ .toggle_tree = try self.cloneEntryTarget(target) },
             .refresh => |pane| .{ .refresh = pane },
             .go_parent => |pane| .{ .go_parent = pane },
+            .go_path => |target| .{ .go_path = .{
+                .pane = target.pane,
+                .path = try self.allocator.dupe(u8, target.path),
+                .terminal_slot_id = target.terminal_slot_id,
+            } },
             .open => |target| .{ .open = try self.cloneEntryTarget(target) },
             .create_file => |create_intent| .{ .create_file = .{
                 .pane = create_intent.pane,
@@ -2390,6 +2460,7 @@ pub const SshWorkspaceWorker = struct {
             .select => |selection| self.freeEntryTarget(selection.target),
             .toggle_tree => |target| self.freeEntryTarget(target),
             .refresh, .go_parent => {},
+            .go_path => |target| self.allocator.free(target.path),
             .open => |target| self.freeEntryTarget(target),
             .create_file => |create_intent| {
                 self.allocator.free(create_intent.parent_path);
@@ -2488,6 +2559,25 @@ fn pathDepth(path: []const u8) usize {
         }
     }
     return depth;
+}
+
+fn validRemoteDirectoryPath(path: []const u8) bool {
+    return path.len > 0 and path[0] == '/' and std.mem.indexOfScalar(u8, path, 0) == null;
+}
+
+fn shellCdCommand(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "cd -- '");
+    for (path) |ch| {
+        if (ch == '\'') {
+            try out.appendSlice(allocator, "'\\''");
+        } else {
+            try out.append(allocator, ch);
+        }
+    }
+    try out.appendSlice(allocator, "'\r");
+    return out.toOwnedSlice(allocator);
 }
 
 fn treePathIsDescendant(parent: []const u8, child: []const u8) bool {

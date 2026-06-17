@@ -734,6 +734,9 @@ pub fn terminalSnapshotPendingDelayNs(self: *const App, tab_id: u64, slot_id: ?u
 
 pub fn handleFilePanelIntent(self: *App, tab_id: u64, intent: remote_file.FilePanelIntent) void {
     var queued_intent = intent;
+    if (std.meta.activeTag(queued_intent) == .go_path) {
+        queued_intent.go_path.terminal_slot_id = self.sessions.activeTerminalSlotId(tab_id);
+    }
     const transfer_id = self.recordFileTransfer(tab_id, &queued_intent) catch {
         self.message = "Could not create transfer task";
         return;
@@ -1178,6 +1181,7 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
         .toggle_tree => "Toggling folder",
         .refresh => "Refreshing files",
         .go_parent => "Opening parent folder",
+        .go_path => "Opening folder",
         .open => "Opening folder",
         .create_file => "Creating file",
         .create_directory => "Creating folder",
