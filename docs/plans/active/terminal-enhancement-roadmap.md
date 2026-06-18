@@ -90,10 +90,10 @@ SSH PTY channel
 
 ### 3. 光标与 monospace grid
 
-- [x] 初版闪烁下划线 cursor。
+- [x] 统一使用闪烁下划线 cursor；保留远端 shape/blink 状态供后续可配置样式使用。
 - [x] terminal 失焦时隐藏 cursor。
 - [ ] 统一 cell width / line height 计算，避免 cursor 与文本错位。
-- [ ] 支持远端 cursor visible 状态。
+- [x] 支持远端 cursor visible 状态。
 
 验收：
 

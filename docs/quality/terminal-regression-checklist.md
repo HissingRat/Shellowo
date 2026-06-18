@@ -30,6 +30,7 @@
 ## Alternate Screen 与 TUI
 
 - 进入/退出 `vim` 后普通 shell scrollback 仍在。
+- Vim Normal/Insert mode 使用 Shellow 统一的闪烁下划线 cursor，远端 hide/show 设置生效。
 - `top` 或 `htop` 刷屏不会污染普通 scrollback。
 - TUI 开启 mouse reporting 后，左键点击、拖动和滚轮能被远端程序收到。
 - TUI 未开启 mouse reporting 时，鼠标拖动仍是本地选区。
@@ -39,10 +40,14 @@
 - Auto 模式在低延迟连接保持 Shell/Readline 保守等级，不因单次异常样本突然升到 TUI。
 - 150–300ms 延迟下，Bash/Zsh 连续输入明显减少回显等待，不出现双字符。
 - 连续快速输入时，远端部分回显只确认对应 pending prefix，后续未确认字符仍保留预测显示。
+- Readline 行内编辑的 Left/Right、Home/End、Delete、Ctrl+A/B/E/F 不出现字符覆盖或光标越过 prompt。
+- 开启 Tab prediction 后本地 tab stop 不残留；远端补全输出到达后能回到真实结果。
+- 中文、常见 emoji 宽字符预测保持 cursor/cell width 一致；组合字符保持保守不预测。
+- 大量远端输出触发 output gate 时状态栏显示 paused，输出平稳后自动恢复。
 - Vim/Nano alternate screen 下预测冲突会快速 rollback，并在冲突频繁时自动降级或短暂停用。
 - 密码、passphrase、OTP/token 提示、paste、selection、search 和 scrollback 浏览期间不进行本地预测。
 - 切换多个 terminal slot 后，各 slot 的 latency、pending 和 rollback 状态互不串台。
-- terminal bar 的 mode/level、latency、pending、rollback 诊断值会随真实回显或独立 SSH probe 更新。
+- terminal bar 的 mode/level、Adaptive/Echo/Probe latency、output gate、pending、rollback 诊断值会随真实回显或独立 SSH probe 更新。
 
 ## 搜索与选区
 

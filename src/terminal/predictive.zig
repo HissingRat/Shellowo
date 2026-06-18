@@ -6,6 +6,8 @@ pub const max_pending_input_bytes = 64 * 1024;
 pub const default_prediction_cooldown_ms: u64 = 500;
 pub const default_full_rollback_threshold: u32 = 64;
 pub const default_disable_threshold: u32 = 256;
+pub const default_output_pause_ms: u64 = 350;
+pub const default_output_change_threshold: u32 = 96;
 
 pub const PredictionKind = enum {
     printable_char,
@@ -66,6 +68,8 @@ pub const PredictionConfig = struct {
     predict_enter: bool = true,
     predict_tab: bool = false,
     predict_arrow_keys: bool = false,
+    output_pause_ms: u64 = default_output_pause_ms,
+    output_change_threshold: u32 = default_output_change_threshold,
 
     pub fn baseLevel(self: PredictionConfig) PredictionLevel {
         if (!self.enabled or self.mode == .off) return .disabled;
@@ -98,6 +102,10 @@ pub const RttSampler = struct {
     smoothed_ms: u32 = 0,
     last_sample_ms: u32 = 0,
     last_source: LatencySource = .probe,
+    echo_smoothed_ms: u32 = 0,
+    echo_last_ms: u32 = 0,
+    probe_smoothed_ms: u32 = 0,
+    probe_last_ms: u32 = 0,
 
     pub fn observe(self: *RttSampler, sample_ms: u32, source: LatencySource) void {
         const bounded = @min(sample_ms, 5_000);
@@ -114,8 +122,16 @@ pub const RttSampler = struct {
         }
         self.sample_count +|= 1;
         switch (source) {
-            .echo => self.echo_sample_count +|= 1,
-            .probe => self.probe_sample_count +|= 1,
+            .echo => {
+                self.echo_smoothed_ms = smoothSample(self.echo_smoothed_ms, self.echo_sample_count, bounded, 3);
+                self.echo_last_ms = sample_ms;
+                self.echo_sample_count +|= 1;
+            },
+            .probe => {
+                self.probe_smoothed_ms = smoothSample(self.probe_smoothed_ms, self.probe_sample_count, bounded, 7);
+                self.probe_last_ms = sample_ms;
+                self.probe_sample_count +|= 1;
+            },
         }
     }
 
@@ -130,14 +146,22 @@ pub const RttSampler = struct {
     }
 };
 
+fn smoothSample(current: u32, count: u32, sample: u32, old_weight: u64) u32 {
+    if (count == 0) return sample;
+    return @intCast((@as(u64, current) * old_weight + sample) / (old_weight + 1));
+}
+
 pub const PredictionDiagnostics = struct {
     level: PredictionLevel = .disabled,
     smoothed_latency_ms: ?u32 = null,
     last_latency_ms: ?u32 = null,
     last_latency_source: ?LatencySource = null,
+    echo_latency_ms: ?u32 = null,
+    probe_latency_ms: ?u32 = null,
     pending_inputs: usize = 0,
     pending_bytes: usize = 0,
     rollback_count: u32 = 0,
+    output_paused: bool = false,
 };
 
 pub const RemoteAgentMode = enum {
@@ -162,6 +186,7 @@ pub const PredictionPolicyState = struct {
     stable_score: u8 = 0,
     latency_upgrade_score: u8 = 0,
     disabled_until_ms: u64 = 0,
+    output_paused_until_ms: u64 = 0,
     rollback_count: u32 = 0,
     rtt: RttSampler = .{},
     config: PredictionConfig = .{},
@@ -194,11 +219,25 @@ pub const PredictionPolicyState = struct {
     }
 
     pub fn refresh(self: *PredictionPolicyState, now_ms: u64) void {
+        if (self.output_paused_until_ms != 0 and now_ms >= self.output_paused_until_ms) {
+            self.output_paused_until_ms = 0;
+        }
         if (self.level == .disabled and self.disabled_until_ms != 0 and now_ms >= self.disabled_until_ms) {
             self.level = .safe_shell;
             self.disabled_until_ms = 0;
             self.stable_score = 0;
         }
+    }
+
+    pub fn observeRemoteOutput(self: *PredictionPolicyState, diff: ScreenDiff, now_ms: u64) void {
+        if (diff.empty()) return;
+        if (diff.structural() or diffScore(diff) >= self.config.output_change_threshold) {
+            self.output_paused_until_ms = @max(self.output_paused_until_ms, now_ms + self.config.output_pause_ms);
+        }
+    }
+
+    pub fn outputPaused(self: PredictionPolicyState, now_ms: u64) bool {
+        return now_ms < self.output_paused_until_ms;
     }
 
     pub fn observeLatency(self: *PredictionPolicyState, sample_ms: u32, source: LatencySource) void {
@@ -230,6 +269,7 @@ pub const PredictionPolicyState = struct {
         self.stable_score = 0;
         self.latency_upgrade_score = 0;
         self.disabled_until_ms = 0;
+        self.output_paused_until_ms = 0;
     }
 
     fn downgrade(self: *PredictionPolicyState) void {
@@ -338,6 +378,9 @@ pub const DualState = struct {
         const next_real = try cloneSnapshot(self.allocator, real_snapshot);
         errdefer deinitSnapshot(&next_real);
 
+        if (self.real) |old_real| {
+            self.prediction_policy.observeRemoteOutput(diffSnapshots(real_snapshot, old_real), now_ms);
+        }
         const confirmed_prefix = try self.confirmedPendingPrefix(real_snapshot);
         if (self.real) |*old_real| old_real.deinit();
         self.real = next_real;
@@ -415,6 +458,9 @@ pub const DualState = struct {
 
     pub fn decideCurrentPrediction(self: *DualState, snapshot: terminal.Snapshot, context: PredictionContext, bytes: []const u8, now_ms: u64) PredictionDecision {
         self.prediction_policy.refresh(now_ms);
+        if (self.prediction_policy.outputPaused(now_ms)) {
+            return .{ .allowed = false, .level = self.prediction_policy.level, .kind = classifyPrediction(bytes) };
+        }
         return decidePrediction(snapshot, context, bytes, self.prediction_policy.level, self.prediction_policy.config);
     }
 
@@ -437,9 +483,12 @@ pub const DualState = struct {
             .smoothed_latency_ms = if (sampler.sample_count == 0) null else sampler.smoothed_ms,
             .last_latency_ms = if (sampler.sample_count == 0) null else sampler.last_sample_ms,
             .last_latency_source = if (sampler.sample_count == 0) null else sampler.last_source,
+            .echo_latency_ms = if (sampler.echo_sample_count == 0) null else sampler.echo_smoothed_ms,
+            .probe_latency_ms = if (sampler.probe_sample_count == 0) null else sampler.probe_smoothed_ms,
             .pending_inputs = self.pendingInputCount(),
             .pending_bytes = self.pendingInputBytes(),
             .rollback_count = self.prediction_policy.rollback_count,
+            .output_paused = self.prediction_policy.output_paused_until_ms != 0,
         };
     }
 
@@ -537,7 +586,7 @@ pub const DualState = struct {
 
 pub fn decidePrediction(snapshot: terminal.Snapshot, context: PredictionContext, bytes: []const u8, level: PredictionLevel, config: PredictionConfig) PredictionDecision {
     const kind = classifyPrediction(bytes);
-    if (!predictionEnvironmentSafe(snapshot, context, level, config)) {
+    if (!predictionEnvironmentSafe(snapshot, context, level, config) or !localInputSupported(bytes, snapshot.alternate_screen)) {
         return .{ .allowed = false, .level = level, .kind = kind };
     }
 
@@ -552,6 +601,7 @@ pub fn decidePrediction(snapshot: terminal.Snapshot, context: PredictionContext,
             .printable_char => config.predict_printable,
             .backspace => config.predict_backspace,
             .enter => config.predict_enter,
+            .tab => config.predict_tab,
             .arrow_key => config.predict_arrow_keys,
             .readline_control => true,
             else => false,
@@ -634,10 +684,67 @@ pub fn classifyPrediction(bytes: []const u8) PredictionKind {
     {
         return .arrow_key;
     }
-    for (bytes) |byte| {
-        if (byte < 0x20 or byte > 0x7e) return .unknown;
+    if (std.mem.eql(u8, bytes, "\x1b[H") or std.mem.eql(u8, bytes, "\x1b[F") or std.mem.eql(u8, bytes, "\x1b[3~")) return .readline_control;
+    return if (predictableUtf8(bytes)) .printable_char else .unknown;
+}
+
+fn localInputSupported(bytes: []const u8, alternate_screen: bool) bool {
+    if (bytes.len == 0) return false;
+    if (std.mem.eql(u8, bytes, "\x1b[A") or std.mem.eql(u8, bytes, "\x1b[B")) return false;
+    if (std.mem.eql(u8, bytes, "\x1b[D") or std.mem.eql(u8, bytes, "\x1b[C") or
+        std.mem.eql(u8, bytes, "\x1b[H") or std.mem.eql(u8, bytes, "\x1b[F") or
+        std.mem.eql(u8, bytes, "\x1b[3~"))
+    {
+        return !alternate_screen;
     }
-    return .printable_char;
+    if (bytes.len == 1 and bytes[0] == '\t') return true;
+    if (bytes.len == 1 and bytes[0] >= 0x01 and bytes[0] <= 0x1a) {
+        return !alternate_screen and switch (bytes[0]) {
+            0x01, 0x02, 0x05, 0x06, 0x0a, 0x0d => true,
+            else => false,
+        };
+    }
+    return predictableUtf8(bytes) or (bytes.len == 1 and (bytes[0] == 0x7f or bytes[0] == 0x08 or bytes[0] == '\r' or bytes[0] == '\n'));
+}
+
+fn predictableUtf8(bytes: []const u8) bool {
+    var view = std.unicode.Utf8View.init(bytes) catch return false;
+    var iter = view.iterator();
+    var found = false;
+    while (iter.nextCodepoint()) |codepoint| {
+        if (codepoint < 0x20 or codepoint == 0x7f) return false;
+        if (codepointWidth(codepoint) == null) return false;
+        found = true;
+    }
+    return found;
+}
+
+fn codepointWidth(codepoint: u21) ?u8 {
+    if (isCombiningCodepoint(codepoint)) return null;
+    if (isWideCodepoint(codepoint)) return 2;
+    return 1;
+}
+
+fn isCombiningCodepoint(codepoint: u21) bool {
+    return (codepoint >= 0x0300 and codepoint <= 0x036f) or
+        (codepoint >= 0x1ab0 and codepoint <= 0x1aff) or
+        (codepoint >= 0x1dc0 and codepoint <= 0x1dff) or
+        (codepoint >= 0x20d0 and codepoint <= 0x20ff) or
+        (codepoint >= 0xfe00 and codepoint <= 0xfe0f) or
+        (codepoint >= 0xfe20 and codepoint <= 0xfe2f);
+}
+
+fn isWideCodepoint(codepoint: u21) bool {
+    return (codepoint >= 0x1100 and codepoint <= 0x115f) or
+        (codepoint >= 0x2329 and codepoint <= 0x232a) or
+        (codepoint >= 0x2e80 and codepoint <= 0xa4cf) or
+        (codepoint >= 0xac00 and codepoint <= 0xd7a3) or
+        (codepoint >= 0xf900 and codepoint <= 0xfaff) or
+        (codepoint >= 0xfe10 and codepoint <= 0xfe6f) or
+        (codepoint >= 0xff00 and codepoint <= 0xff60) or
+        (codepoint >= 0xffe0 and codepoint <= 0xffe6) or
+        (codepoint >= 0x1f300 and codepoint <= 0x1faff) or
+        (codepoint >= 0x20000 and codepoint <= 0x3fffd);
 }
 
 pub fn cloneSnapshot(allocator: std.mem.Allocator, snapshot: terminal.Snapshot) !terminal.Snapshot {
@@ -713,46 +820,180 @@ pub fn diffSnapshots(real: terminal.Snapshot, predicted: terminal.Snapshot) Scre
 fn applyLocalInput(snapshot: *terminal.Snapshot, bytes: []const u8, level: PredictionLevel, config: PredictionConfig) void {
     if (snapshot.bracketed_paste or snapshot.mouse_mode != .none) return;
     if (snapshot.alternate_screen and (level != .tui_insert or !config.predict_in_alt_screen)) return;
-    for (bytes) |byte| {
-        switch (byte) {
-            0x20...0x7e => if (config.predict_printable) putAscii(snapshot, byte),
-            0x7f, 0x08 => if (config.predict_backspace) backspace(snapshot),
-            '\r', '\n' => {
-                if (config.predict_enter) predictEnter(snapshot);
-                return;
-            },
-            else => return,
+    if (applyReadlineInput(snapshot, bytes, config)) return;
+
+    var view = std.unicode.Utf8View.init(bytes) catch return;
+    var iter = view.iterator();
+    while (iter.nextCodepoint()) |codepoint| {
+        if (codepoint == 0x7f or codepoint == 0x08) {
+            if (config.predict_backspace) backspace(snapshot);
+        } else if (codepoint == '\r' or codepoint == '\n') {
+            if (config.predict_enter) predictEnter(snapshot);
+            return;
+        } else if (codepoint == '\t') {
+            if (config.predict_tab) predictTab(snapshot);
+        } else if (codepoint >= 0x20 and config.predict_printable) {
+            putCodepoint(snapshot, codepoint);
+        } else {
+            return;
         }
     }
 }
 
-fn putAscii(snapshot: *terminal.Snapshot, byte: u8) void {
+fn applyReadlineInput(snapshot: *terminal.Snapshot, bytes: []const u8, config: PredictionConfig) bool {
+    if (std.mem.eql(u8, bytes, "\x1b[D") or (bytes.len == 1 and bytes[0] == 0x02)) {
+        if (config.predict_arrow_keys or bytes[0] == 0x02) moveCursorLeft(snapshot);
+        return true;
+    }
+    if (std.mem.eql(u8, bytes, "\x1b[C") or (bytes.len == 1 and bytes[0] == 0x06)) {
+        if (config.predict_arrow_keys or bytes[0] == 0x06) moveCursorRight(snapshot);
+        return true;
+    }
+    if (std.mem.eql(u8, bytes, "\x1b[H") or (bytes.len == 1 and bytes[0] == 0x01)) {
+        snapshot.cursor.col = shellInputStart(snapshot.*);
+        snapshot.cursor_dirty = true;
+        return true;
+    }
+    if (std.mem.eql(u8, bytes, "\x1b[F") or (bytes.len == 1 and bytes[0] == 0x05)) {
+        snapshot.cursor.col = lineContentEnd(snapshot.*);
+        snapshot.cursor_dirty = true;
+        return true;
+    }
+    if (std.mem.eql(u8, bytes, "\x1b[3~")) {
+        deleteAtCursor(snapshot);
+        return true;
+    }
+    return false;
+}
+
+fn putCodepoint(snapshot: *terminal.Snapshot, codepoint: u21) void {
     if (snapshot.cursor.row >= snapshot.size.rows or snapshot.cursor.col >= snapshot.size.cols) return;
+    const width = codepointWidth(codepoint) orelse return;
+    if (snapshot.cursor.col + width > snapshot.size.cols) return;
+    if (!snapshot.alternate_screen) shiftRowRight(snapshot, snapshot.cursor.row, snapshot.cursor.col, width);
     const idx = @as(usize, snapshot.cursor.row) * @as(usize, snapshot.size.cols) + @as(usize, snapshot.cursor.col);
-    snapshot.cells[idx] = .{ .codepoint = byte, .width = 1, .style = .{} };
+    snapshot.cells[idx] = .{ .codepoint = codepoint, .width = width, .style = .{} };
+    if (width == 2) snapshot.cells[idx + 1] = .{ .codepoint = ' ', .width = 0, .style = .{} };
     appendDiffRect(&snapshot.dirty_rects, .{
         .start_row = snapshot.cursor.row,
         .end_row = snapshot.cursor.row + 1,
         .start_col = snapshot.cursor.col,
-        .end_col = snapshot.cursor.col + 1,
+        .end_col = snapshot.size.cols,
     });
     snapshot.dirty_rows = mergeRows(snapshot.dirty_rows, .{ .start = snapshot.cursor.row, .end = snapshot.cursor.row + 1 });
-    snapshot.cursor.col += 1;
+    snapshot.cursor.col += width;
     snapshot.cursor_dirty = true;
 }
 
 fn backspace(snapshot: *terminal.Snapshot) void {
-    if (snapshot.cursor.col == 0 or snapshot.cursor.row >= snapshot.size.rows) return;
-    snapshot.cursor.col -= 1;
-    const idx = @as(usize, snapshot.cursor.row) * @as(usize, snapshot.size.cols) + @as(usize, snapshot.cursor.col);
-    snapshot.cells[idx] = .{};
+    if (snapshot.cursor.col <= shellInputStart(snapshot.*) or snapshot.cursor.row >= snapshot.size.rows) return;
+    snapshot.cursor.col -= cellWidthBeforeCursor(snapshot.*);
+    if (!snapshot.alternate_screen) {
+        shiftRowLeft(snapshot, snapshot.cursor.row, snapshot.cursor.col, cellWidthAt(snapshot.*, snapshot.cursor.row, snapshot.cursor.col));
+    } else {
+        clearCells(snapshot, snapshot.cursor.row, snapshot.cursor.col, cellWidthAt(snapshot.*, snapshot.cursor.row, snapshot.cursor.col));
+    }
+    markRowChanged(snapshot, snapshot.cursor.row, snapshot.cursor.col);
+}
+
+fn deleteAtCursor(snapshot: *terminal.Snapshot) void {
+    if (snapshot.cursor.row >= snapshot.size.rows or snapshot.cursor.col >= snapshot.size.cols) return;
+    shiftRowLeft(snapshot, snapshot.cursor.row, snapshot.cursor.col, cellWidthAt(snapshot.*, snapshot.cursor.row, snapshot.cursor.col));
+    markRowChanged(snapshot, snapshot.cursor.row, snapshot.cursor.col);
+}
+
+fn predictTab(snapshot: *terminal.Snapshot) void {
+    const next = @min(snapshot.size.cols, (snapshot.cursor.col + 8) & ~@as(u16, 7));
+    while (snapshot.cursor.col < next) putCodepoint(snapshot, ' ');
+}
+
+fn moveCursorLeft(snapshot: *terminal.Snapshot) void {
+    const start = shellInputStart(snapshot.*);
+    if (snapshot.cursor.col <= start) return;
+    snapshot.cursor.col -= cellWidthBeforeCursor(snapshot.*);
+    snapshot.cursor_dirty = true;
+}
+
+fn moveCursorRight(snapshot: *terminal.Snapshot) void {
+    const end = lineContentEnd(snapshot.*);
+    if (snapshot.cursor.col >= end) return;
+    snapshot.cursor.col = @min(end, snapshot.cursor.col + cellWidthAt(snapshot.*, snapshot.cursor.row, snapshot.cursor.col));
+    snapshot.cursor_dirty = true;
+}
+
+fn shellInputStart(snapshot: terminal.Snapshot) u16 {
+    if (snapshot.cursor.row >= snapshot.size.rows) return 0;
+    const base = @as(usize, snapshot.cursor.row) * @as(usize, snapshot.size.cols);
+    const limit = @min(snapshot.cursor.col, snapshot.size.cols);
+    var col: u16 = 0;
+    var candidate: u16 = 0;
+    while (col + 1 < limit) : (col += 1) {
+        const cp = snapshot.cells[base + col].codepoint;
+        const next = snapshot.cells[base + col + 1].codepoint;
+        if ((cp == '$' or cp == '#' or cp == '>' or cp == '%') and next == ' ') candidate = col + 2;
+    }
+    return candidate;
+}
+
+fn lineContentEnd(snapshot: terminal.Snapshot) u16 {
+    if (snapshot.cursor.row >= snapshot.size.rows) return snapshot.cursor.col;
+    const base = @as(usize, snapshot.cursor.row) * @as(usize, snapshot.size.cols);
+    var col = snapshot.size.cols;
+    while (col > shellInputStart(snapshot)) {
+        const cell = snapshot.cells[base + col - 1];
+        if (cell.codepoint != ' ' or cell.width == 0) break;
+        col -= 1;
+    }
+    return col;
+}
+
+fn cellWidthAt(snapshot: terminal.Snapshot, row: u16, col: u16) u8 {
+    const cell = snapshot.cellAt(row, col) orelse return 1;
+    if (cell.width == 0) return 1;
+    return @min(cell.width, 2);
+}
+
+fn cellWidthBeforeCursor(snapshot: terminal.Snapshot) u8 {
+    if (snapshot.cursor.col == 0) return 1;
+    const previous = snapshot.cellAt(snapshot.cursor.row, snapshot.cursor.col - 1) orelse return 1;
+    return if (previous.width == 0 and snapshot.cursor.col >= 2) 2 else 1;
+}
+
+fn shiftRowRight(snapshot: *terminal.Snapshot, row: u16, col: u16, amount: u8) void {
+    const cols = snapshot.size.cols;
+    if (amount == 0 or col >= cols) return;
+    const base = @as(usize, row) * @as(usize, cols);
+    var dst: usize = cols;
+    while (dst > @as(usize, col) + amount) {
+        dst -= 1;
+        snapshot.cells[base + dst] = snapshot.cells[base + dst - amount];
+    }
+}
+
+fn shiftRowLeft(snapshot: *terminal.Snapshot, row: u16, col: u16, amount: u8) void {
+    const cols = snapshot.size.cols;
+    if (amount == 0 or col >= cols) return;
+    const base = @as(usize, row) * @as(usize, cols);
+    var src = @as(usize, col) + amount;
+    while (src < cols) : (src += 1) snapshot.cells[base + src - amount] = snapshot.cells[base + src];
+    var clear_col = cols - amount;
+    while (clear_col < cols) : (clear_col += 1) snapshot.cells[base + clear_col] = .{};
+}
+
+fn clearCells(snapshot: *terminal.Snapshot, row: u16, col: u16, amount: u8) void {
+    const base = @as(usize, row) * @as(usize, snapshot.size.cols);
+    var offset: u8 = 0;
+    while (offset < amount and col + offset < snapshot.size.cols) : (offset += 1) snapshot.cells[base + col + offset] = .{};
+}
+
+fn markRowChanged(snapshot: *terminal.Snapshot, row: u16, col: u16) void {
     appendDiffRect(&snapshot.dirty_rects, .{
-        .start_row = snapshot.cursor.row,
-        .end_row = snapshot.cursor.row + 1,
-        .start_col = snapshot.cursor.col,
-        .end_col = snapshot.cursor.col + 1,
+        .start_row = row,
+        .end_row = row + 1,
+        .start_col = col,
+        .end_col = snapshot.size.cols,
     });
-    snapshot.dirty_rows = mergeRows(snapshot.dirty_rows, .{ .start = snapshot.cursor.row, .end = snapshot.cursor.row + 1 });
+    snapshot.dirty_rows = mergeRows(snapshot.dirty_rows, .{ .start = row, .end = row + 1 });
     snapshot.cursor_dirty = true;
 }
 
@@ -936,9 +1177,10 @@ test "prediction levels gate input kinds by context" {
     try std.testing.expect(decidePrediction(shell, shell_context, "\x7f", .safe_shell, config).allowed);
     try std.testing.expect(decidePrediction(shell, shell_context, "\r", .safe_shell, config).allowed);
     try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[A", .safe_shell, config).allowed);
-    try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[A", .readline, config).allowed);
+    try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[D", .readline, config).allowed);
     config.predict_arrow_keys = true;
-    try std.testing.expect(decidePrediction(shell, shell_context, "\x1b[A", .readline, config).allowed);
+    try std.testing.expect(decidePrediction(shell, shell_context, "\x1b[D", .readline, config).allowed);
+    try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[A", .readline, config).allowed);
     try std.testing.expect(!decidePrediction(shell, shell_context, "a", .disabled, config).allowed);
 
     shell.alternate_screen = true;
@@ -1103,6 +1345,71 @@ test "prediction config controls policy and decisions" {
     defer shell.deinit();
     config.predict_printable = false;
     try std.testing.expect(!decidePrediction(shell, .{ .shell_prompt = true, .cursor_at_line_end = true }, "a", .safe_shell, config).allowed);
+}
+
+test "readline prediction edits inside the command line" {
+    var real = try testSnapshot(std.testing.allocator, "$ ac");
+    defer real.deinit();
+    real.cursor.col = 3;
+
+    var state = DualState.init(std.testing.allocator);
+    defer state.deinit();
+    state.prediction_policy.level = .readline;
+    state.prediction_policy.config.predict_arrow_keys = true;
+    _ = try state.syncReal(real);
+
+    _ = try state.recordLocalInput("b", 100);
+    try std.testing.expectEqual(@as(u21, 'b'), state.predictedSnapshot().?.cellAt(0, 3).?.codepoint);
+    try std.testing.expectEqual(@as(u21, 'c'), state.predictedSnapshot().?.cellAt(0, 4).?.codepoint);
+
+    _ = try state.recordLocalInput("\x1b[D", 110);
+    _ = try state.recordLocalInput("\x1b[C", 115);
+    _ = try state.recordLocalInput("\x1b[3~", 120);
+    try std.testing.expectEqual(@as(u21, 'b'), state.predictedSnapshot().?.cellAt(0, 3).?.codepoint);
+    try std.testing.expectEqual(@as(u21, ' '), state.predictedSnapshot().?.cellAt(0, 4).?.codepoint);
+
+    _ = try state.recordLocalInput("\x01", 130);
+    try std.testing.expectEqual(@as(u16, 2), state.predictedSnapshot().?.cursor.col);
+    _ = try state.recordLocalInput("\x05", 140);
+    try std.testing.expectEqual(@as(u16, 4), state.predictedSnapshot().?.cursor.col);
+}
+
+test "unicode and tab prediction preserve terminal cell widths" {
+    var real = try testSnapshot(std.testing.allocator, "$ ");
+    defer real.deinit();
+
+    var state = DualState.init(std.testing.allocator);
+    defer state.deinit();
+    state.prediction_policy.level = .readline;
+    state.prediction_policy.config.predict_tab = true;
+    _ = try state.syncReal(real);
+
+    _ = try state.recordLocalInput("中", 100);
+    try std.testing.expectEqual(@as(u21, '中'), state.predictedSnapshot().?.cellAt(0, 2).?.codepoint);
+    try std.testing.expectEqual(@as(u8, 2), state.predictedSnapshot().?.cellAt(0, 2).?.width);
+    try std.testing.expectEqual(@as(u8, 0), state.predictedSnapshot().?.cellAt(0, 3).?.width);
+    try std.testing.expectEqual(@as(u16, 4), state.predictedSnapshot().?.cursor.col);
+
+    _ = try state.recordLocalInput("\t", 110);
+    try std.testing.expectEqual(@as(u16, 8), state.predictedSnapshot().?.cursor.col);
+}
+
+test "output gate pauses prediction after a large remote change" {
+    var policy: PredictionPolicyState = .{};
+    policy.observeRemoteOutput(.{ .cell_mismatches = default_output_change_threshold }, 100);
+    try std.testing.expect(policy.outputPaused(200));
+    policy.refresh(100 + default_output_pause_ms);
+    try std.testing.expect(!policy.outputPaused(100 + default_output_pause_ms));
+}
+
+test "diagnostics retain echo and probe latency separately" {
+    var state = DualState.init(std.testing.allocator);
+    defer state.deinit();
+    state.prediction_policy.observeLatency(180, .echo);
+    state.observeProbeLatency(40);
+    const diagnostics = state.diagnostics();
+    try std.testing.expectEqual(@as(?u32, 180), diagnostics.echo_latency_ms);
+    try std.testing.expectEqual(@as(?u32, 40), diagnostics.probe_latency_ms);
 }
 
 test "remote agent plan stays disabled unless state diff is available" {

@@ -960,14 +960,13 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
     const x = crs.r.x + @as(f32, @floatFromInt(cursor_col)) * cell_width;
     const line_top = crs.r.y + @as(f32, @floatFromInt(visible_row)) * terminal_line_height * crs.s;
     const glyph_height = theme.textFont("M", terminal_font_size).textSize("M").h * crs.s;
-    const y = line_top + glyph_height - (cursor_underline_height + cursor_underline_lift) * crs.s;
-    const underline = dvui.Rect.Physical{
+    const cursor_rect = dvui.Rect.Physical{
         .x = x,
-        .y = y,
+        .y = line_top + glyph_height - (cursor_underline_height + cursor_underline_lift) * crs.s,
         .w = @max(1, cell_width * 0.8),
         .h = @max(1, cursor_underline_height * crs.s),
     };
-    underline.fill(.{}, .{ .color = palette.text, .fade = 0 });
+    cursor_rect.fill(.{}, .{ .color = palette.text, .fade = 0 });
 }
 
 fn scrollbar(
@@ -1669,7 +1668,12 @@ fn handleHoveredTerminalControlKey(app: *App, tab: workspace.WorkspaceTab, data:
     if (key.action == .up) return false;
     if (keybindings.terminalShortcut(key) != null) return false;
     const byte = terminalControlByte(key) orelse return false;
-    handleTerminalBytes(app, tab, (&[_]u8{byte})[0..]);
+    const bytes = (&[_]u8{byte})[0..];
+    const active_slot_id = app.sessions.activeTerminalSlotId(tab.id);
+    if (app.predictedSshSnapshot(tab.id, active_slot_id)) |snapshot| {
+        applyPredictiveInput(app, tab, active_slot_id, viewport, snapshot, bytes);
+    }
+    handleTerminalBytes(app, tab, bytes);
     viewport.scroll_offset = 0;
     clearTerminalSelection(viewport);
     event.handle(@src(), data);
@@ -2066,6 +2070,7 @@ fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key
 
     if (terminalControlByte(key)) |byte| {
         ctrl_buf[0] = byte;
+        if (snapshot) |snap| applyPredictiveInput(app, tab, active_slot_id, viewport, snap, ctrl_buf[0..1]);
         handleTerminalBytes(app, tab, ctrl_buf[0..1]);
         return true;
     }

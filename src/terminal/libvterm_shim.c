@@ -29,6 +29,8 @@ struct ShellowVTerm {
     bool scrollback_dirty;
     bool cursor_dirty;
     bool cursor_visible;
+    bool cursor_blink;
+    int cursor_shape;
     char *title;
     size_t title_len;
     size_t title_cap;
@@ -205,6 +207,15 @@ static int shellow_screen_settermprop(VTermProp prop, VTermValue *val, void *use
     if (terminal == NULL) return 1;
     if (prop == VTERM_PROP_ALTSCREEN) {
         terminal->altscreen_active = val->boolean;
+    } else if (prop == VTERM_PROP_CURSORVISIBLE) {
+        terminal->cursor_visible = val->boolean;
+        terminal->cursor_dirty = true;
+    } else if (prop == VTERM_PROP_CURSORBLINK) {
+        terminal->cursor_blink = val->boolean;
+        terminal->cursor_dirty = true;
+    } else if (prop == VTERM_PROP_CURSORSHAPE) {
+        terminal->cursor_shape = val->number;
+        terminal->cursor_dirty = true;
     } else if (prop == VTERM_PROP_MOUSE) {
         terminal->mouse_mode = val->number;
     } else if (prop == VTERM_PROP_TITLE) {
@@ -253,6 +264,8 @@ ShellowVTerm *shellow_vterm_new(int rows, int cols) {
     terminal->dirty_rects_len = 0;
     terminal->dirty_rects_overflow = false;
     terminal->cursor_visible = true;
+    terminal->cursor_blink = true;
+    terminal->cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
 
     vterm_set_utf8(terminal->vt, 1);
     vterm_screen_enable_altscreen(terminal->screen, 1);
@@ -350,9 +363,24 @@ void shellow_vterm_clear_dirty(ShellowVTerm *terminal) {
 }
 
 ShellowVTermCursor shellow_vterm_get_cursor(ShellowVTerm *terminal) {
+    if (terminal == NULL) {
+        return (ShellowVTermCursor){ .row = 0, .col = 0, .visible = false, .blink = false, .shape = 0 };
+    }
     VTermPos pos;
     vterm_state_get_cursorpos(vterm_obtain_state(terminal->vt), &pos);
-    return (ShellowVTermCursor){ .row = pos.row, .col = pos.col, .visible = terminal == NULL ? false : terminal->cursor_visible };
+    uint8_t shape = SHELLOW_VTERM_CURSOR_BLOCK;
+    if (terminal->cursor_shape == VTERM_PROP_CURSORSHAPE_UNDERLINE) {
+        shape = SHELLOW_VTERM_CURSOR_UNDERLINE;
+    } else if (terminal->cursor_shape == VTERM_PROP_CURSORSHAPE_BAR_LEFT) {
+        shape = SHELLOW_VTERM_CURSOR_BAR;
+    }
+    return (ShellowVTermCursor){
+        .row = pos.row,
+        .col = pos.col,
+        .visible = terminal->cursor_visible,
+        .blink = terminal->cursor_blink,
+        .shape = shape,
+    };
 }
 
 bool shellow_vterm_is_altscreen_active(ShellowVTerm *terminal) {

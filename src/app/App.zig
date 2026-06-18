@@ -299,6 +299,10 @@ pub fn setDownloadPath(self: *App, path: []const u8) void {
 pub fn setTerminalPredictionMode(self: *App, mode: predictive.PredictionMode) void {
     self.config.terminal_prediction.mode = mode;
     self.config.terminal_prediction.enabled = mode != .off;
+    self.applyTerminalPredictionConfig();
+}
+
+pub fn applyTerminalPredictionConfig(self: *App) void {
     for (self.terminal_predictive_states.items) |*slot_state| {
         slot_state.state.prediction_policy.applyConfig(self.config.terminal_prediction.toCore());
     }

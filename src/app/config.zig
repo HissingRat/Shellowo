@@ -33,6 +33,11 @@ pub const TerminalPredictionConfig = struct {
     predict_enter: bool = true,
     predict_tab: bool = false,
     predict_arrow_keys: bool = false,
+    rollback_threshold: u32 = predictive.default_full_rollback_threshold,
+    disable_threshold: u32 = predictive.default_disable_threshold,
+    cooldown_ms: u64 = predictive.default_prediction_cooldown_ms,
+    output_pause_ms: u64 = predictive.default_output_pause_ms,
+    output_change_threshold: u32 = predictive.default_output_change_threshold,
 
     pub fn toCore(self: TerminalPredictionConfig) predictive.PredictionConfig {
         return .{
@@ -44,6 +49,11 @@ pub const TerminalPredictionConfig = struct {
             .predict_enter = self.predict_enter,
             .predict_tab = self.predict_tab,
             .predict_arrow_keys = self.predict_arrow_keys,
+            .rollback_threshold = self.rollback_threshold,
+            .disable_threshold = self.disable_threshold,
+            .cooldown_ms = self.cooldown_ms,
+            .output_pause_ms = self.output_pause_ms,
+            .output_change_threshold = self.output_change_threshold,
         };
     }
 };
@@ -102,6 +112,11 @@ pub const Config = struct {
                 .predict_enter = self.terminal_prediction.predict_enter,
                 .predict_tab = self.terminal_prediction.predict_tab,
                 .predict_arrow_keys = self.terminal_prediction.predict_arrow_keys,
+                .rollback_threshold = self.terminal_prediction.rollback_threshold,
+                .disable_threshold = self.terminal_prediction.disable_threshold,
+                .cooldown_ms = self.terminal_prediction.cooldown_ms,
+                .output_pause_ms = self.terminal_prediction.output_pause_ms,
+                .output_change_threshold = self.terminal_prediction.output_change_threshold,
             },
             .download_path = self.download_path,
         };
@@ -132,6 +147,11 @@ const PersistedPredictionConfig = struct {
     predict_enter: ?bool = null,
     predict_tab: ?bool = null,
     predict_arrow_keys: ?bool = null,
+    rollback_threshold: ?u32 = null,
+    disable_threshold: ?u32 = null,
+    cooldown_ms: ?u64 = null,
+    output_pause_ms: ?u64 = null,
+    output_change_threshold: ?u32 = null,
 };
 
 fn defaults(allocator: std.mem.Allocator, io: ?std.Io) !Config {
@@ -184,6 +204,11 @@ fn applyPersisted(config: *Config, persisted: PersistedConfig) !void {
         if (prediction.predict_enter) |value| config.terminal_prediction.predict_enter = value;
         if (prediction.predict_tab) |value| config.terminal_prediction.predict_tab = value;
         if (prediction.predict_arrow_keys) |value| config.terminal_prediction.predict_arrow_keys = value;
+        if (prediction.rollback_threshold) |value| config.terminal_prediction.rollback_threshold = value;
+        if (prediction.disable_threshold) |value| config.terminal_prediction.disable_threshold = value;
+        if (prediction.cooldown_ms) |value| config.terminal_prediction.cooldown_ms = value;
+        if (prediction.output_pause_ms) |value| config.terminal_prediction.output_pause_ms = value;
+        if (prediction.output_change_threshold) |value| config.terminal_prediction.output_change_threshold = value;
     }
 }
 

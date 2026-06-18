@@ -100,11 +100,21 @@ fn snapshot(context: *anyopaque, allocator: std.mem.Allocator) terminal.Error!te
             .row = clampCursor(cursor_pos.row, self.size.rows),
             .col = clampCursor(cursor_pos.col, self.size.cols),
             .visible = cursor_pos.visible,
+            .blink = cursor_pos.blink,
+            .shape = convertCursorShape(cursor_pos.shape),
         },
         .title = title,
     };
     c.shellow_vterm_clear_dirty(self.vt);
     return snapshot_out;
+}
+
+fn convertCursorShape(shape: u8) terminal.CursorShape {
+    return switch (shape) {
+        c.SHELLOW_VTERM_CURSOR_UNDERLINE => .underline,
+        c.SHELLOW_VTERM_CURSOR_BAR => .bar,
+        else => .block,
+    };
 }
 
 fn scrollbackRows(vt: *c.ShellowVTerm) usize {
@@ -410,6 +420,36 @@ test "libvterm backend exposes alternate screen state without primary scrollback
     defer restored.deinit();
     try std.testing.expect(!restored.alternate_screen);
     try std.testing.expect(restored.scrollback_rows >= primary_scrollback_rows);
+}
+
+test "libvterm backend exposes remote cursor visibility shape and blink" {
+    var backend = Backend{ .allocator = std.testing.allocator };
+    const emulator = try backend.create(.{ .cols = 8, .rows = 2 });
+    defer emulator.deinit();
+
+    _ = try emulator.write("\x1b[?25l");
+    var hidden = try emulator.snapshot(std.testing.allocator);
+    try std.testing.expect(!hidden.cursor.visible);
+    hidden.deinit();
+
+    _ = try emulator.write("\x1b[?25h\x1b[3 q");
+    var underline = try emulator.snapshot(std.testing.allocator);
+    try std.testing.expect(underline.cursor.visible);
+    try std.testing.expect(underline.cursor.blink);
+    try std.testing.expectEqual(terminal.CursorShape.underline, underline.cursor.shape);
+    underline.deinit();
+
+    _ = try emulator.write("\x1b[6 q");
+    var bar = try emulator.snapshot(std.testing.allocator);
+    try std.testing.expect(!bar.cursor.blink);
+    try std.testing.expectEqual(terminal.CursorShape.bar, bar.cursor.shape);
+    bar.deinit();
+
+    _ = try emulator.write("\x1b[2 q");
+    var block = try emulator.snapshot(std.testing.allocator);
+    defer block.deinit();
+    try std.testing.expect(!block.cursor.blink);
+    try std.testing.expectEqual(terminal.CursorShape.block, block.cursor.shape);
 }
 
 test "libvterm backend exposes bracketed paste mode" {

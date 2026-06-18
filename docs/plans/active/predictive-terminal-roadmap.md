@@ -247,7 +247,7 @@ Bracketed Paste
 - [x] 在普通 shell prompt 行尾下预测 printable ASCII 和 Backspace；输入仍同步进入 `App.sendTerminalBytes` / SSH write queue。
 - [x] snapshot generation 变化、进入 alternate screen、bracketed paste、mouse reporting、搜索/选区/滚动/粘贴队列等状态时清空或禁用预测，远端输出回来后自动回到真实画面。
 - [x] 通过 prompt 形态和敏感词过滤避免在 `password` / `passphrase` / `otp` / `token` 等提示下本地回显。
-- [x] Enter 当前只清空预测并发送，不预测新行或新 prompt；Tab/方向键/控制键仍按计划不预测。
+- [x] Enter 采用保守光标预测；Readline level 已支持行内编辑、Tab、左右/Home/End/Delete 和 Ctrl+A/B/E/F，复杂历史导航仍不预测。
 
 ## 注意
 
@@ -469,7 +469,9 @@ Bracketed paste
 - [x] `DualState` 增加 `PredictionPolicyState`，作为 session 级 prediction level 状态；`syncRealAt` 会根据 diff 自动记录稳定/冲突。
 - [x] 冲突多时自动降级；严重冲突会进入 `disabled` 并设置短 cooldown；稳定多次后自动从 `safe_shell` 升级到 `readline`，再到 `tui_insert`。
 - [x] `src/ui/workspace/terminal_panel.zig` 的输入预测已改为调用 App / terminal core 的 `decidePrediction` 和 `recordLocalInput`，当前默认跟随用户配置。
-- [x] 已有测试覆盖 level gate、alternate screen 下 Level 2 策略、disabled 禁止预测、冲突降级/cooldown 恢复、稳定升级。
+- [x] `applyLocalInput` 已实现 Readline 行内插入/删除、左右/Home/End/Delete、Ctrl+A/B/E/F；上/下历史导航仍保守交给远端。
+- [x] printable prediction 支持 UTF-8 单宽字符、CJK 和常见 emoji 宽字符；组合字符与 variation selector 继续主动禁用。
+- [x] 已有测试覆盖 level gate、Readline 行内编辑、宽字符、alternate screen 策略、disabled 禁止预测、冲突降级/cooldown 恢复、稳定升级。
 
 说明：真实远端 diff 已经通过 `App.cachedSshSnapshot` -> `DualState.syncRealAt` 反馈给当前 active terminal 的 prediction policy。
 
@@ -514,6 +516,7 @@ Backspace 删除前一个 cell
 - [x] `DualState.recordLocalInput` 在 `tui_insert` level 下可对 alternate screen 做 cell-level printable insert 和 Backspace delete。
 - [x] Enter 采用保守预测：只在有下一行时移动 predicted cursor 到下一行行首，不猜 prompt 或程序语义。
 - [x] Tab 默认不预测，除非用户配置 `predict_tab = true`。
+- [x] 启用 Tab 预测后，本地 predicted snapshot 会按 terminal tab stop 推进并填充空格，远端补全结果到达后照常 reconcile。
 - [x] 远端 real snapshot 到达时继续走 `syncRealAt` diff/reconcile，保证 TUI 预测失败能快速回到真实状态。
 - [x] 已有测试覆盖 alternate screen printable prediction、Enter conservative movement。
 
@@ -635,6 +638,8 @@ RTT > 300ms     -> 更激进预测 + 更快 rollback
 - [x] SSH workspace monitor client 每 5 秒通过独立 exec channel 做低频轻量 latency probe，不污染用户 PTY。
 - [x] echo 样本权重大于主动 probe；EWMA 对异常值限幅，并通过升级迟滞、快速降级和既有 cooldown 控制预测等级。
 - [x] prediction state 按 `(tab_id, terminal_slot_id)` 独立保存，slot 切换不会丢失 latency、pending、rollback 和策略状态。
+- [x] Echo 与 Probe 分别维护 last/smoothed 样本；状态栏 tooltip 同时显示 Echo / Probe / Adaptive，不再被最后一次 probe 覆盖。
+- [x] 大范围或结构性远端输出会触发 output-rate gate，在短窗口内暂停新预测，避免等到 predicted diff 冲突后才回滚。
 
 说明：这里显示的 latency 是 terminal echo latency 与独立 SSH exec probe 的融合估计，比纯 ICMP RTT 更贴近用户实际输入体验。
 
@@ -686,9 +691,10 @@ Rollback: 0
 - [x] `PredictionConfig` 覆盖 `enabled`、`mode`、pending 限制、rollback/disable threshold、cooldown、alternate screen 和各输入类型开关。
 - [x] `PredictionPolicyState.applyConfig` 可应用配置并重置策略状态。
 - [x] `PendingInput` / `PredictionPolicyState` 暴露 pending count、pending bytes、rollback count、RTT sampler 等状态，便于后续状态栏/诊断面板展示。
-- [x] terminal slot bar 显示当前 mode/level、平滑 latency、pending input 和 rollback count，并通过 tooltip 标注最近样本来源。
+- [x] terminal slot bar 显示当前 mode/level、Adaptive/Echo/Probe latency、output gate、pending input 和 rollback count。
+- [x] settings popup 已开放 Tab、方向键、alternate screen，以及 cooldown、output gate 时长、diff burst threshold、rollback threshold 的紧凑预设调节。
 
-说明：配置已接入 `owoConfig.json` 持久化，并在 top bar settings popup 增加 Prediction: Off / Safe / Auto / Aggressive 入口；更细粒度开关后续可再扩展到完整设置页。
+说明：配置已接入 `owoConfig.json` 持久化；top bar settings popup 同时提供 mode、细粒度预测开关和关键阈值预设。
 
 ---
 

@@ -32,7 +32,15 @@ typedef struct {
     int row;
     int col;
     bool visible;
+    bool blink;
+    uint8_t shape;
 } ShellowVTermCursor;
+
+enum {
+    SHELLOW_VTERM_CURSOR_BLOCK = 1,
+    SHELLOW_VTERM_CURSOR_UNDERLINE = 2,
+    SHELLOW_VTERM_CURSOR_BAR = 3,
+};
 
 typedef struct {
     int start_row;

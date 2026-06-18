@@ -51,6 +51,14 @@ pub const Cursor = struct {
     col: u16 = 0,
     row: u16 = 0,
     visible: bool = true,
+    blink: bool = true,
+    shape: CursorShape = .block,
+};
+
+pub const CursorShape = enum {
+    block,
+    underline,
+    bar,
 };
 
 pub const MouseMode = enum {

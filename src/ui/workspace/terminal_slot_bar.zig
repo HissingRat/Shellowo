@@ -14,7 +14,7 @@ const side_button_width: f32 = 20;
 const side_button_margin_width: f32 = 8;
 const font_size: f32 = 9;
 const menu_item_height: f32 = 18;
-const prediction_diagnostics_width: f32 = 50;
+const prediction_diagnostics_width: f32 = 76;
 
 pub const Action = union(enum) {
     activate: terminal_slot.TerminalSlotId,
@@ -81,8 +81,9 @@ fn predictionDiagnostics(mode: predictive.PredictionMode, diagnostics: predictiv
     var label_buf: [96]u8 = undefined;
     const latency = diagnostics.smoothed_latency_ms orelse 0;
     const label = if (diagnostics.smoothed_latency_ms != null)
-        std.fmt.bufPrint(&label_buf, "{d}ms", .{
+        std.fmt.bufPrint(&label_buf, "{d}ms{s}", .{
             latency,
+            if (diagnostics.output_paused) " pause" else "",
         }) catch "--ms"
     else
         std.fmt.bufPrint(&label_buf, "--ms", .{}) catch "--ms";
@@ -103,13 +104,20 @@ fn predictionDiagnostics(mode: predictive.PredictionMode, diagnostics: predictiv
         .id_extra = id_extra + 1,
     });
 
-    var tooltip_buf: [192]u8 = undefined;
+    var tooltip_buf: [320]u8 = undefined;
     const source = if (diagnostics.last_latency_source) |value| latencySourceLabel(value) else "none";
-    const tooltip = std.fmt.bufPrint(&tooltip_buf, "Prediction mode: {s}\nActive level: {s}\nSmoothed latency: {d} ms\nLast sample: {s}\nPending: {d} inputs / {d} bytes\nRollbacks: {d}", .{
+    const echo = diagnostics.echo_latency_ms orelse 0;
+    const probe = diagnostics.probe_latency_ms orelse 0;
+    const tooltip = std.fmt.bufPrint(&tooltip_buf, "Prediction mode: {s}\nActive level: {s}\nAdaptive: {d} ms\nEcho: {s}{d} ms\nProbe: {s}{d} ms\nLast source: {s}\nOutput gate: {s}\nPending: {d} inputs / {d} bytes\nRollbacks: {d}", .{
         predictionModeLabel(mode),
         predictionLevelLabel(diagnostics.level),
         latency,
+        if (diagnostics.echo_latency_ms == null) "-- / " else "",
+        echo,
+        if (diagnostics.probe_latency_ms == null) "-- / " else "",
+        probe,
         source,
+        if (diagnostics.output_paused) "paused" else "ready",
         diagnostics.pending_inputs,
         diagnostics.pending_bytes,
         diagnostics.rollback_count,
