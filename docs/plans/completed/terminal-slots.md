@@ -1,5 +1,9 @@
 # Terminal Slots Plan
 
+## 状态
+
+Completed. 单 workspace 多 PTY slot、切换栏、创建/关闭、overflow 和 OSC title label 均已接入。
+
 ## 背景
 
 Shellow 当前一个 SSH workspace tab 可以管理多个 SSH PTY terminal。OSC title 更新会作为每个 terminal slot 的自然标题来源。

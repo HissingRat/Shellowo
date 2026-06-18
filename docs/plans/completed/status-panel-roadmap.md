@@ -1,5 +1,9 @@
 # Status Panel Roadmap
 
+## 状态
+
+Completed. Snapshot、独立 SSH exec sampler、Linux 指标解析、降级状态和 DVUI 展示链路均已接入。
+
 ## 背景
 
 Shellow 当前 workspace 左侧 `status_panel` 已经从静态 mock 升级为会话状态与远端监控摘要。当前基础链路已经跑通：UI 消费 snapshot，SSH workspace worker 通过独立 exec channel 执行嵌入式 shell 脚本，脚本返回规范化 JSON，Zig 侧解析后渲染系统摘要。
@@ -186,7 +190,7 @@ pub const MonitorSnapshot = struct {
 - [x] 增加 0.5 秒采样间隔、单次 exec 超时和失败降级。
 - [x] UI 显示 IP、uptime、cpu、memory、swap、network、top processes、disk。
 - [x] Network chart 支持按 panel 宽度绘制、hover 点详情和 hover 时显示冻结。
-- [x] App 空闲刷新有 2 FPS 下限，避免左侧 panel 因 DVUI 空闲策略不更新。
+- [x] App 空闲刷新有 4 FPS 下限，避免左侧 panel 因 DVUI 空闲策略不更新。
 
 验收：
 

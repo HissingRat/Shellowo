@@ -1,13 +1,17 @@
 # SSH Terminal MVP Runtime Plan
 
+## 状态
+
+Completed. 真实 SSH worker、认证与 host key 流程、PTY 输入输出、libvterm snapshot、resize、常见快捷键/粘贴和断线状态均已接入。
+
 ## 背景
 
 Shellow 已有第一版 `libssh2` wrapper 和 `libvterm` wrapper，但 workspace 仍在使用 mock session 和 mock terminal transcript。下一阶段目标是把 SSH profile 打开成真实 `SshSession`，让 PTY 字节流进入 terminal emulator，再由 DVUI workspace 渲染 terminal snapshot。
 
 本计划负责把以下 active plans 串成一条可落地路线：
 
-- `docs/plans/active/libssh2-ssh-wrapper.md`
-- `docs/plans/active/libvterm-terminal-emulator.md`
+- `docs/plans/completed/libssh2-ssh-wrapper.md`
+- `docs/plans/completed/libvterm-terminal-emulator.md`
 
 ## 目标
 
@@ -264,7 +268,7 @@ zig build
 - [x] password auth 可用。
 - [x] shell channel 可打开并写入命令。
 - [x] shell output 可读回并进入 terminal/render 路径。
-- [ ] 键盘级 terminal 输入、特殊键和 paste。
+- [x] 键盘级 terminal 输入、特殊键和 paste。
 - [x] 初版 color/cursor/UTF-8 渲染。
 
 ### M3: Resize Stable

@@ -1,5 +1,9 @@
 # File Panel MVP Roadmap
 
+## 状态
+
+MVP completed. 更复杂的批量冲突策略、跨目录占用说明和高级远程编辑体验作为后续增强单独规划。
+
 ## 背景
 
 Shellow 现在已经有 `src/ui/workspace/file_panel.zig`，并已从早期写死 rows 的 DVUI mock panel 逐步升级为 snapshot-driven 文件工作区。下一阶段要继续向 FinalShell 风格收敛：SSH workspace 下方显示远端 SFTP 文件面板，左侧是远端目录树，右侧是当前目录文件表。
@@ -196,8 +200,8 @@ pub const FilePanelIntent = union(enum) {
 - 第一版文件 mutation、上传、下载可用，并进入统一 transfer system。
 - 取消/失败不破坏 pane 当前目录状态。
 
-## 当前剩余范围
+## 后续增强范围
 
-当前 `file_panel` 主线已经推进到 M5，后续优先收敛：
+当前 `file_panel` MVP 已推进到 M5，后续可继续收敛：
 
 - 继续打磨更复杂的冲突策略，例如批量任务的 apply-to-all、覆盖后的 rename/skip 选择，以及更细的跨目录占用说明。

@@ -8,9 +8,9 @@ Shellow 已经具备真实 SSH PTY 字节流、`libvterm` emulator snapshot 和 
 
 相关计划：
 
-- `docs/plans/active/ssh-terminal-mvp-runtime.md`
-- `docs/plans/active/libvterm-terminal-emulator.md`
-- `docs/plans/active/libssh2-ssh-wrapper.md`
+- `docs/plans/completed/ssh-terminal-mvp-runtime.md`
+- `docs/plans/completed/libvterm-terminal-emulator.md`
+- `docs/plans/completed/libssh2-ssh-wrapper.md`
 - `docs/plans/active/predictive-terminal-roadmap.md`
 
 ## 目标

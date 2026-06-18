@@ -24,13 +24,13 @@
 - 不绕过 DVUI 直接操作 SDL3 窗口，除非是 DVUI backend 无法覆盖的底层能力。
 - 如果接入平台剪贴板、拖拽、文件对话框等系统能力，先判断 DVUI 是否已有抽象。
 
-## 3. 计划评估：SSH / SFTP
+## 3. SSH / SFTP
 
-当前方向：
+当前实现：
 
-- `libssh2` C 库绑定，作为 Shellow SSH/SFTP 后端首选。
+- `libssh2` C 库绑定已作为 Shellow SSH/SFTP 后端。
 - 当前 vendor 版本：`third_party/libssh2-1.11.1`。
-- 当前 crypto backend 候选：`third_party/mbedtls-3.6.6`。
+- 当前 crypto backend：`third_party/mbedtls-3.6.6`。
 - 当前 Zig build 已编译 `shellow_mbedcrypto` 与 `shellow_libssh2` 静态库，并通过 `libssh2_init/libssh2_exit` smoke test。
 - `src/protocols/libssh2_backend.zig` 已具备第一版阻塞式 connect/auth/shell channel wrapper，并在认证前提取 host key SHA256 fingerprint 交给 Shellow verifier；known_hosts strict/TOFU 存储与 missing host key 确认路径已接入；password/private key/agent auth 已接入；SFTP list/read/write/mkdir/remove/rename 已接入。
 - `zig build ssh-probe -- host port username password` 可通过 Shellow libssh2 backend 做真实 SSH connect/auth/open shell/write/read smoke test。
@@ -59,15 +59,15 @@
 | 文件 | 用途 |
 | --- | --- |
 | `src/protocols/ssh.zig` | 稳定 SSH/SFTP 抽象，定义 endpoint、auth、host key policy、shell、sftp、client、connector。 |
-| `src/protocols/libssh2_backend.zig` | 未来 libssh2 backend，负责 C API、非阻塞等待、错误映射和 raw handle 生命周期。 |
+| `src/protocols/libssh2_backend.zig` | libssh2 backend，负责 C API、等待策略、错误映射和 raw handle 生命周期。 |
 | `third_party/libssh2-1.11.1` | vendored libssh2 1.11.1 source。 |
 | `third_party/mbedtls-3.6.6` | vendored mbedTLS 3.6.6 source for libssh2 crypto backend。 |
 
-## 4. 计划评估：Terminal Emulator
+## 4. Terminal Emulator
 
-当前方向：
+当前实现：
 
-- 自建 `libvterm` C 库 binding，作为 Shellow terminal emulator 后端首选。
+- 自建 `libvterm` C 库 binding 已作为 Shellow terminal emulator 后端。
 - 当前 vendor 版本：`third_party/libvterm-0.3.3`。
 - 当前 Zig build 已编译 `shellow_libvterm` 静态库，并通过 `src/terminal/libvterm_shim.c` 将 C bitfield/callback-facing cell 数据转换为 Shellow terminal snapshot。
 - 不在 DVUI widget 中手写 ANSI/VT escape parser。
@@ -97,14 +97,14 @@
 | `src/terminal/libvterm_shim.c` | C shim，负责把 libvterm bitfield cell/color 数据转成 Zig 可直接消费的 plain struct。 |
 | `third_party/libvterm-0.3.3` | vendored libvterm 0.3.3 source。 |
 
-## 5. 计划评估：本地存储
+## 5. 本地存储
 
-早期策略：
+当前实现：
 
 - profile 元数据使用本地文件。
 - 用户选择持久化的敏感信息可以进入 profile 存储，但必须通过 profile repository/security 层处理，不在 UI、日志或普通业务对象里明文散落。
 - `src/security/profile_vault.zig` 提供可选 Master Password profile vault：Argon2id KDF、XChaCha20-Poly1305 AEAD、随机 salt/nonce 写入 vault JSON；`src/services/profile_repository.zig` 负责兼容明文 profile array 与 encrypted vault。
-- settings、layout、recent sessions 可以先用 JSON 或 Zig 结构化序列化。
+- settings、layout、recent sessions 使用 JSON/Zig 结构化序列化。
 
 后续评估：
 

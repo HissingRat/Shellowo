@@ -48,6 +48,8 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 目标：跑通最核心的终端工作流。
 
+状态：已完成 MVP，增强项继续由 terminal roadmaps 跟踪。
+
 交付：
 
 - `libssh2` 后端构建与 Shellow SSH wrapper
@@ -69,6 +71,8 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 目标：让 SSH 会话具备终端 + 文件联动。
 
+状态：已完成 MVP，高级冲突处理和远程编辑体验继续迭代。
+
 交付：
 
 - SFTP 目录浏览
@@ -87,6 +91,8 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 ## Phase 4: 传输中心与体验打磨
 
 目标：从“能用”提升到“顺手”。
+
+状态：进行中。
 
 交付：
 
@@ -145,10 +151,8 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 ## 近期待办
 
-1. 创建 `src/core`，定义 profile、session、tab、transfer 类型。
-2. 创建 `src/app`，把窗口帧和工作区状态从 `main.zig` 拆出来。
-3. 做连接管理的 DVUI 表单与列表。
-4. 做 profile 文件存储，暂不保存敏感信息。
-5. 验证 `libssh2` 构建、链接和 backend wrapper 策略。
-6. 验证 `libvterm` binding、terminal state 和尺寸同步策略。
-7. 为终端 widget 建立尺寸同步和回归清单。
+1. 收敛 terminal 性能、cursor/cell metrics 和自动回归 fixture。
+2. 完善传输中心的批量冲突、重试和 busy/disabled 状态。
+3. 打磨 profile editor、工作台空态和 Phase 1 UI polish。
+4. 完善安全凭据策略和发布前安全检查。
+5. 建立 Windows/macOS 打包、签名与发布回归流程。

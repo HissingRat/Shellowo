@@ -4,8 +4,8 @@
 
 本文从外部草案整理进入 Shellow active plans，用于跟踪高 RTT 场景下 terminal 输入流畅度、预测显示和真实远端状态校正。它依赖并延续：
 
-- `docs/plans/active/ssh-terminal-mvp-runtime.md`
-- `docs/plans/active/libvterm-terminal-emulator.md`
+- `docs/plans/completed/ssh-terminal-mvp-runtime.md`
+- `docs/plans/completed/libvterm-terminal-emulator.md`
 - `docs/plans/active/terminal-enhancement-roadmap.md`
 
 当前代码已经具备真实 SSH worker、PTY shell、libvterm snapshot、DVUI terminal panel、scrollback、selection、paste 和 alternate screen 基础能力。接下来第一优先级不是直接做复杂预测，而是确保 UI 输入路径只写入本地 intent/queue，所有 SSH read/write/resize 都由 worker 侧非阻塞地推进，并且 `WouldBlock` 或部分写入不会丢输入。

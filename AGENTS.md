@@ -32,6 +32,7 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。
 - Raw libssh2 handle 不得越过 `src/protocols/libssh2_backend.zig` 一类 backend 边界。
 - 新功能先定义数据模型和边界，再写 DVUI 界面。
 - 新依赖必须登记到 `docs/integration-inventory.md`。
+- 维护的时候不要每轮对话都查git状态
 
 ## 4. 当前代码位置
 

@@ -2,7 +2,7 @@
 
 ## 背景
 
-Phase 1 baseline 已经具备工作台、profile CRUD、mock tabs 和非敏感持久化，但 UI 仍需要达到“可日常继续迭代”的基础质量。
+Phase 1 baseline 已经具备工作台和 profile CRUD；后续又接入了真实 SSH workspace 与可选加密 profile vault，但本计划仍只跟踪工作台基础 UI polish。
 
 ## 当前已修复
 

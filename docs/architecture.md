@@ -31,7 +31,7 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 
 尚未具备：
 
-- 安全凭据存储与发布级 profile secret 策略
+- 平台系统凭据库集成与发布级 profile secret 策略；当前已有可选 Master Password 加密 vault
 - 完整传输中心体验，例如重试、覆盖冲突处理和更细的 busy/disabled 状态
 - 远程编辑器的大文件、编码检测和冲突处理等高级编辑体验
 - 发布打包流程
@@ -43,12 +43,14 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - Zig
 - DVUI
 - SDL3 backend
+- libssh2 SSH/SFTP backend
+- libvterm terminal emulator
+- JSON settings/profile storage 与可选加密 profile vault
 
 计划评估：
 
-- SSH client / PTY channel 能力
-- SFTP client 能力
-- 本地配置存储格式
+- 平台系统凭据库
+- SQLite 等长期本地存储方案
 - 打包与签名流程
 
 暂缓：

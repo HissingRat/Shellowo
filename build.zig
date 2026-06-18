@@ -15,6 +15,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.stack_size = stack_size;
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .windows;
+    }
     exe.root_module.addWin32ResourceFile(.{
         .file = b.path("assets/shellowo.rc"),
         .include_paths = &.{b.path("assets")},

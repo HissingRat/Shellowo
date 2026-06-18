@@ -1,5 +1,9 @@
 # libssh2 SSH Wrapper Plan
 
+## 状态
+
+Completed. SSH shell、PTY resize、host key verification、password/private key/agent auth、SFTP 操作和 transfer progress 边界均已接入。
+
 ## 背景
 
 Shellow 需要 SSH shell 和 SFTP 文件能力。`libssh2` 适合作为底层库，但它的 C API、非阻塞状态和原始 handle 不应该泄漏到 app state、DVUI widget 或 transfer system。
@@ -25,7 +29,7 @@ Shellow 需要 SSH shell 和 SFTP 文件能力。`libssh2` 适合作为底层库
   - Shellow 稳定 SSH/SFTP API。
   - 包含 endpoint、auth、host key policy、shell、sftp、client、connector。
 - `src/protocols/libssh2_backend.zig`
-  - 未来唯一允许接触 raw libssh2 handle 的位置。
+  - 唯一允许接触 raw libssh2 handle 的位置。
   - 负责 C API 调用、生命周期、错误映射和 socket wait 策略。
 
 ## API 边界
@@ -65,14 +69,14 @@ DVUI terminal/file widgets
    - [x] close。
 
 5. 实现 SFTP
-   - init sftp session。
-   - list/stat/read/write。
-   - mkdir/remove/rename。
-   - transfer progress callback 接 transfer queue。
+   - [x] init sftp session。
+   - [x] list/stat/read/write。
+   - [x] mkdir/remove/rename。
+   - [x] transfer progress callback 接 transfer queue。
 
 6. 错误映射
-   - libssh2 error code -> `ssh.Error`。
-   - 保留用户可读 message，但不暴露 secret。
+   - [x] libssh2 error code -> `ssh.Error`。
+   - [x] 保留用户可读 message，但不暴露 secret。
 
 ## 验收标准
 

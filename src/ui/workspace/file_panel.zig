@@ -627,7 +627,8 @@ fn treeRows(snapshot: remote_file.FileTreeSnapshot, layout: *PaneLayoutState, pa
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
-        .horizontal = .none,
+        .horizontal = .auto,
+        .horizontal_bar = .auto_overlay,
         .process_events_after = true,
     }, .{
         .expand = .both,
@@ -667,7 +668,7 @@ fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFile
     var row = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
         .background = true,
-        .min_size_content = .height(row_height),
+        .min_size_content = .{ .w = treeRowWidth(entry), .h = row_height },
         .max_size_content = .height(row_height),
         .padding = .all(0),
         .margin = .all(0),
@@ -707,6 +708,14 @@ fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFile
     }
 
     renderTreeEntry(crs, entry, palette);
+}
+
+fn treeRowWidth(entry: remote_file.RemoteFileEntry) f32 {
+    const font = theme.textFont(entry.name, 10);
+    const text_width = font.textSize(entry.name).w;
+    const indent = @as(f32, @floatFromInt(entry.depth)) * tree_indent + 8;
+    const right_padding: f32 = 8;
+    return indent + tree_disclosure_width + file_icon_size + file_icon_gap + text_width + right_padding;
 }
 
 fn treeRowAction(data: *dvui.WidgetData, row_rect: dvui.Rect.Physical, toggle_rect: dvui.Rect.Physical, hovered: *bool) TreeRowAction {

@@ -1,5 +1,9 @@
 # libvterm Terminal Emulator Plan
 
+## 状态
+
+Completed. libvterm build、Shellow facade、PTY 数据流、DVUI snapshot 渲染和基础终端回归链路均已接入；高级体验继续由 terminal enhancement roadmap 跟踪。
+
 ## 背景
 
 Shellow 的 SSH terminal 需要可靠处理 VT/xterm 控制序列、颜色、光标、滚动区域和常见 TUI 程序。终端 escape parser 不应写在 DVUI widget 中，也不应和 SSH PTY channel 混在一起。
@@ -26,7 +30,7 @@ Shellow 的 SSH terminal 需要可靠处理 VT/xterm 控制序列、颜色、光
   - 稳定 terminal emulator API。
   - 定义 input bytes、resize、grid/cell snapshot、cursor、style、selection 相关数据形状。
 - `src/terminal/libvterm_backend.zig`
-  - 未来唯一允许接触 raw libvterm handle 的位置。
+  - 唯一允许接触 raw libvterm handle 的位置。
   - 负责 C API、callbacks、生命周期和状态转换。
 - `src/ui/workspace/terminal_panel.zig`
   - 只负责展示和交互，不解析 escape sequence。
