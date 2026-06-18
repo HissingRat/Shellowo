@@ -25,6 +25,9 @@ pub const State = enum(u8) {
 
 const monitor_interval_ms = 500;
 const monitor_exec_timeout_ms = 1_000;
+const latency_probe_interval_ms = 5_000;
+const latency_probe_timeout_ms = 1_000;
+const latency_probe_command = "printf shellowo_latency_probe";
 const monitor_script = @embedFile("shellowo-ssh-status-script");
 const max_file_entries = 256;
 const max_file_tree_nodes = 512;
@@ -32,6 +35,11 @@ const max_file_path = 512;
 const max_file_error = 96;
 const max_file_selection = 256;
 const max_pending_input_bytes = 1024 * 1024;
+
+pub const LatencyProbeSnapshot = struct {
+    generation: u64 = 0,
+    latency_ms: ?u32 = null,
+};
 
 const FileTreeNode = struct {
     path: []const u8,
@@ -363,6 +371,9 @@ pub const SshWorkspaceWorker = struct {
     monitor_lock: std.atomic.Mutex = .unlocked,
     monitor_snapshot: status_panel.StatusPanelSnapshot = .{},
     monitor_elapsed_ms: u32 = monitor_interval_ms,
+    latency_probe_elapsed_ms: u32 = latency_probe_interval_ms,
+    latency_probe_generation: u64 = 0,
+    latency_probe_ms: ?u32 = null,
     file_lock: std.atomic.Mutex = .unlocked,
     file_state: remote_file.FilePaneState = .loading,
     file_path: [max_file_path]u8 = undefined,
@@ -619,6 +630,15 @@ pub const SshWorkspaceWorker = struct {
         const base = self.connection.base;
         if (base.host.len > 0) snapshot.monitor.setIp(base.host);
         return snapshot;
+    }
+
+    pub fn latencyProbeSnapshot(self: *SshWorkspaceWorker) LatencyProbeSnapshot {
+        self.lockMonitor();
+        defer self.unlockMonitor();
+        return .{
+            .generation = self.latency_probe_generation,
+            .latency_ms = self.latency_probe_ms,
+        };
     }
 
     pub fn filePanelSnapshot(self: *SshWorkspaceWorker, buffer: []remote_file.RemoteFileEntry) remote_file.FilePaneSnapshot {
@@ -1011,6 +1031,13 @@ pub const SshWorkspaceWorker = struct {
     }
 
     fn pumpMonitor(self: *SshWorkspaceWorker, client: ssh.Client) void {
+        if (self.latency_probe_elapsed_ms < latency_probe_interval_ms) {
+            self.latency_probe_elapsed_ms += 1;
+        } else {
+            self.latency_probe_elapsed_ms = 0;
+            self.pumpLatencyProbe(client);
+        }
+
         if (self.monitor_elapsed_ms < monitor_interval_ms) {
             self.monitor_elapsed_ms += 1;
             return;
@@ -1040,6 +1067,25 @@ pub const SshWorkspaceWorker = struct {
 
         self.lockMonitor();
         self.monitor_snapshot = .{ .monitor = parsed };
+        self.unlockMonitor();
+    }
+
+    fn pumpLatencyProbe(self: *SshWorkspaceWorker, client: ssh.Client) void {
+        const io = self.options.io orelse return;
+        const started = Io.Timestamp.now(io, .awake);
+        const output = client.exec(self.allocator, .{
+            .command = latency_probe_command,
+            .timeout_ms = latency_probe_timeout_ms,
+            .max_output_bytes = 64,
+        }) catch return;
+        defer self.allocator.free(output);
+        if (!std.mem.eql(u8, output, "shellowo_latency_probe")) return;
+
+        const elapsed = started.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
+        if (elapsed < 0) return;
+        self.lockMonitor();
+        self.latency_probe_generation +%= 1;
+        self.latency_probe_ms = @intCast(@min(@as(i64, 5_000), elapsed));
         self.unlockMonitor();
     }
 

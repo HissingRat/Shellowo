@@ -198,6 +198,11 @@ pub const MockSessionRegistry = struct {
         return worker.statusPanelSnapshot();
     }
 
+    pub fn latencyProbeSnapshot(self: *MockSessionRegistry, tab_id: u64) ssh_workspace_worker.LatencyProbeSnapshot {
+        const worker = self.sshWorkspace(tab_id) orelse return .{};
+        return worker.latencyProbeSnapshot();
+    }
+
     pub fn filePanelSnapshot(self: *MockSessionRegistry, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
         const tab = self.tabById(tab_id) orelse return .{};
         if (self.sshWorkspace(tab_id)) |worker| {

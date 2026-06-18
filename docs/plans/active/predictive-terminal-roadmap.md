@@ -628,11 +628,15 @@ RTT > 300ms     -> 更激进预测 + 更快 rollback
 当前进展：
 
 - [x] `RttSampler` 维护 last sample 和 smoothed RTT。
-- [x] `PredictionPolicyState.observeRtt` 根据 `RttSampler.suggestedLevel` 调整 prediction level。
+- [x] `PredictionPolicyState.observeLatency` 根据 `RttSampler.suggestedLevel` 调整 prediction level。
 - [x] 低延迟保持保守，高 RTT 可建议 `tui_insert`。
 - [x] `PredictionConfig.mode` 提供 `off`、`safe`、`auto`、`aggressive` 手动策略。
+- [x] 可预测输入被真实 terminal snapshot 确认后，记录 input-to-echo latency；连续输入支持按 pending prefix 分批确认，不会因部分回显清空整批预测。
+- [x] SSH workspace monitor client 每 5 秒通过独立 exec channel 做低频轻量 latency probe，不污染用户 PTY。
+- [x] echo 样本权重大于主动 probe；EWMA 对异常值限幅，并通过升级迟滞、快速降级和既有 cooldown 控制预测等级。
+- [x] prediction state 按 `(tab_id, terminal_slot_id)` 独立保存，slot 切换不会丢失 latency、pending、rollback 和策略状态。
 
-说明：RTT sampler core 已完成；真实 RTT 数据源还未接入 SSH keepalive / input echo timing。
+说明：这里显示的 latency 是 terminal echo latency 与独立 SSH exec probe 的融合估计，比纯 ICMP RTT 更贴近用户实际输入体验。
 
 ## 完成标准
 
@@ -682,6 +686,7 @@ Rollback: 0
 - [x] `PredictionConfig` 覆盖 `enabled`、`mode`、pending 限制、rollback/disable threshold、cooldown、alternate screen 和各输入类型开关。
 - [x] `PredictionPolicyState.applyConfig` 可应用配置并重置策略状态。
 - [x] `PendingInput` / `PredictionPolicyState` 暴露 pending count、pending bytes、rollback count、RTT sampler 等状态，便于后续状态栏/诊断面板展示。
+- [x] terminal slot bar 显示当前 mode/level、平滑 latency、pending input 和 rollback count，并通过 tooltip 标注最近样本来源。
 
 说明：配置已接入 `owoConfig.json` 持久化，并在 top bar settings popup 增加 Prediction: Off / Safe / Auto / Aggressive 入口；更细粒度开关后续可再扩展到完整设置页。
 

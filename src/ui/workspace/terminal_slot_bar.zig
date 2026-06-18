@@ -1,6 +1,8 @@
 const dvui = @import("dvui");
+const std = @import("std");
 
 const terminal_slot = @import("../../core/terminal_slot.zig");
+const predictive = @import("../../terminal/predictive.zig");
 const theme = @import("../theme.zig");
 
 const bar_height: f32 = 22;
@@ -12,6 +14,7 @@ const side_button_width: f32 = 20;
 const side_button_margin_width: f32 = 8;
 const font_size: f32 = 9;
 const menu_item_height: f32 = 18;
+const prediction_diagnostics_width: f32 = 50;
 
 pub const Action = union(enum) {
     activate: terminal_slot.TerminalSlotId,
@@ -22,6 +25,8 @@ pub const Action = union(enum) {
 pub const Options = struct {
     id_extra: usize,
     active_slot_id: ?terminal_slot.TerminalSlotId = null,
+    prediction_mode: predictive.PredictionMode = .off,
+    prediction: predictive.PredictionDiagnostics = .{},
 };
 
 pub fn show(slots: []const terminal_slot.TerminalSlotSummary, palette: theme.Palette, opts: Options) ?Action {
@@ -41,7 +46,8 @@ pub fn show(slots: []const terminal_slot.TerminalSlotSummary, palette: theme.Pal
 
     const active_slot_id = opts.active_slot_id orelse firstSlotId(slots);
     const content_rs = bar.data().contentRectScale();
-    const visible_count = visibleSlotCount(slots, active_slot_id, content_rs.r.w / content_rs.s);
+    const content_width = content_rs.r.w / content_rs.s;
+    const visible_count = visibleSlotCount(slots, active_slot_id, @max(0, content_width - prediction_diagnostics_width));
     const overflow = visible_count < slots.len;
     const overflow_open = dvui.dataGetPtrDefault(null, bar.data().id, "overflow_open", bool, false);
 
@@ -53,6 +59,7 @@ pub fn show(slots: []const terminal_slot.TerminalSlotSummary, palette: theme.Pal
     }
 
     flexSpacer(opts.id_extra + 180);
+    predictionDiagnostics(opts.prediction_mode, opts.prediction, palette, opts.id_extra + 185);
     if (overflow) {
         const dropdown = overflowButton(palette, opts.id_extra + 190);
         if (dropdown.clicked) overflow_open.* = !overflow_open.*;
@@ -68,6 +75,79 @@ pub fn show(slots: []const terminal_slot.TerminalSlotSummary, palette: theme.Pal
 
     if (addButton(palette, opts.id_extra + 200)) action = .create;
     return action;
+}
+
+fn predictionDiagnostics(mode: predictive.PredictionMode, diagnostics: predictive.PredictionDiagnostics, palette: theme.Palette, id_extra: usize) void {
+    var label_buf: [96]u8 = undefined;
+    const latency = diagnostics.smoothed_latency_ms orelse 0;
+    const label = if (diagnostics.smoothed_latency_ms != null)
+        std.fmt.bufPrint(&label_buf, "{d}ms", .{
+            latency,
+        }) catch "--ms"
+    else
+        std.fmt.bufPrint(&label_buf, "--ms", .{}) catch "--ms";
+
+    var box = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = prediction_diagnostics_width, .h = chip_height },
+        .max_size_content = .{ .w = prediction_diagnostics_width, .h = chip_height },
+        .padding = .{ .x = 4, .y = 2, .w = 4, .h = 1 },
+        .margin = .{ .x = 2, .w = 2 },
+        .id_extra = id_extra,
+    });
+    defer box.deinit();
+    dvui.label(@src(), "{s}", .{label}, .{
+        .expand = .both,
+        .font = theme.textFont(label, font_size),
+        .color_text = palette.text_subtle,
+        .padding = .all(0),
+        .id_extra = id_extra + 1,
+    });
+
+    var tooltip_buf: [192]u8 = undefined;
+    const source = if (diagnostics.last_latency_source) |value| latencySourceLabel(value) else "none";
+    const tooltip = std.fmt.bufPrint(&tooltip_buf, "Prediction mode: {s}\nActive level: {s}\nSmoothed latency: {d} ms\nLast sample: {s}\nPending: {d} inputs / {d} bytes\nRollbacks: {d}", .{
+        predictionModeLabel(mode),
+        predictionLevelLabel(diagnostics.level),
+        latency,
+        source,
+        diagnostics.pending_inputs,
+        diagnostics.pending_bytes,
+        diagnostics.rollback_count,
+    }) catch return;
+    dvui.tooltip(@src(), .{
+        .active_rect = box.data().rectScale().r,
+        .position = .vertical,
+    }, "{s}", .{tooltip}, .{
+        .font = theme.textFont(tooltip, font_size),
+        .color_fill = dvui.Color.black.opacity(0.92),
+        .color_text = dvui.Color.white,
+        .corner_radius = .all(4),
+    });
+}
+
+fn predictionModeLabel(mode: predictive.PredictionMode) []const u8 {
+    return switch (mode) {
+        .off => "Off",
+        .safe => "Safe",
+        .auto => "Auto",
+        .aggressive => "Agg",
+    };
+}
+
+fn predictionLevelLabel(level: predictive.PredictionLevel) []const u8 {
+    return switch (level) {
+        .safe_shell => "Shell",
+        .readline => "Readline",
+        .tui_insert => "TUI",
+        .disabled => "Paused",
+    };
+}
+
+fn latencySourceLabel(source: predictive.LatencySource) []const u8 {
+    return switch (source) {
+        .echo => "terminal echo",
+        .probe => "SSH probe",
+    };
 }
 
 fn slotChip(slot: terminal_slot.TerminalSlotSummary, palette: theme.Palette, active_slot_id: ?terminal_slot.TerminalSlotId, id_extra: usize) ?Action {

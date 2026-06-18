@@ -34,6 +34,16 @@
 - TUI 开启 mouse reporting 后，左键点击、拖动和滚轮能被远端程序收到。
 - TUI 未开启 mouse reporting 时，鼠标拖动仍是本地选区。
 
+## 高延迟预测
+
+- Auto 模式在低延迟连接保持 Shell/Readline 保守等级，不因单次异常样本突然升到 TUI。
+- 150–300ms 延迟下，Bash/Zsh 连续输入明显减少回显等待，不出现双字符。
+- 连续快速输入时，远端部分回显只确认对应 pending prefix，后续未确认字符仍保留预测显示。
+- Vim/Nano alternate screen 下预测冲突会快速 rollback，并在冲突频繁时自动降级或短暂停用。
+- 密码、passphrase、OTP/token 提示、paste、selection、search 和 scrollback 浏览期间不进行本地预测。
+- 切换多个 terminal slot 后，各 slot 的 latency、pending 和 rollback 状态互不串台。
+- terminal bar 的 mode/level、latency、pending、rollback 诊断值会随真实回显或独立 SSH probe 更新。
+
 ## 搜索与选区
 
 - 选区复制不包含额外 UI 文本。

@@ -65,6 +65,8 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     if (terminal_slot_bar.show(slots, palette, .{
         .id_extra = 635,
         .active_slot_id = active_slot_id,
+        .prediction_mode = app.config.terminal_prediction.mode,
+        .prediction = app.terminalPredictionDiagnostics(tab.id, active_slot_id),
     })) |action| {
         switch (action) {
             .activate => |slot_id| app.activateTerminalSlot(tab.id, slot_id),

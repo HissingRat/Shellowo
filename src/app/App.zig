@@ -45,23 +45,26 @@ const TerminalSnapshotCache = struct {
     pending_generation: ?u64 = null,
     last_present_ns: i128 = 0,
     snapshot: ?terminal.Snapshot = null,
-    predictive_state: ?predictive.DualState = null,
 
     fn deinit(self: *TerminalSnapshotCache) void {
         if (self.snapshot) |*snapshot| snapshot.deinit();
-        if (self.predictive_state) |*state| state.deinit();
         self.* = .{};
     }
 
     fn clear(self: *TerminalSnapshotCache) void {
         self.deinit();
     }
+};
 
-    fn ensurePredictive(self: *TerminalSnapshotCache, allocator: std.mem.Allocator) *predictive.DualState {
-        if (self.predictive_state == null) {
-            self.predictive_state = predictive.DualState.init(allocator);
-        }
-        return &self.predictive_state.?;
+const TerminalPredictiveState = struct {
+    tab_id: u64,
+    slot_id: u64,
+    state: predictive.DualState,
+    last_probe_generation: u64 = 0,
+
+    fn deinit(self: *TerminalPredictiveState) void {
+        self.state.deinit();
+        self.* = undefined;
     }
 };
 
@@ -77,6 +80,7 @@ transfers: std.ArrayList(transfer.TransferTask) = .empty,
 transfer_retries: std.ArrayList(TransferRetryRecord) = .empty,
 native_events: std.ArrayList(native_event.NativeEvent) = .empty,
 terminal_snapshot_cache: TerminalSnapshotCache = .{},
+terminal_predictive_states: std.ArrayList(TerminalPredictiveState) = .empty,
 file_drag_active: bool = false,
 file_drag_point: native_event.Point = .{},
 file_drop_target_active: bool = false,
@@ -163,6 +167,8 @@ pub fn deinit(self: *App) void {
     self.group_expansions.deinit(self.allocator);
     self.sessions.deinit();
     self.terminal_snapshot_cache.deinit();
+    for (self.terminal_predictive_states.items) |*slot_state| slot_state.deinit();
+    self.terminal_predictive_states.deinit(self.allocator);
     self.persistKnownHosts();
     self.profiles.deinit();
     self.known_hosts.deinit();
@@ -293,8 +299,8 @@ pub fn setDownloadPath(self: *App, path: []const u8) void {
 pub fn setTerminalPredictionMode(self: *App, mode: predictive.PredictionMode) void {
     self.config.terminal_prediction.mode = mode;
     self.config.terminal_prediction.enabled = mode != .off;
-    if (self.terminal_snapshot_cache.predictive_state) |*state| {
-        state.prediction_policy.applyConfig(self.config.terminal_prediction.toCore());
+    for (self.terminal_predictive_states.items) |*slot_state| {
+        slot_state.state.prediction_policy.applyConfig(self.config.terminal_prediction.toCore());
     }
     self.persistConfig();
 }
@@ -302,6 +308,7 @@ pub fn setTerminalPredictionMode(self: *App, mode: predictive.PredictionMode) vo
 pub fn beginFrame(self: *App) void {
     self.frame_index +%= 1;
     self.sessions.pollWorkers();
+    self.syncTerminalLatencyProbes();
     self.syncTransferProgress();
 }
 
@@ -566,6 +573,7 @@ pub fn currentTitle(self: *App) []const u8 {
 
 pub fn closeTab(self: *App, tab_id: u64) void {
     self.terminal_snapshot_cache.clear();
+    self.removeTerminalPredictiveStatesForTab(tab_id);
     self.sessions.closeTab(tab_id);
 }
 
@@ -618,6 +626,7 @@ pub fn activateTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
 
 pub fn closeTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
     self.terminal_snapshot_cache.clear();
+    self.removeTerminalPredictiveState(tab_id, slot_id);
     if (!self.sessions.closeTerminalSlot(tab_id, slot_id)) {
         self.message = "Terminal not found";
         return;
@@ -631,6 +640,7 @@ pub fn reconnectTab(self: *App, tab_id: u64) void {
         self.message = "Workspace tab not found";
         return;
     };
+    self.removeTerminalPredictiveStatesForTab(tab_id);
     self.openProfile(tab.profile_id);
 }
 
@@ -674,7 +684,10 @@ pub fn cachedSshSnapshot(self: *App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?
         return null;
     };
 
-    const state = self.terminal_snapshot_cache.ensurePredictive(self.allocator);
+    const state = self.ensureTerminalPredictiveState(tab_id, active_slot_id) catch {
+        self.terminal_snapshot_cache.clear();
+        return null;
+    };
     state.prediction_policy.config = self.config.terminal_prediction.toCore();
     _ = state.syncRealAt(snapshot, frameNsToMs(now_ns)) catch {
         self.terminal_snapshot_cache.clear();
@@ -693,31 +706,37 @@ pub fn cachedSshSnapshot(self: *App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?
 
 pub fn predictedSshSnapshot(self: *const App, tab_id: u64, slot_id: ?u64) ?terminal.Snapshot {
     const active_slot_id = slot_id orelse return null;
-    if (self.terminal_snapshot_cache.tab_id != tab_id or self.terminal_snapshot_cache.slot_id != active_slot_id) return null;
-    const state = &(self.terminal_snapshot_cache.predictive_state orelse return null);
+    const state = self.terminalPredictiveState(tab_id, active_slot_id) orelse return null;
     const predicted = state.predictedSnapshot() orelse return null;
     return predicted.*;
 }
 
 pub fn decideTerminalPrediction(self: *App, tab_id: u64, slot_id: ?u64, snapshot: terminal.Snapshot, context: predictive.PredictionContext, bytes: []const u8, now_ns: i128) predictive.PredictionDecision {
     const active_slot_id = slot_id orelse return .{ .allowed = false, .level = .disabled, .kind = predictive.classifyPrediction(bytes) };
-    if (self.terminal_snapshot_cache.tab_id != tab_id or self.terminal_snapshot_cache.slot_id != active_slot_id) {
+    const state = self.ensureTerminalPredictiveState(tab_id, active_slot_id) catch {
         return predictive.decidePrediction(snapshot, context, bytes, .disabled, self.config.terminal_prediction.toCore());
-    }
-    const state = self.terminal_snapshot_cache.ensurePredictive(self.allocator);
+    };
     state.prediction_policy.config = self.config.terminal_prediction.toCore();
     return state.decideCurrentPrediction(snapshot, context, bytes, frameNsToMs(now_ns));
 }
 
 pub fn recordTerminalPrediction(self: *App, tab_id: u64, slot_id: ?u64, bytes: []const u8, now_ns: i128) void {
     const active_slot_id = slot_id orelse return;
-    if (self.terminal_snapshot_cache.tab_id != tab_id or self.terminal_snapshot_cache.slot_id != active_slot_id) return;
-    const state = self.terminal_snapshot_cache.ensurePredictive(self.allocator);
+    const state = self.ensureTerminalPredictiveState(tab_id, active_slot_id) catch {
+        self.message = "Terminal prediction unavailable";
+        return;
+    };
     state.prediction_policy.config = self.config.terminal_prediction.toCore();
     _ = state.recordLocalInput(bytes, frameNsToMs(now_ns)) catch {
         self.message = "Terminal prediction paused";
         return;
     };
+}
+
+pub fn terminalPredictionDiagnostics(self: *const App, tab_id: u64, slot_id: ?u64) predictive.PredictionDiagnostics {
+    const active_slot_id = slot_id orelse return .{};
+    const state = self.terminalPredictiveState(tab_id, active_slot_id) orelse return .{};
+    return state.diagnostics();
 }
 
 pub fn terminalSnapshotPendingDelayNs(self: *const App, tab_id: u64, slot_id: ?u64, now_ns: i128) ?i128 {
@@ -1163,6 +1182,59 @@ pub fn sshRuntimeOptions(self: *App) ssh_session.Options {
     };
 }
 
+fn ensureTerminalPredictiveState(self: *App, tab_id: u64, slot_id: u64) !*predictive.DualState {
+    if (self.terminalPredictiveStateIndex(tab_id, slot_id)) |idx| {
+        return &self.terminal_predictive_states.items[idx].state;
+    }
+    try self.terminal_predictive_states.append(self.allocator, .{
+        .tab_id = tab_id,
+        .slot_id = slot_id,
+        .state = predictive.DualState.init(self.allocator),
+    });
+    return &self.terminal_predictive_states.items[self.terminal_predictive_states.items.len - 1].state;
+}
+
+fn terminalPredictiveState(self: *const App, tab_id: u64, slot_id: u64) ?*const predictive.DualState {
+    const idx = self.terminalPredictiveStateIndex(tab_id, slot_id) orelse return null;
+    return &self.terminal_predictive_states.items[idx].state;
+}
+
+fn terminalPredictiveStateIndex(self: *const App, tab_id: u64, slot_id: u64) ?usize {
+    for (self.terminal_predictive_states.items, 0..) |slot_state, idx| {
+        if (slot_state.tab_id == tab_id and slot_state.slot_id == slot_id) return idx;
+    }
+    return null;
+}
+
+fn removeTerminalPredictiveState(self: *App, tab_id: u64, slot_id: u64) void {
+    const idx = self.terminalPredictiveStateIndex(tab_id, slot_id) orelse return;
+    var slot_state = self.terminal_predictive_states.orderedRemove(idx);
+    slot_state.deinit();
+}
+
+fn removeTerminalPredictiveStatesForTab(self: *App, tab_id: u64) void {
+    var idx: usize = 0;
+    while (idx < self.terminal_predictive_states.items.len) {
+        if (self.terminal_predictive_states.items[idx].tab_id != tab_id) {
+            idx += 1;
+            continue;
+        }
+        var slot_state = self.terminal_predictive_states.orderedRemove(idx);
+        slot_state.deinit();
+    }
+}
+
+fn syncTerminalLatencyProbes(self: *App) void {
+    for (self.terminal_predictive_states.items) |*slot_state| {
+        const probe = self.sessions.latencyProbeSnapshot(slot_state.tab_id);
+        const latency_ms = probe.latency_ms orelse continue;
+        if (probe.generation == 0 or probe.generation == slot_state.last_probe_generation) continue;
+        slot_state.last_probe_generation = probe.generation;
+        slot_state.state.prediction_policy.config = self.config.terminal_prediction.toCore();
+        slot_state.state.observeProbeLatency(latency_ms);
+    }
+}
+
 fn terminalFactory(backend: *libvterm_backend.Backend) ssh_session.TerminalFactory {
     return .{
         .context = backend,
@@ -1230,4 +1302,21 @@ test "app seeds profiles" {
 
     try std.testing.expectEqual(@as(usize, 1), app.profiles.items().len);
     try std.testing.expectEqual(@as(u16, 22), app.profiles.items()[0].base.port);
+}
+
+test "terminal predictive state is isolated per workspace slot" {
+    var app = try App.initMemory(std.testing.allocator);
+    defer app.deinit();
+
+    const first = try app.ensureTerminalPredictiveState(10, 1);
+    first.prediction_policy.rollback_count = 3;
+    const second = try app.ensureTerminalPredictiveState(10, 2);
+    second.prediction_policy.rollback_count = 7;
+
+    try std.testing.expectEqual(@as(u32, 3), app.terminalPredictionDiagnostics(10, 1).rollback_count);
+    try std.testing.expectEqual(@as(u32, 7), app.terminalPredictionDiagnostics(10, 2).rollback_count);
+
+    app.removeTerminalPredictiveState(10, 1);
+    try std.testing.expect(app.terminalPredictiveState(10, 1) == null);
+    try std.testing.expect(app.terminalPredictiveState(10, 2) != null);
 }

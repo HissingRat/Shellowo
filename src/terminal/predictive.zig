@@ -47,6 +47,11 @@ pub const PredictionMode = enum {
     aggressive,
 };
 
+pub const LatencySource = enum {
+    echo,
+    probe,
+};
+
 pub const PredictionConfig = struct {
     enabled: bool = true,
     mode: PredictionMode = .auto,
@@ -88,17 +93,30 @@ pub const DiffAssessment = struct {
 
 pub const RttSampler = struct {
     sample_count: u32 = 0,
+    echo_sample_count: u32 = 0,
+    probe_sample_count: u32 = 0,
     smoothed_ms: u32 = 0,
     last_sample_ms: u32 = 0,
+    last_source: LatencySource = .probe,
 
-    pub fn observe(self: *RttSampler, sample_ms: u32) void {
+    pub fn observe(self: *RttSampler, sample_ms: u32, source: LatencySource) void {
+        const bounded = @min(sample_ms, 5_000);
         self.last_sample_ms = sample_ms;
+        self.last_source = source;
         if (self.sample_count == 0) {
-            self.smoothed_ms = sample_ms;
+            self.smoothed_ms = bounded;
         } else {
-            self.smoothed_ms = @intCast((@as(u64, self.smoothed_ms) * 7 + sample_ms) / 8);
+            const old_weight: u64 = switch (source) {
+                .echo => 3,
+                .probe => 7,
+            };
+            self.smoothed_ms = @intCast((@as(u64, self.smoothed_ms) * old_weight + bounded) / (old_weight + 1));
         }
         self.sample_count +|= 1;
+        switch (source) {
+            .echo => self.echo_sample_count +|= 1,
+            .probe => self.probe_sample_count +|= 1,
+        }
     }
 
     pub fn suggestedLevel(self: RttSampler, config: PredictionConfig) PredictionLevel {
@@ -106,11 +124,20 @@ pub const RttSampler = struct {
         if (config.mode == .safe) return .safe_shell;
         if (config.mode == .aggressive) return .tui_insert;
         if (self.sample_count == 0) return config.baseLevel();
-        if (self.smoothed_ms < 30) return .safe_shell;
-        if (self.smoothed_ms < 100) return .safe_shell;
-        if (self.smoothed_ms < 300) return .tui_insert;
+        if (self.smoothed_ms < 40) return .safe_shell;
+        if (self.smoothed_ms < 120) return .readline;
         return .tui_insert;
     }
+};
+
+pub const PredictionDiagnostics = struct {
+    level: PredictionLevel = .disabled,
+    smoothed_latency_ms: ?u32 = null,
+    last_latency_ms: ?u32 = null,
+    last_latency_source: ?LatencySource = null,
+    pending_inputs: usize = 0,
+    pending_bytes: usize = 0,
+    rollback_count: u32 = 0,
 };
 
 pub const RemoteAgentMode = enum {
@@ -133,6 +160,7 @@ pub const PredictionPolicyState = struct {
     level: PredictionLevel = .safe_shell,
     conflict_score: u8 = 0,
     stable_score: u8 = 0,
+    latency_upgrade_score: u8 = 0,
     disabled_until_ms: u64 = 0,
     rollback_count: u32 = 0,
     rtt: RttSampler = .{},
@@ -173,10 +201,25 @@ pub const PredictionPolicyState = struct {
         }
     }
 
-    pub fn observeRtt(self: *PredictionPolicyState, sample_ms: u32) void {
-        self.rtt.observe(sample_ms);
-        if (self.level != .disabled) {
-            self.level = self.rtt.suggestedLevel(self.config);
+    pub fn observeLatency(self: *PredictionPolicyState, sample_ms: u32, source: LatencySource) void {
+        self.rtt.observe(sample_ms, source);
+        if (self.level == .disabled or self.config.mode != .auto) return;
+
+        const target = self.rtt.suggestedLevel(self.config);
+        if (predictionRank(target) < predictionRank(self.level)) {
+            self.level = target;
+            self.latency_upgrade_score = 0;
+            return;
+        }
+        if (predictionRank(target) == predictionRank(self.level)) {
+            self.latency_upgrade_score = 0;
+            return;
+        }
+
+        self.latency_upgrade_score = @min(self.latency_upgrade_score +| 1, 3);
+        if (self.latency_upgrade_score >= 3) {
+            self.level = nextLevelToward(self.level, target);
+            self.latency_upgrade_score = 0;
         }
     }
 
@@ -185,6 +228,7 @@ pub const PredictionPolicyState = struct {
         self.level = config.baseLevel();
         self.conflict_score = 0;
         self.stable_score = 0;
+        self.latency_upgrade_score = 0;
         self.disabled_until_ms = 0;
     }
 
@@ -199,16 +243,38 @@ pub const PredictionPolicyState = struct {
     }
 
     fn upgrade(self: *PredictionPolicyState) void {
-        self.level = switch (self.level) {
+        const upgraded: PredictionLevel = switch (self.level) {
             .safe_shell => .readline,
             .readline => .tui_insert,
             .tui_insert => .tui_insert,
             .disabled => .disabled,
         };
+        const target = self.rtt.suggestedLevel(self.config);
+        self.level = if (self.config.mode == .auto and self.rtt.sample_count > 0 and predictionRank(upgraded) > predictionRank(target))
+            target
+        else
+            upgraded;
         self.stable_score = 0;
         self.conflict_score = 0;
     }
 };
+
+fn predictionRank(level: PredictionLevel) u8 {
+    return switch (level) {
+        .disabled => 0,
+        .safe_shell => 1,
+        .readline => 2,
+        .tui_insert => 3,
+    };
+}
+
+fn nextLevelToward(current: PredictionLevel, target: PredictionLevel) PredictionLevel {
+    if (predictionRank(current) >= predictionRank(target)) return target;
+    return switch (current) {
+        .disabled, .safe_shell => .readline,
+        .readline, .tui_insert => .tui_insert,
+    };
+}
 
 pub const PendingInput = struct {
     id: u64,
@@ -272,6 +338,7 @@ pub const DualState = struct {
         const next_real = try cloneSnapshot(self.allocator, real_snapshot);
         errdefer deinitSnapshot(&next_real);
 
+        const confirmed_prefix = try self.confirmedPendingPrefix(real_snapshot);
         if (self.real) |*old_real| old_real.deinit();
         self.real = next_real;
 
@@ -280,10 +347,16 @@ pub const DualState = struct {
             return .{};
         }
 
+        if (confirmed_prefix > 0) {
+            self.confirmPendingPrefix(confirmed_prefix, now_ms);
+            try self.rebuildPredictedFromReal();
+            return diffSnapshots(real_snapshot, self.predicted.?);
+        }
+
         const diff = diffSnapshots(real_snapshot, self.predicted.?);
         self.prediction_policy.observeDiff(diff, now_ms);
         if (diff.empty()) {
-            self.confirmPendingInputs();
+            self.confirmPendingInputs(now_ms);
         } else {
             try self.patchPredictedFromReal(diff);
             self.clearPendingInputs();
@@ -353,6 +426,23 @@ pub const DualState = struct {
         return self.pending_input_bytes;
     }
 
+    pub fn observeProbeLatency(self: *DualState, sample_ms: u32) void {
+        self.prediction_policy.observeLatency(sample_ms, .probe);
+    }
+
+    pub fn diagnostics(self: *const DualState) PredictionDiagnostics {
+        const sampler = self.prediction_policy.rtt;
+        return .{
+            .level = self.prediction_policy.level,
+            .smoothed_latency_ms = if (sampler.sample_count == 0) null else sampler.smoothed_ms,
+            .last_latency_ms = if (sampler.sample_count == 0) null else sampler.last_sample_ms,
+            .last_latency_source = if (sampler.sample_count == 0) null else sampler.last_source,
+            .pending_inputs = self.pendingInputCount(),
+            .pending_bytes = self.pendingInputBytes(),
+            .rollback_count = self.prediction_policy.rollback_count,
+        };
+    }
+
     pub fn expirePendingInputs(self: *DualState, now_ms: u64, timeout_ms: u64) !bool {
         for (self.pending_inputs.items) |pending| {
             if (now_ms -% pending.timestamp_ms >= timeout_ms) {
@@ -364,8 +454,50 @@ pub const DualState = struct {
         return false;
     }
 
-    fn confirmPendingInputs(self: *DualState) void {
+    fn confirmPendingInputs(self: *DualState, now_ms: u64) void {
+        if (self.pending_inputs.items.len > 0) {
+            const sent_at_ms = self.pending_inputs.items[self.pending_inputs.items.len - 1].timestamp_ms;
+            const elapsed = now_ms -| sent_at_ms;
+            self.prediction_policy.observeLatency(@intCast(@min(elapsed, std.math.maxInt(u32))), .echo);
+        }
         self.clearPendingInputs();
+    }
+
+    fn confirmedPendingPrefix(self: *DualState, real_snapshot: terminal.Snapshot) !usize {
+        const base = self.real orelse return 0;
+        if (self.pending_inputs.items.len == 0) return 0;
+
+        var candidate = try cloneSnapshot(self.allocator, base);
+        defer candidate.deinit();
+        var confirmed: usize = 0;
+        for (self.pending_inputs.items, 0..) |pending, idx| {
+            applyLocalInput(&candidate, pending.bytes, self.prediction_policy.level, self.prediction_policy.config);
+            if (diffSnapshots(real_snapshot, candidate).empty()) confirmed = idx + 1;
+        }
+        return confirmed;
+    }
+
+    fn confirmPendingPrefix(self: *DualState, count: usize, now_ms: u64) void {
+        const confirmed = @min(count, self.pending_inputs.items.len);
+        if (confirmed == 0) return;
+        const sent_at_ms = self.pending_inputs.items[confirmed - 1].timestamp_ms;
+        const elapsed = now_ms -| sent_at_ms;
+        self.prediction_policy.observeLatency(@intCast(@min(elapsed, std.math.maxInt(u32))), .echo);
+
+        var idx: usize = 0;
+        while (idx < confirmed) : (idx += 1) {
+            self.pending_input_bytes -= self.pending_inputs.items[idx].bytes.len;
+            self.pending_inputs.items[idx].deinit(self.allocator);
+        }
+        self.pending_inputs.replaceRangeAssumeCapacity(0, confirmed, &.{});
+    }
+
+    fn rebuildPredictedFromReal(self: *DualState) !void {
+        try self.resetPredictedToReal();
+        const predicted = if (self.predicted) |*snapshot| snapshot else return;
+        for (self.pending_inputs.items) |pending| {
+            applyLocalInput(predicted, pending.bytes, self.prediction_policy.level, self.prediction_policy.config);
+        }
     }
 
     fn clearPendingInputs(self: *DualState) void {
@@ -899,15 +1031,65 @@ test "diff score chooses rollback actions" {
 test "rtt sampler suggests prediction levels" {
     var sampler: RttSampler = .{};
     var config: PredictionConfig = .{};
-    sampler.observe(20);
+    sampler.observe(20, .probe);
     try std.testing.expectEqual(PredictionLevel.safe_shell, sampler.suggestedLevel(config));
-    sampler.observe(300);
-    sampler.observe(300);
-    sampler.observe(300);
+    sampler.observe(300, .echo);
+    sampler.observe(300, .echo);
+    sampler.observe(300, .echo);
     try std.testing.expectEqual(PredictionLevel.tui_insert, sampler.suggestedLevel(config));
 
     config.mode = .off;
     try std.testing.expectEqual(PredictionLevel.disabled, sampler.suggestedLevel(config));
+}
+
+test "confirmed predicted input records echo latency" {
+    var real = try testSnapshot(std.testing.allocator, "ab");
+    defer real.deinit();
+
+    var state = DualState.init(std.testing.allocator);
+    defer state.deinit();
+    _ = try state.syncRealAt(real, 100);
+    _ = try state.recordLocalInput("c", 200);
+
+    var confirmed = try testSnapshot(std.testing.allocator, "abc");
+    defer confirmed.deinit();
+    _ = try state.syncRealAt(confirmed, 345);
+
+    const diagnostics = state.diagnostics();
+    try std.testing.expectEqual(@as(?u32, 145), diagnostics.last_latency_ms);
+    try std.testing.expectEqual(@as(?LatencySource, .echo), diagnostics.last_latency_source);
+    try std.testing.expectEqual(@as(usize, 0), diagnostics.pending_inputs);
+}
+
+test "remote snapshot confirms only the echoed pending prefix" {
+    var real = try testSnapshot(std.testing.allocator, "a");
+    defer real.deinit();
+
+    var state = DualState.init(std.testing.allocator);
+    defer state.deinit();
+    _ = try state.syncRealAt(real, 100);
+    _ = try state.recordLocalInput("b", 200);
+    _ = try state.recordLocalInput("c", 210);
+
+    var partially_confirmed = try testSnapshot(std.testing.allocator, "ab");
+    defer partially_confirmed.deinit();
+    _ = try state.syncRealAt(partially_confirmed, 320);
+
+    try std.testing.expectEqual(@as(usize, 1), state.pendingInputCount());
+    try std.testing.expectEqual(@as(u21, 'c'), state.predictedSnapshot().?.cellAt(0, 2).?.codepoint);
+    try std.testing.expectEqual(@as(?u32, 120), state.diagnostics().last_latency_ms);
+}
+
+test "auto latency policy upgrades with hysteresis and downgrades immediately" {
+    var policy: PredictionPolicyState = .{};
+    policy.observeLatency(180, .echo);
+    policy.observeLatency(180, .echo);
+    try std.testing.expectEqual(PredictionLevel.safe_shell, policy.level);
+    policy.observeLatency(180, .echo);
+    try std.testing.expectEqual(PredictionLevel.readline, policy.level);
+
+    for (0..8) |_| policy.observeLatency(10, .echo);
+    try std.testing.expectEqual(PredictionLevel.safe_shell, policy.level);
 }
 
 test "prediction config controls policy and decisions" {

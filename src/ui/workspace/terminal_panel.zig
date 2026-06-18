@@ -122,7 +122,6 @@ const TerminalViewport = struct {
     search_cache_matches: TerminalSearchMatches = .{},
     row_render_cache: [row_render_cache_capacity]TerminalRowRenderCacheEntry = [_]TerminalRowRenderCacheEntry{.{}} ** row_render_cache_capacity,
     local_echo: LocalEchoState = .{},
-    prediction_policy: predictive.PredictionPolicyState = .{},
     pending_paste: [paste_queue_capacity]u8 = std.mem.zeroes([paste_queue_capacity]u8),
     pending_paste_len: usize = 0,
     pending_paste_offset: usize = 0,
