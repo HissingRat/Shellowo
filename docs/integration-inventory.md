@@ -128,8 +128,8 @@
 
 - `scripts/package-macos-app.sh` 在 macOS 原生环境构建 `Shellowo.app`，生成 `Info.plist`、`.icns` 图标并输出 zip。
 - `.github/workflows/release.yml` 在单个 GitHub-hosted macOS runner 上执行原生测试，交叉编译 Windows/Linux，并原生构建 macOS `.app`。
-- 推送 `v*` tag 时通过 GitHub CLI 创建或更新 Release；Windows 上传 `.exe`，Linux 上传 ELF，macOS 上传用于保持 bundle 目录结构的 `.app.zip`。
-- workflow 使用 `mlugg/setup-zig` 安装仓库要求的 Zig 0.16.0；没有引入产品运行时依赖。
+- 推送 `main` 时通过 GitHub CLI 替换 `nightly` prerelease，推送 `v*` tag 时创建或更新正式 Release；Windows 上传 `.exe`，Linux 上传 ELF，macOS 上传用于保持 bundle 目录结构的 `.app.zip`。
+- workflow 从 ziglang.org 官方下载索引安装仓库要求的 Zig 0.16.0 并校验 SHA-256；没有引入产品运行时依赖。
 
 维护原则：
 

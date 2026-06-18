@@ -64,7 +64,7 @@ macOS 本地打包：
 scripts/package-macos-app.sh 0.1.0
 ```
 
-GitHub Actions 会在单个 macOS Job 中运行测试，并交叉编译 Windows、Linux 产物和构建 macOS `.app`。推送 `v*` tag 时会自动创建或更新 GitHub Release：Windows 发布单文件 `.exe`，Linux 发布单文件 ELF，macOS 发布解压后可直接运行的 `.app.zip`。发布前检查见 [Release Checklist](./docs/quality/release-checklist.md)。
+GitHub Actions 会在单个 macOS Job 中运行测试，并交叉编译 Windows、Linux 产物和构建 macOS `.app`。推送 `main` 会更新 `nightly` prerelease，推送 `v*` tag 会创建或更新正式 GitHub Release：Windows 发布单文件 `.exe`，Linux 发布单文件 ELF，macOS 发布解压后可直接运行的 `.app.zip`。发布前检查见 [Release Checklist](./docs/quality/release-checklist.md)。
 
 ## Docs
 
