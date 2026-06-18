@@ -121,3 +121,19 @@
 3. 如果涉及终端、文件传输、协议、安全或发布，补充 `docs/quality/` 下的回归清单。
 4. 如果改变分层边界，同步更新 `docs/architecture.md` 或 `docs/decisions/`。
 5. 跑 `zig build`。
+
+## 7. 打包与发布
+
+当前实现：
+
+- `scripts/package-macos-app.sh` 在 macOS 原生环境构建 `Shellowo.app`，生成 `Info.plist`、`.icns` 图标并输出 zip。
+- `.github/workflows/release.yml` 在单个 GitHub-hosted macOS runner 上执行原生测试，交叉编译 Windows/Linux，并原生构建 macOS `.app`。
+- 推送 `v*` tag 时通过 GitHub CLI 创建或更新 Release；Windows 上传 `.exe`，Linux 上传 ELF，macOS 上传用于保持 bundle 目录结构的 `.app.zip`。
+- workflow 使用 `mlugg/setup-zig` 安装仓库要求的 Zig 0.16.0；没有引入产品运行时依赖。
+
+维护原则：
+
+- Windows/Linux 交叉编译只证明目标产物可构建；正式发版前仍需在对应系统执行 GUI、SSH/SFTP 和文件系统回归。
+- macOS ad-hoc 签名只用于基础包结构验证，正式公开发布需要 Developer ID 签名和 notarization。
+- 发布包不得包含用户 profile、vault、known_hosts、日志或本机生成的数据。
+- 发布流程变更后按 `docs/quality/release-checklist.md` 回归。

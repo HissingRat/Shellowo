@@ -1,0 +1,87 @@
+name: Build and release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  PACKAGE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('ci-{0}', github.run_number) }}
+
+jobs:
+  build:
+    name: Build Windows, Linux and macOS
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Run tests
+        run: zig build test -Doptimize=ReleaseSafe
+
+      - name: Build Linux ELF
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast --prefix zig-out/release-linux
+          mkdir -p dist
+          install -m 0755 zig-out/release-linux/bin/Shellowo "dist/Shellowo-${PACKAGE_VERSION}-linux-x86_64"
+
+      - name: Build Windows executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast --prefix zig-out/release-windows
+          install -m 0755 zig-out/release-windows/bin/Shellowo.exe "dist/Shellowo-${PACKAGE_VERSION}-windows-x86_64.exe"
+
+      - name: Package macOS app
+        shell: bash
+        run: |
+          chmod +x scripts/package-macos-app.sh
+          BUILD_VERSION="${GITHUB_RUN_NUMBER}" scripts/package-macos-app.sh "${PACKAGE_VERSION}" dist
+
+      - name: Upload distribution files
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shellowo-${{ env.PACKAGE_VERSION }}
+          path: |
+            dist/*.exe
+            dist/Shellowo-*-linux-*
+            dist/Shellowo.app
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create or update release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            dist/*.exe
+            dist/Shellowo-*-linux-*
+            dist/*.zip
+          )
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+          fi
