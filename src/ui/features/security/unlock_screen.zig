@@ -83,7 +83,8 @@ pub fn show(app: *App, palette: theme.Palette) void {
 }
 
 fn passwordEntry(buffer: []u8, width: f32, palette: theme.Palette, id_extra: usize) bool {
-    var te = dvui.textEntry(@src(), .{
+    var te: theme.TextEntry = undefined;
+    theme.textEntry(@src(), &te, .{
         .text = .{ .buffer = buffer },
         .password_char = "*",
     }, theme.panel(.{
@@ -96,8 +97,8 @@ fn passwordEntry(buffer: []u8, width: f32, palette: theme.Palette, id_extra: usi
     }, palette).override(.{
         .color_fill = palette.surface_bg,
         .color_border = palette.border,
-    }));
-    const entered = te.enter_pressed;
+    }), palette);
+    const entered = te.enterPressed();
     te.deinit();
     return entered;
 }

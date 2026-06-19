@@ -2,7 +2,6 @@ const dvui = @import("dvui");
 const profile = @import("../../../core/profile.zig");
 const App = @import("../../../app/App.zig");
 const theme = @import("../../theme.zig");
-const text_field = @import("../../widgets/text_field.zig");
 
 const panel_width: f32 = 520;
 const panel_height: f32 = 540;
@@ -195,7 +194,8 @@ fn privateKeyPathField(app: *App, palette: theme.Palette) void {
     });
     defer row.deinit();
 
-    var te = dvui.textEntry(@src(), .{ .text = .{ .buffer = &app.draft.private_key_path } }, theme.panel(.{
+    var te: theme.TextEntry = undefined;
+    theme.textEntry(@src(), &te, .{ .text = .{ .buffer = &app.draft.private_key_path } }, theme.panel(.{
         .expand = .horizontal,
         .gravity_y = 0.5,
         .min_size_content = .height(field_height),
@@ -206,7 +206,7 @@ fn privateKeyPathField(app: *App, palette: theme.Palette) void {
     }, palette).override(.{
         .color_fill = palette.surface_bg,
         .color_border = palette.border,
-    }));
+    }), palette);
     te.deinit();
 
     if (theme.button(@src(), "Browse", .{
@@ -280,7 +280,7 @@ fn textField(label: []const u8, buffer: []u8, id_extra: usize, palette: theme.Pa
 }
 
 fn textFieldSized(label: []const u8, buffer: []u8, id_extra: usize, palette: theme.Palette, expand: bool) void {
-    text_field.show(@src(), label, buffer, palette, .{
+    theme.textField(@src(), label, buffer, palette, .{
         .id_extra = id_extra,
         .expand = expand,
         .field_height = field_height,
@@ -302,7 +302,7 @@ fn portField(app: *App, palette: theme.Palette) void {
         .id_extra = 50_046,
     });
     var port_i32: i32 = app.draft.port;
-    const port_result = dvui.textEntryNumber(@src(), i32, .{
+    const port_result = theme.textEntryNumber(@src(), i32, .{
         .value = &port_i32,
         .min = 1,
         .max = 65535,
@@ -315,7 +315,7 @@ fn portField(app: *App, palette: theme.Palette) void {
     }, palette).override(.{
         .color_fill = palette.surface_bg,
         .color_border = palette.border,
-    }));
+    }), palette);
     if (port_result.value == .Valid) {
         app.draft.port = @intCast(port_result.value.Valid);
     }

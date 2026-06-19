@@ -54,12 +54,12 @@ fn showWithLabel(
     style: button.Style,
     opts: Options,
 ) Result {
-    var widget: dvui.ButtonWidget = undefined;
+    var widget: button.Widget = undefined;
     var styled = button.options(layout, palette, style);
     if (label) |text| {
         styled = styled.override(.{ .font = typography.textFont(text, style.font_size orelse layout.fontGet().size) });
     }
-    widget.init(src, .{ .draw_focus = false }, styled);
+    widget.init(src, styled, palette, style, .{ .override = styled });
     widget.processEvents();
     widget.drawBackground();
 
@@ -100,7 +100,6 @@ fn showWithLabel(
         .hovered = widget.hovered(),
         .rect = widget.data().rectScale().r,
     };
-    widget.drawFocus();
     widget.deinit();
     return result;
 }

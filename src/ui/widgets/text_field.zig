@@ -12,6 +12,64 @@ pub const Options = struct {
     font_size: f32 = 12,
 };
 
+pub const Entry = struct {
+    theme: dvui.Theme,
+    inner: *dvui.TextEntryWidget,
+
+    pub fn init(
+        self: *Entry,
+        src: std.builtin.SourceLocation,
+        init_opts: dvui.TextEntryWidget.InitOptions,
+        layout: dvui.Options,
+        palette: palette_module.Palette,
+    ) void {
+        self.theme = dvui.themeGet();
+        self.theme.focus = palette.border_selected;
+        self.inner = dvui.textEntry(src, init_opts, entryOptions(layout, palette).override(.{ .theme = &self.theme }));
+    }
+
+    pub fn data(self: *Entry) *dvui.WidgetData {
+        return self.inner.data();
+    }
+
+    pub fn enterPressed(self: *const Entry) bool {
+        return self.inner.enter_pressed;
+    }
+
+    pub fn textChanged(self: *const Entry) bool {
+        return self.inner.text_changed;
+    }
+
+    pub fn deinit(self: *Entry) void {
+        self.inner.deinit();
+    }
+};
+
+pub fn entryOptions(layout: dvui.Options, palette: palette_module.Palette) dvui.Options {
+    return layout.override(.{
+        .background = true,
+        .color_fill = layout.color_fill orelse palette.surface_bg,
+        .color_fill_hover = layout.color_fill orelse palette.surface_bg,
+        .color_fill_press = layout.color_fill orelse palette.surface_bg,
+        .color_text = layout.color_text orelse palette.text,
+        .color_border = layout.color_border orelse palette.border,
+        .border = layout.border orelse .all(metrics.defaults.control_border_width),
+        .corner_radius = layout.corner_radius orelse .all(metrics.defaults.radius_small),
+    });
+}
+
+pub fn number(
+    src: std.builtin.SourceLocation,
+    comptime T: type,
+    init_opts: dvui.TextEntryNumberInitOptions(T),
+    layout: dvui.Options,
+    palette: palette_module.Palette,
+) dvui.TextEntryNumberResult(T) {
+    var entry_theme = dvui.themeGet();
+    entry_theme.focus = palette.border_selected;
+    return dvui.textEntryNumber(src, T, init_opts, entryOptions(layout, palette).override(.{ .theme = &entry_theme }));
+}
+
 pub fn show(
     src: std.builtin.SourceLocation,
     label: []const u8,
@@ -31,16 +89,14 @@ pub fn show(
         .font = typography.textFont(label, opts.font_size),
         .id_extra = opts.id_extra + 1,
     });
-    var entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = buffer } }, .{
+    var entry: Entry = undefined;
+    entry.init(@src(), .{ .text = .{ .buffer = buffer } }, .{
         .expand = .horizontal,
         .min_size_content = .height(opts.field_height),
         .font = typography.cjkFont(opts.font_size),
-        .background = true,
-        .color_fill = palette.surface_bg,
-        .color_text = palette.text,
-        .color_border = palette.border,
         .corner_radius = .all(metrics.defaults.radius_small),
+        .padding = .{ .x = 8, .w = 8, .y = 5, .h = 5 },
         .id_extra = opts.id_extra + 2,
-    });
+    }, palette);
     entry.deinit();
 }

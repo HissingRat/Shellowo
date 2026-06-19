@@ -1,6 +1,7 @@
 const dvui = @import("dvui");
 const std = @import("std");
 
+const metrics = @import("../foundation/metrics.zig");
 const palette_module = @import("../foundation/palette.zig");
 const typography = @import("../foundation/typography.zig");
 
@@ -28,6 +29,9 @@ pub fn show(
         .color_text = text_color,
         .color_text_hover = text_color,
         .color_text_press = text_color,
+        .color_border = dvui.Color.transparent,
+        .border = .all(metrics.defaults.control_border_width),
+        .corner_radius = .all(metrics.defaults.radius_small),
         .font = typography.textFont(label, opts.font_size),
     }));
     return if (opts.enabled) result else null;

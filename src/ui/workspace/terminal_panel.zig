@@ -278,16 +278,17 @@ fn terminalSearchBar(viewport: *TerminalViewport, crs: dvui.RectScale, snapshot:
     defer bar.deinit();
     processSearchBarKeys(viewport, crs, snapshot, matches, bar.data(), terminal_id);
 
-    var te = dvui.textEntry(@src(), .{
+    var te: theme.TextEntry = undefined;
+    theme.textEntry(@src(), &te, .{
         .text = .{ .buffer = &viewport.search_query },
         .placeholder = "Search",
-    }, terminalSearchEntryOptions(palette, id_extra + 1));
+    }, terminalSearchEntryOptions(palette, id_extra + 1), palette);
     if (viewport.search_focus_requested) {
         dvui.focusWidget(te.data().id, null, null);
         viewport.search_focus_requested = false;
     }
-    const entered = te.enter_pressed;
-    if (te.text_changed) {
+    const entered = te.enterPressed();
+    if (te.textChanged()) {
         viewport.search_active_index = 0;
         viewport.search_scroll_to_active = terminalSearchQuery(viewport).len > 0;
     }

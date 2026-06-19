@@ -24,16 +24,9 @@ pub fn handle(palette: theme.Palette, opts: Options) void {
     else
         dvui.Size{ .w = 1, .h = opts.sep_thickness };
 
-    var button: dvui.ButtonWidget = undefined;
+    var button: theme.ButtonWidget = undefined;
     button.init(@src(), .{
-        .draw_focus = false,
-        .touch_drag = true,
-    }, .{
         .background = false,
-        .color_fill = palette.border_subtle,
-        .color_fill_hover = palette.surface_hover,
-        .color_fill_press = palette.accent,
-        .color_text = palette.text_subtle,
         .min_size_content = size,
         .max_size_content = if (opts.axis == .vertical) .width(opts.sep_thickness) else .height(opts.sep_thickness),
         .expand = if (opts.axis == .vertical) .vertical else .horizontal,
@@ -41,6 +34,16 @@ pub fn handle(palette: theme.Palette, opts: Options) void {
         .margin = .all(0),
         .corner_radius = .all(0),
         .id_extra = opts.id_extra,
+    }, palette, .{ .variant = .ghost }, .{
+        .interactive = false,
+        .touch_drag = true,
+        .override = .{
+            .background = false,
+            .color_fill = palette.border_subtle,
+            .color_fill_hover = palette.surface_hover,
+            .color_fill_press = palette.accent,
+            .color_text = palette.text_subtle,
+        },
     });
     defer button.deinit();
 
@@ -71,7 +74,7 @@ pub fn handle(palette: theme.Palette, opts: Options) void {
                         dvui.refresh(null, @src(), button.data().id);
                     }
                 } else if (me.action == .position) {
-                    button.hover = true;
+                    button.setHovered(true);
                     dvui.cursorSet(cursor);
                 }
             },

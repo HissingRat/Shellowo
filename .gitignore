@@ -1,6 +1,8 @@
 /.zig-cache
+/.zig-global-cache
 /zig-pkg
 /zig-out
 /data
 **/.DS_Store
 .DS_Store
+/dist

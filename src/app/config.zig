@@ -32,7 +32,7 @@ pub const TerminalPredictionConfig = struct {
     predict_backspace: bool = true,
     predict_enter: bool = true,
     predict_tab: bool = false,
-    predict_arrow_keys: bool = false,
+    predict_arrow_keys: bool = true,
     rollback_threshold: u32 = predictive.default_full_rollback_threshold,
     disable_threshold: u32 = predictive.default_disable_threshold,
     cooldown_ms: u64 = predictive.default_prediction_cooldown_ms,
@@ -105,18 +105,7 @@ pub const Config = struct {
             .file_columns = self.file_columns,
             .terminal_prediction = .{
                 .enabled = self.terminal_prediction.enabled,
-                .mode = predictionModeLabel(self.terminal_prediction.mode),
-                .predict_in_alt_screen = self.terminal_prediction.predict_in_alt_screen,
-                .predict_printable = self.terminal_prediction.predict_printable,
-                .predict_backspace = self.terminal_prediction.predict_backspace,
-                .predict_enter = self.terminal_prediction.predict_enter,
-                .predict_tab = self.terminal_prediction.predict_tab,
-                .predict_arrow_keys = self.terminal_prediction.predict_arrow_keys,
-                .rollback_threshold = self.terminal_prediction.rollback_threshold,
-                .disable_threshold = self.terminal_prediction.disable_threshold,
-                .cooldown_ms = self.terminal_prediction.cooldown_ms,
-                .output_pause_ms = self.terminal_prediction.output_pause_ms,
-                .output_change_threshold = self.terminal_prediction.output_change_threshold,
+                .mode = predictionModeLabel(canonicalPredictionMode(self.terminal_prediction)),
             },
             .download_path = self.download_path,
         };
@@ -157,8 +146,8 @@ const PersistedPredictionConfig = struct {
 fn defaults(allocator: std.mem.Allocator, io: ?std.Io) !Config {
     return .{
         .allocator = allocator,
-        .config_path = try exeSiblingPath(allocator, io, config_file_name),
-        .download_path = try exeSiblingPath(allocator, io, default_download_dir_name),
+        .config_path = try runtimeDataPath(allocator, io, config_file_name),
+        .download_path = try runtimeDataPath(allocator, io, default_download_dir_name),
     };
 }
 
@@ -196,27 +185,24 @@ fn applyPersisted(config: *Config, persisted: PersistedConfig) !void {
         }
     }
     if (persisted.terminal_prediction) |prediction| {
-        if (prediction.enabled) |enabled| config.terminal_prediction.enabled = enabled;
-        if (prediction.mode) |mode_label| config.terminal_prediction.mode = predictionModeFromLabel(mode_label) orelse config.terminal_prediction.mode;
-        if (prediction.predict_in_alt_screen) |value| config.terminal_prediction.predict_in_alt_screen = value;
-        if (prediction.predict_printable) |value| config.terminal_prediction.predict_printable = value;
-        if (prediction.predict_backspace) |value| config.terminal_prediction.predict_backspace = value;
-        if (prediction.predict_enter) |value| config.terminal_prediction.predict_enter = value;
-        if (prediction.predict_tab) |value| config.terminal_prediction.predict_tab = value;
-        if (prediction.predict_arrow_keys) |value| config.terminal_prediction.predict_arrow_keys = value;
-        if (prediction.rollback_threshold) |value| config.terminal_prediction.rollback_threshold = value;
-        if (prediction.disable_threshold) |value| config.terminal_prediction.disable_threshold = value;
-        if (prediction.cooldown_ms) |value| config.terminal_prediction.cooldown_ms = value;
-        if (prediction.output_pause_ms) |value| config.terminal_prediction.output_pause_ms = value;
-        if (prediction.output_change_threshold) |value| config.terminal_prediction.output_change_threshold = value;
+        const persisted_mode = if (prediction.mode) |mode_label| predictionModeFromLabel(mode_label) else null;
+        const enabled = prediction.enabled orelse (persisted_mode != .off);
+        config.terminal_prediction.enabled = enabled and persisted_mode != .off;
+        config.terminal_prediction.mode = if (config.terminal_prediction.enabled) .auto else .off;
     }
+    canonicalizePredictionConfig(&config.terminal_prediction);
 }
 
-fn exeSiblingPath(allocator: std.mem.Allocator, io: ?std.Io, name: []const u8) ![]u8 {
+fn runtimeDataPath(allocator: std.mem.Allocator, io: ?std.Io, name: []const u8) ![]u8 {
     const active_io = io orelse return allocator.dupe(u8, name);
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const len = std.process.executableDirPath(active_io, &exe_buf) catch return allocator.dupe(u8, name);
+    if (isMacAppExecutableDir(exe_buf[0..len])) return allocator.dupe(u8, name);
     return std.fs.path.join(allocator, &.{ exe_buf[0..len], name });
+}
+
+fn isMacAppExecutableDir(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".app/Contents/MacOS");
 }
 
 fn readFileAllocPath(io: std.Io, path: []const u8, allocator: std.mem.Allocator, max_size: usize) ![]u8 {
@@ -271,7 +257,51 @@ pub fn predictionModeFromLabel(label: []const u8) ?predictive.PredictionMode {
     return null;
 }
 
+fn canonicalPredictionMode(config: TerminalPredictionConfig) predictive.PredictionMode {
+    return if (!config.enabled or config.mode == .off) .off else .auto;
+}
+
+fn canonicalizePredictionConfig(config: *TerminalPredictionConfig) void {
+    const mode = canonicalPredictionMode(config.*);
+    config.* = .{
+        .enabled = mode != .off,
+        .mode = mode,
+    };
+}
+
 test "theme labels parse case insensitively" {
     try std.testing.expectEqual(ui_theme.ThemeMode.dark, themeModeFromLabel("Dark").?);
     try std.testing.expectEqual(ui_theme.ThemeMode.light, themeModeFromLabel("light").?);
+}
+
+test "mac app executable directory uses writable runtime data paths" {
+    try std.testing.expect(isMacAppExecutableDir("/Applications/Shellowo.app/Contents/MacOS"));
+    try std.testing.expect(!isMacAppExecutableDir("/tmp/zig-out/bin"));
+}
+
+test "prediction settings migrate to fixed auto defaults" {
+    var config = try defaults(std.testing.allocator, null);
+    defer config.deinit();
+
+    try applyPersisted(&config, .{
+        .terminal_prediction = .{
+            .enabled = true,
+            .mode = "aggressive",
+            .predict_in_alt_screen = false,
+            .predict_arrow_keys = false,
+            .rollback_threshold = 32,
+            .cooldown_ms = 2000,
+            .output_pause_ms = 1200,
+            .output_change_threshold = 384,
+        },
+    });
+
+    try std.testing.expect(config.terminal_prediction.enabled);
+    try std.testing.expectEqual(predictive.PredictionMode.auto, config.terminal_prediction.mode);
+    try std.testing.expect(config.terminal_prediction.predict_in_alt_screen);
+    try std.testing.expect(config.terminal_prediction.predict_arrow_keys);
+    try std.testing.expectEqual(@as(u64, 250), config.terminal_prediction.cooldown_ms);
+    try std.testing.expectEqual(@as(u64, 150), config.terminal_prediction.output_pause_ms);
+    try std.testing.expectEqual(@as(u32, 96), config.terminal_prediction.output_change_threshold);
+    try std.testing.expectEqual(@as(u32, 64), config.terminal_prediction.rollback_threshold);
 }

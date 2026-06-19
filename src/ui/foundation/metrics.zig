@@ -2,6 +2,7 @@ pub const Metrics = struct {
     control_height_compact: f32 = 24,
     control_height: f32 = 28,
     toolbar_height: f32 = 31,
+    control_border_width: f32 = 1,
     radius_small: f32 = 5,
     radius: f32 = 6,
     gap_small: f32 = 4,

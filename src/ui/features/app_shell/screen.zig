@@ -7,7 +7,6 @@ const workspace = @import("../../../core/workspace.zig");
 const config_panel = @import("../profiles/config_panel.zig");
 const master_password_popup = @import("../security/master_password_popup.zig");
 const theme = @import("../../theme.zig");
-const icon_button = @import("../../widgets/icon_button.zig");
 const unlock_screen = @import("../security/unlock_screen.zig");
 const workspace_view = @import("../workspace/view.zig");
 
@@ -53,7 +52,7 @@ const TopBarState = struct {
 const theme_switch_anim_ns: i128 = 180 * std.time.ns_per_ms;
 
 fn renderPng(bytes: []const u8, name: []const u8, rs: dvui.RectScale, color: dvui.Color) void {
-    icon_button.renderPng(bytes, name, rs, color);
+    theme.renderPng(bytes, name, rs, color);
 }
 
 fn spacer(src: std.builtin.SourceLocation, width: f32, id_extra: usize) void {
@@ -204,7 +203,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
 }
 
 fn topBarSettingsButton(bytes: []const u8, name: []const u8, opts: dvui.Options, palette: theme.Palette, id_base: usize) IconButtonInfo {
-    const result = icon_button.show(@src(), bytes, name, opts, palette, .{
+    const result = theme.iconButton(@src(), bytes, name, opts, palette, .{
         .variant = .ghost,
         .font_size = theme.font_sizes.tab,
     }, .{
@@ -217,7 +216,7 @@ fn topBarSettingsButton(bytes: []const u8, name: []const u8, opts: dvui.Options,
 fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {
     const window_rect = dvui.windowRect();
     const popup_w: f32 = 430;
-    const popup_h: f32 = 205;
+    const popup_h: f32 = 138;
     const rect: dvui.Rect.Natural = .{
         .x = @max(12, window_rect.w - popup_w - 12),
         .y = 40,
@@ -246,14 +245,12 @@ fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extr
 
     settingThemeRow(app, state, palette, id_extra + 10);
     settingPredictionRow(app, palette, id_extra + 40);
-    settingPredictionOptionsRow(app, palette, id_extra + 80);
-    settingPredictionTuningRow(app, palette, id_extra + 120);
-    settingDownloadRow(app, popup_w, palette, id_extra + 160);
-    settingMasterPasswordRow(app, state, palette, id_extra + 200);
+    settingDownloadRow(app, popup_w, palette, id_extra + 80);
+    settingMasterPasswordRow(app, state, palette, id_extra + 120);
 
     if (state.master_password_popup != .none) {
         const before_enabled = app.masterPasswordEnabled();
-        switch (master_password_popup.show(app, state.master_password_popup, palette, id_extra + 240)) {
+        switch (master_password_popup.show(app, state.master_password_popup, palette, id_extra + 160)) {
             .none => {},
             .close => state.master_password_popup = .none,
             .enabled => {
@@ -282,131 +279,12 @@ fn settingPredictionRow(app: *App, palette: theme.Palette, id_extra: usize) void
     settingLabel("Prediction", 86, palette, id_extra + 1);
     predictionModeButton(app, "Off", .off, 44, palette, id_extra + 2);
     spacer(@src(), 5, id_extra + 3);
-    predictionModeButton(app, "Safe", .safe, 48, palette, id_extra + 4);
-    spacer(@src(), 5, id_extra + 5);
-    predictionModeButton(app, "Auto", .auto, 50, palette, id_extra + 6);
-    spacer(@src(), 5, id_extra + 7);
-    predictionModeButton(app, "Aggressive", .aggressive, 88, palette, id_extra + 8);
-}
-
-fn settingPredictionTuningRow(app: *App, palette: theme.Palette, id_extra: usize) void {
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .horizontal,
-        .min_size_content = .height(24),
-        .max_size_content = .height(24),
-        .padding = .all(0),
-        .margin = .{ .y = 1 },
-        .id_extra = id_extra,
-    });
-    defer row.deinit();
-
-    settingLabel("Tuning", 86, palette, id_extra + 1);
-    var cooldown_buf: [24]u8 = undefined;
-    var gate_buf: [24]u8 = undefined;
-    var burst_buf: [24]u8 = undefined;
-    var rollback_buf: [24]u8 = undefined;
-    const cooldown = std.fmt.bufPrint(&cooldown_buf, "CD {d}ms", .{app.config.terminal_prediction.cooldown_ms}) catch "Cooldown";
-    const gate = std.fmt.bufPrint(&gate_buf, "Gate {d}ms", .{app.config.terminal_prediction.output_pause_ms}) catch "Gate";
-    const burst = std.fmt.bufPrint(&burst_buf, "Diff {d}", .{app.config.terminal_prediction.output_change_threshold}) catch "Diff";
-    const rollback = std.fmt.bufPrint(&rollback_buf, "RB {d}", .{app.config.terminal_prediction.rollback_threshold}) catch "Rollback";
-
-    var changed = false;
-    if (predictionTuningButton(cooldown, 76, palette, id_extra + 2)) {
-        app.config.terminal_prediction.cooldown_ms = nextU64Preset(app.config.terminal_prediction.cooldown_ms, &.{ 250, 500, 1000, 2000 });
-        changed = true;
-    }
-    if (predictionTuningButton(gate, 80, palette, id_extra + 3)) {
-        app.config.terminal_prediction.output_pause_ms = nextU64Preset(app.config.terminal_prediction.output_pause_ms, &.{ 150, 350, 700, 1200 });
-        changed = true;
-    }
-    if (predictionTuningButton(burst, 72, palette, id_extra + 4)) {
-        app.config.terminal_prediction.output_change_threshold = nextU32Preset(app.config.terminal_prediction.output_change_threshold, &.{ 48, 96, 192, 384 });
-        changed = true;
-    }
-    if (predictionTuningButton(rollback, 68, palette, id_extra + 5)) {
-        const threshold = nextU32Preset(app.config.terminal_prediction.rollback_threshold, &.{ 32, 64, 128, 256 });
-        app.config.terminal_prediction.rollback_threshold = threshold;
-        app.config.terminal_prediction.disable_threshold = threshold * 4;
-        changed = true;
-    }
-    if (changed) app.applyTerminalPredictionConfig();
-}
-
-fn predictionTuningButton(label: []const u8, width: f32, palette: theme.Palette, id_extra: usize) bool {
-    return theme.button(@src(), label, .{
-        .gravity_y = 0.5,
-        .min_size_content = .{ .w = width, .h = 20 },
-        .max_size_content = .{ .w = width, .h = 20 },
-        .padding = .{ .x = 3, .y = 1, .w = 3, .h = 1 },
-        .margin = .{ .w = 3 },
-        .corner_radius = .all(3),
-        .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 8 });
-}
-
-fn nextU64Preset(current: u64, presets: []const u64) u64 {
-    for (presets, 0..) |value, idx| {
-        if (current <= value) return presets[(idx + 1) % presets.len];
-    }
-    return presets[0];
-}
-
-fn nextU32Preset(current: u32, presets: []const u32) u32 {
-    for (presets, 0..) |value, idx| {
-        if (current <= value) return presets[(idx + 1) % presets.len];
-    }
-    return presets[0];
-}
-
-fn settingPredictionOptionsRow(app: *App, palette: theme.Palette, id_extra: usize) void {
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .horizontal,
-        .min_size_content = .height(24),
-        .max_size_content = .height(24),
-        .padding = .all(0),
-        .margin = .{ .y = 1 },
-        .id_extra = id_extra,
-    });
-    defer row.deinit();
-
-    settingLabel("Predict", 86, palette, id_extra + 1);
-    const before_tab = app.config.terminal_prediction.predict_tab;
-    const before_arrows = app.config.terminal_prediction.predict_arrow_keys;
-    const before_alt = app.config.terminal_prediction.predict_in_alt_screen;
-    _ = theme.checkbox(@src(), &app.config.terminal_prediction.predict_tab, "Tab", palette, .{
-        .id_extra = id_extra + 2,
-        .layout = predictionCheckboxOptions(palette, id_extra + 2),
-    });
-    _ = theme.checkbox(@src(), &app.config.terminal_prediction.predict_arrow_keys, "Arrows", palette, .{
-        .id_extra = id_extra + 3,
-        .layout = predictionCheckboxOptions(palette, id_extra + 3),
-    });
-    _ = theme.checkbox(@src(), &app.config.terminal_prediction.predict_in_alt_screen, "Alt screen", palette, .{
-        .id_extra = id_extra + 4,
-        .layout = predictionCheckboxOptions(palette, id_extra + 4),
-    });
-    if (before_tab != app.config.terminal_prediction.predict_tab or
-        before_arrows != app.config.terminal_prediction.predict_arrow_keys or
-        before_alt != app.config.terminal_prediction.predict_in_alt_screen)
-    {
-        app.applyTerminalPredictionConfig();
-    }
-}
-
-fn predictionCheckboxOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
-    return .{
-        .id_extra = id_extra,
-        .gravity_y = 0.5,
-        .color_text = palette.text,
-        .font = theme.textFont("Alt screen", 9),
-        .padding = .{ .x = 3, .y = 1, .w = 6, .h = 1 },
-    };
+    predictionModeButton(app, "Auto", .auto, 50, palette, id_extra + 4);
 }
 
 fn predictionModeButton(app: *App, label: []const u8, mode: predictive.PredictionMode, width: f32, palette: theme.Palette, id_extra: usize) void {
     const active = (app.config.terminal_prediction.enabled and app.config.terminal_prediction.mode == mode) or (mode == .off and !app.config.terminal_prediction.enabled);
-    var bw: dvui.ButtonWidget = undefined;
-    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+    if (theme.button(@src(), label, .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = width, .h = 22 },
         .max_size_content = .{ .w = width, .h = 22 },
@@ -418,19 +296,9 @@ fn predictionModeButton(app: *App, label: []const u8, mode: predictive.Predictio
         .intent = if (active) .primary else .neutral,
         .state = if (active) .selected else .normal,
         .font_size = 10,
-    }));
-    bw.processEvents();
-    bw.drawBackground();
-    dvui.labelNoFmt(@src(), label, .{ .align_x = 0.5, .align_y = 0.5 }, bw.data().options.strip().override(bw.style()).override(.{
-        .expand = .both,
-        .gravity_x = 0.5,
-        .gravity_y = 0.5,
-    }));
-    if (bw.clicked()) {
+    })) {
         app.setTerminalPredictionMode(mode);
     }
-    bw.drawFocus();
-    bw.deinit();
 }
 
 fn settingThemeRow(app: *App, state: *TopBarState, palette: theme.Palette, id_extra: usize) void {
@@ -489,8 +357,8 @@ fn masterPasswordToggleSwitch(app: *App, state: *TopBarState, palette: theme.Pal
     const knob_d: f32 = 21;
     const active = app.masterPasswordEnabled();
 
-    var bw: dvui.ButtonWidget = undefined;
-    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = switch_w, .h = switch_h },
         .max_size_content = .{ .w = switch_w, .h = switch_h },
@@ -498,12 +366,15 @@ fn masterPasswordToggleSwitch(app: *App, state: *TopBarState, palette: theme.Pal
         .margin = .all(0),
         .corner_radius = .all(switch_h / 2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 }).override(.{
-        .color_fill = dvui.Color.transparent,
-        .color_fill_hover = dvui.Color.transparent,
-        .color_fill_press = dvui.Color.transparent,
-        .color_border = dvui.Color.transparent,
-    }));
+    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{
+        .interactive = false,
+        .override = .{
+            .color_fill = dvui.Color.transparent,
+            .color_fill_hover = dvui.Color.transparent,
+            .color_fill_press = dvui.Color.transparent,
+            .color_border = dvui.Color.transparent,
+        },
+    });
     bw.processEvents();
 
     if (bw.clicked()) {
@@ -541,7 +412,6 @@ fn masterPasswordToggleSwitch(app: *App, state: *TopBarState, palette: theme.Pal
     knob_rect.fill(dvui.Rect.Physical.all(knob_size / 2), .{ .color = theme.c(0xf2, 0xf4, 0xf7), .fade = 1.0 });
     knob_rect.stroke(dvui.Rect.Physical.all(knob_size / 2), .{ .thickness = 1 * crs.s, .color = palette.border });
 
-    bw.drawFocus();
     bw.deinit();
 }
 
@@ -569,8 +439,8 @@ fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
     const button_w: f32 = 28;
     const button_h: f32 = 28;
     const icon_size: f32 = 18;
-    var bw: dvui.ButtonWidget = undefined;
-    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = button_w, .h = button_h },
         .max_size_content = .{ .w = button_w, .h = button_h },
@@ -578,11 +448,9 @@ fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
         .corner_radius = .all(4),
         .id_extra = id_extra,
         .margin = .all(0),
-    }, palette, .{ .variant = .ghost, .font_size = 9 }).override(.{
-        .color_fill = palette.surface_hover,
-        .color_fill_hover = palette.surface_active,
-        .color_fill_press = palette.active_bg,
-    }));
+    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{
+        .override = .{ .color_fill = palette.surface_hover },
+    });
     bw.processEvents();
     bw.drawBackground();
 
@@ -597,7 +465,6 @@ fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
     renderPng(folder_icon_bytes, "folder.png", .{ .r = icon_rect, .s = crs.s }, palette.accent);
 
     const clicked = bw.clicked();
-    bw.drawFocus();
     bw.deinit();
     return clicked;
 }
@@ -620,8 +487,8 @@ fn themeToggleSwitch(app: *App, state: *TopBarState, palette: theme.Palette, id_
     const knob_d: f32 = 21;
     const icon_d: f32 = 15;
 
-    var bw: dvui.ButtonWidget = undefined;
-    bw.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = switch_w, .h = switch_h },
         .max_size_content = .{ .w = switch_w, .h = switch_h },
@@ -629,12 +496,15 @@ fn themeToggleSwitch(app: *App, state: *TopBarState, palette: theme.Palette, id_
         .margin = .all(0),
         .corner_radius = .all(switch_h / 2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 }).override(.{
-        .color_fill = dvui.Color.transparent,
-        .color_fill_hover = dvui.Color.transparent,
-        .color_fill_press = dvui.Color.transparent,
-        .color_border = dvui.Color.transparent,
-    }));
+    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{
+        .interactive = false,
+        .override = .{
+            .color_fill = dvui.Color.transparent,
+            .color_fill_hover = dvui.Color.transparent,
+            .color_fill_press = dvui.Color.transparent,
+            .color_border = dvui.Color.transparent,
+        },
+    });
     bw.processEvents();
 
     if (bw.clicked()) {
@@ -675,7 +545,6 @@ fn themeToggleSwitch(app: *App, state: *TopBarState, palette: theme.Palette, id_
     knob_rect.stroke(dvui.Rect.Physical.all(knob_size / 2), .{ .thickness = 1 * crs.s, .color = palette.border });
     renderThemeSwitchIcons(state, active, knob_rect, icon_d * crs.s);
 
-    bw.drawFocus();
     bw.deinit();
 }
 
@@ -836,8 +705,8 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
         .font_size = theme.font_sizes.tab,
     };
     const title_width = tabTitleWidth(tab.title);
-    var bg: dvui.ButtonWidget = undefined;
-    bg.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+    var bg: theme.ButtonWidget = undefined;
+    bg.init(@src(), .{
         .gravity_y = 0.5,
         .min_size_content = .height(height),
         .max_size_content = .height(height),
@@ -845,7 +714,7 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
         .margin = .{ .x = 4 },
         .corner_radius = .all(5),
         .id_extra = tab.id,
-    }, palette, style));
+    }, palette, style, .{ .interactive = false });
     bg.drawBackground();
     defer bg.deinit();
 
@@ -1148,7 +1017,8 @@ fn searchBox(app: *App, palette: theme.Palette) void {
         .color_border = palette.border_subtle,
     });
 
-    var te = dvui.textEntry(@src(), .{ .text = .{ .buffer = &app.connection_search } }, opts);
+    var te: theme.TextEntry = undefined;
+    theme.textEntry(@src(), &te, .{ .text = .{ .buffer = &app.connection_search } }, opts, palette);
     te.deinit();
 }
 
@@ -1245,7 +1115,7 @@ fn connectionRow(app: *App, item: profile.ConnectionProfile, row_idx: usize, pal
 
     var label_buf: [160]u8 = undefined;
     const label = std.fmt.bufPrint(&label_buf, "{s} / {s}", .{ b.name, b.username }) catch b.name;
-    const profile_button = icon_button.showText(@src(), server_icon_bytes, "server.png", label, .{
+    const profile_button = theme.iconButtonText(@src(), server_icon_bytes, "server.png", label, .{
         .min_size_content = .{ .w = label_width, .h = connection_row_height },
         .max_size_content = .{ .w = label_width, .h = connection_row_height },
         .padding = .all(0),
@@ -1265,7 +1135,7 @@ fn connectionRow(app: *App, item: profile.ConnectionProfile, row_idx: usize, pal
     }
 
     if (profile_button.hovered or row_hovered) {
-        if (icon_button.show(@src(), settings_icon_bytes, "settings.png", .{
+        if (theme.iconButton(@src(), settings_icon_bytes, "settings.png", .{
             .gravity_x = 1,
             .gravity_y = 0.5,
             .min_size_content = .{ .w = settings_size, .h = settings_size },

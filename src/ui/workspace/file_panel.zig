@@ -459,6 +459,7 @@ fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFile
         .max_size_content = .height(row_height),
         .padding = .all(0),
         .margin = .all(0),
+        .border = .all(0),
         .corner_radius = .all(0),
         .id_extra = id_extra,
         .color_fill = if (selected) palette.surface_active else palette.panel_bg,
@@ -543,8 +544,8 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
     const columns = layout.columns;
     const total_width = totalColumnWidth(columns);
     const selected = layout.isSelected(entry.name) or if (snapshot.selected_name) |name| std.mem.eql(u8, name, entry.name) else false;
-    var button: dvui.ButtonWidget = undefined;
-    button.init(@src(), .{ .draw_focus = false }, theme.buttonOptions(.{
+    var button: theme.ButtonWidget = undefined;
+    button.init(@src(), .{
         .expand = .horizontal,
         .min_size_content = .{ .w = total_width, .h = row_height },
         .max_size_content = .height(row_height),
@@ -552,14 +553,15 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
         .margin = .all(0),
         .corner_radius = .all(0),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .row, .font_size = 10, .text_align_x = 0 }).override(.{
-        .color_fill = if (selected) palette.surface_active else palette.panel_bg,
-        .color_fill_hover = if (selected) palette.surface_active else palette.surface_hover,
-        .color_fill_press = if (selected) palette.surface_active else palette.surface_hover,
-        .color_border = palette.border_subtle,
-    }));
+    }, palette, .{ .variant = .row, .font_size = 10, .text_align_x = 0 }, .{
+        .override = .{
+            .color_fill = if (selected) palette.surface_active else palette.panel_bg,
+            .color_border = palette.border_subtle,
+            .border = .all(0),
+        },
+    });
     defer button.deinit();
-    const click_event = dvui.clickedEx(button.data(), .{ .hovered = &button.hover });
+    const click_event = button.processEventsEx();
     button.drawBackground();
 
     if (click_event) |event| {
@@ -611,7 +613,6 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
     renderCellText(crs, x, columns.owner, file_format.ownerText(entry, &owner_buf), palette.muted_text, id_extra + 6);
 
     handleEntryContextMenu(kind, app, snapshot, entry, layout, path_busy, crs.r, palette, id_extra + 100, intent);
-    button.drawFocus();
 }
 
 fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
@@ -628,6 +629,7 @@ fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState,
         .max_size_content = .height(row_height),
         .padding = .all(0),
         .margin = .all(0),
+        .border = .all(0),
         .corner_radius = .all(0),
         .id_extra = id_extra,
     });

@@ -135,5 +135,6 @@
 
 - Windows/Linux 交叉编译只证明目标产物可构建；正式发版前仍需在对应系统执行 GUI、SSH/SFTP 和文件系统回归。
 - macOS ad-hoc 签名只用于基础包结构验证，正式公开发布需要 Developer ID 签名和 notarization。
+- macOS app bundle 模式将工作目录和运行时数据放到 `~/Library/Application Support/Shellowo/`；Windows/Linux 继续保持现有便携式相对路径行为。
 - 发布包不得包含用户 profile、vault、known_hosts、日志或本机生成的数据。
 - 发布流程变更后按 `docs/quality/release-checklist.md` 回归。

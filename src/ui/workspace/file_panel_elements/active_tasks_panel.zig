@@ -288,16 +288,14 @@ fn taskRow(task: transfer.TransferTask, width: f32, palette: theme.Palette, id_e
 }
 
 fn retryButton(palette: theme.Palette, id_extra: usize) bool {
-    var bw: dvui.ButtonWidget = undefined;
-    const options = theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .min_size_content = .{ .w = close_button_size, .h = close_button_size },
         .max_size_content = .{ .w = close_button_size, .h = close_button_size },
         .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
         .corner_radius = .all(2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 });
-
-    bw.init(@src(), .{ .draw_focus = false }, options);
+    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{});
     bw.processEvents();
     bw.drawBackground();
 
@@ -305,7 +303,6 @@ fn retryButton(palette: theme.Palette, id_extra: usize) bool {
     renderThemedPng(retry_icon_bytes, "refresh.png", bw.data().contentRectScale(), color);
 
     const clicked = bw.clicked();
-    bw.drawFocus();
     bw.deinit();
     return clicked;
 }
@@ -338,16 +335,14 @@ fn byteSizeText(bytes: u64, buf: []u8) []const u8 {
 }
 
 fn closeButton(palette: theme.Palette, id_extra: usize) bool {
-    var bw: dvui.ButtonWidget = undefined;
-    const options = theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .min_size_content = .{ .w = close_button_size, .h = close_button_size },
         .max_size_content = .{ .w = close_button_size, .h = close_button_size },
         .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
         .corner_radius = .all(2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 });
-
-    bw.init(@src(), .{ .draw_focus = false }, options);
+    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{});
     bw.processEvents();
     bw.drawBackground();
 
@@ -355,7 +350,6 @@ fn closeButton(palette: theme.Palette, id_extra: usize) bool {
     renderThemedPng(close_icon_bytes, "close.png", bw.data().contentRectScale(), color);
 
     const clicked = bw.clicked();
-    bw.drawFocus();
     bw.deinit();
     return clicked;
 }

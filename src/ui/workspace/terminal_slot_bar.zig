@@ -81,10 +81,7 @@ fn predictionDiagnostics(mode: predictive.PredictionMode, diagnostics: predictiv
     var label_buf: [96]u8 = undefined;
     const latency = diagnostics.smoothed_latency_ms orelse 0;
     const label = if (diagnostics.smoothed_latency_ms != null)
-        std.fmt.bufPrint(&label_buf, "{d}ms{s}", .{
-            latency,
-            if (diagnostics.output_paused) " pause" else "",
-        }) catch "--ms"
+        std.fmt.bufPrint(&label_buf, "{d}ms", .{latency}) catch "--ms"
     else
         std.fmt.bufPrint(&label_buf, "--ms", .{}) catch "--ms";
 

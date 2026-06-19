@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const dvui = @import("dvui");
 
 const sdl = dvui.backend;
@@ -6,6 +7,7 @@ const c = sdl.c;
 
 pub fn main(main_init: std.process.Init) !u8 {
     dvui.App.main_init = main_init;
+    try prepareAppBundleWorkingDirectory(main_init);
     const app = dvui.App.get() orelse return error.DvuiAppNotDefined;
     const init_opts = app.config.get();
 
@@ -65,6 +67,32 @@ pub fn main(main_init: std.process.Init) !u8 {
     }
 
     return 0;
+}
+
+fn prepareAppBundleWorkingDirectory(main_init: std.process.Init) !void {
+    if (builtin.os.tag != .macos) return;
+
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_len = std.process.executablePath(main_init.io, &exe_buf) catch return;
+    if (!isMacAppExecutablePath(exe_buf[0..exe_len])) return;
+
+    const home = main_init.environ_map.get("HOME") orelse return error.MissingHomeDirectory;
+    const app_data_dir = try std.fs.path.join(main_init.gpa, &.{ home, "Library", "Application Support", "Shellowo" });
+    defer main_init.gpa.free(app_data_dir);
+
+    try std.Io.Dir.createDirPath(.cwd(), main_init.io, app_data_dir);
+    const app_data_dir_z = try main_init.gpa.dupeZ(u8, app_data_dir);
+    defer main_init.gpa.free(app_data_dir_z);
+    if (std.c.chdir(app_data_dir_z.ptr) != 0) return error.ChangeAppDataDirectoryFailed;
+}
+
+fn isMacAppExecutablePath(path: []const u8) bool {
+    return std.mem.indexOf(u8, path, ".app/Contents/MacOS/") != null;
+}
+
+test "mac app executable path detection" {
+    try std.testing.expect(isMacAppExecutablePath("/Applications/Shellowo.app/Contents/MacOS/Shellowo"));
+    try std.testing.expect(!isMacAppExecutablePath("/tmp/zig-out/bin/Shellowo"));
 }
 
 fn pumpEvents(back: *sdl.SDLBackend, win: *dvui.Window) !void {

@@ -254,16 +254,17 @@ fn searchBox(state: *State, palette: theme.Palette, id_extra: usize) void {
     }));
     defer box.deinit();
 
-    var te = dvui.textEntry(@src(), .{
+    var te: theme.TextEntry = undefined;
+    theme.textEntry(@src(), &te, .{
         .text = .{ .buffer = &state.search_query },
         .placeholder = "Search",
-    }, searchEntryOptions(palette, id_extra + 1));
+    }, searchEntryOptions(palette, id_extra + 1), palette);
     if (state.search_focus_requested) {
         dvui.focusWidget(te.data().id, null, null);
         state.search_focus_requested = false;
     }
-    if (te.enter_pressed) state.search_action = .find_nearest;
-    if (te.text_changed) {
+    if (te.enterPressed()) state.search_action = .find_nearest;
+    if (te.textChanged()) {
         clearSearchMatch(state);
     }
     te.deinit();
@@ -311,22 +312,19 @@ fn searchNavigator(state: *State, palette: theme.Palette, id_extra: usize) void 
 }
 
 fn tinyIconButton(bytes: []const u8, name: []const u8, palette: theme.Palette, id_extra: usize) bool {
-    var bw: dvui.ButtonWidget = undefined;
-    const options = theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .min_size_content = .{ .w = 22, .h = 11 },
         .max_size_content = .{ .w = 22, .h = 11 },
         .padding = .all(0),
         .margin = .{ .y = 3 },
         .corner_radius = .all(2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 7 });
-
-    bw.init(@src(), .{ .draw_focus = false }, options);
+    }, palette, .{ .variant = .ghost, .font_size = 7 }, .{});
     bw.processEvents();
     bw.drawBackground();
     renderPng(bytes, name, bw.data().contentRectScale(), bw.style().color(.text));
     const clicked = bw.clicked();
-    bw.drawFocus();
     bw.deinit();
     return clicked;
 }
@@ -376,10 +374,11 @@ fn replacePopup(state: *State, palette: theme.Palette, id_extra: usize) void {
     });
     defer row.deinit();
 
-    var te = dvui.textEntry(@src(), .{
+    var te: theme.TextEntry = undefined;
+    theme.textEntry(@src(), &te, .{
         .text = .{ .buffer = &state.replace_text },
         .placeholder = "Replace",
-    }, replaceEntryOptions(palette, id_extra + 2));
+    }, replaceEntryOptions(palette, id_extra + 2), palette);
     te.deinit();
 
     if (iconButton(replace_next_icon_bytes, "replace_next.png", palette, id_extra + 3)) {
@@ -434,8 +433,8 @@ fn replaceEntryOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
 }
 
 fn iconButton(bytes: []const u8, name: []const u8, palette: theme.Palette, id_extra: usize) bool {
-    var bw: dvui.ButtonWidget = undefined;
-    const options = theme.buttonOptions(.{
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
         .min_size_content = .{ .w = 24, .h = 24 },
         .max_size_content = .{ .w = 24, .h = 24 },
         .padding = .all(0),
@@ -443,14 +442,11 @@ fn iconButton(bytes: []const u8, name: []const u8, palette: theme.Palette, id_ex
         .corner_radius = .all(3),
         .id_extra = id_extra,
         .gravity_y = 0.5,
-    }, palette, .{ .variant = .ghost, .font_size = 9 });
-
-    bw.init(@src(), .{ .draw_focus = false }, options);
+    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{});
     bw.processEvents();
     bw.drawBackground();
     renderPng(bytes, name, bw.data().contentRectScale(), bw.style().color(.text));
     const clicked = bw.clicked();
-    bw.drawFocus();
     bw.deinit();
     return clicked;
 }

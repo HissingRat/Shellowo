@@ -3,10 +3,10 @@ const terminal = @import("../../contracts/terminal_emulator.zig");
 
 pub const max_diff_rects = terminal.max_dirty_rects;
 pub const max_pending_input_bytes = 64 * 1024;
-pub const default_prediction_cooldown_ms: u64 = 500;
+pub const default_prediction_cooldown_ms: u64 = 250;
 pub const default_full_rollback_threshold: u32 = 64;
 pub const default_disable_threshold: u32 = 256;
-pub const default_output_pause_ms: u64 = 350;
+pub const default_output_pause_ms: u64 = 150;
 pub const default_output_change_threshold: u32 = 96;
 
 pub const PredictionKind = enum {
@@ -67,7 +67,7 @@ pub const PredictionConfig = struct {
     predict_backspace: bool = true,
     predict_enter: bool = true,
     predict_tab: bool = false,
-    predict_arrow_keys: bool = false,
+    predict_arrow_keys: bool = true,
     output_pause_ms: u64 = default_output_pause_ms,
     output_change_threshold: u32 = default_output_change_threshold,
 
@@ -1177,9 +1177,9 @@ test "prediction levels gate input kinds by context" {
     try std.testing.expect(decidePrediction(shell, shell_context, "\x7f", .safe_shell, config).allowed);
     try std.testing.expect(decidePrediction(shell, shell_context, "\r", .safe_shell, config).allowed);
     try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[A", .safe_shell, config).allowed);
-    try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[D", .readline, config).allowed);
-    config.predict_arrow_keys = true;
     try std.testing.expect(decidePrediction(shell, shell_context, "\x1b[D", .readline, config).allowed);
+    config.predict_arrow_keys = false;
+    try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[D", .readline, config).allowed);
     try std.testing.expect(!decidePrediction(shell, shell_context, "\x1b[A", .readline, config).allowed);
     try std.testing.expect(!decidePrediction(shell, shell_context, "a", .disabled, config).allowed);
 

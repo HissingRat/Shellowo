@@ -28,6 +28,9 @@ pub const Palette = struct {
     text_subtle: dvui.Color,
     border: dvui.Color,
     border_subtle: dvui.Color,
+    border_hover: dvui.Color,
+    border_selected: dvui.Color,
+    interaction_overlay: dvui.Color,
     accent: dvui.Color,
     danger: dvui.Color,
 
@@ -55,6 +58,9 @@ pub const dark = Palette{
     .text_subtle = rgb(0x6f, 0x78, 0x86),
     .border = rgb(0x2b, 0x32, 0x3d),
     .border_subtle = rgb(0x18, 0x1d, 0x25),
+    .border_hover = rgb(0x3b, 0x46, 0x56),
+    .border_selected = rgb(0x6f, 0x9f, 0xff),
+    .interaction_overlay = rgb(0xa8, 0xc7, 0xff),
     .accent = rgb(0x93, 0xb7, 0xff),
     .danger = rgb(0xe0, 0x74, 0x74),
 };
@@ -75,6 +81,9 @@ pub const light = Palette{
     .text_subtle = rgb(0x86, 0x90, 0x9d),
     .border = rgb(0x8e, 0x99, 0xa6),
     .border_subtle = rgb(0xd8, 0xdc, 0xe2),
+    .border_hover = rgb(0x72, 0x7f, 0x8e),
+    .border_selected = rgb(0x24, 0x66, 0xb8),
+    .interaction_overlay = rgb(0x8a, 0xb4, 0xf8),
     .accent = rgb(0x24, 0x66, 0xb8),
     .danger = rgb(0xb8, 0x34, 0x34),
 };
