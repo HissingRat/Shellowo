@@ -27,6 +27,27 @@ pub const EditMode = enum {
     rename,
 };
 
+pub fn createRowIndex(entries: []const remote_file.RemoteFileEntry, mode: EditMode) ?usize {
+    switch (mode) {
+        .none, .rename => return null,
+        .new_folder => {
+            var idx: usize = 0;
+            while (idx < entries.len and isParentEntry(entries[idx])) : (idx += 1) {}
+            return idx;
+        },
+        .new_file => {
+            for (entries, 0..) |entry, idx| {
+                if (entry.kind == .file or entry.kind == .other) return idx;
+            }
+            return entries.len;
+        },
+    }
+}
+
+fn isParentEntry(entry: remote_file.RemoteFileEntry) bool {
+    return entry.kind == .directory and std.mem.eql(u8, entry.name, "..");
+}
+
 pub const PathBar = struct {
     editing: bool = false,
     focus_requested: bool = false,
@@ -68,6 +89,34 @@ pub const PathBar = struct {
         if (len > 0) @memcpy(self.buffer[0..len], path[0..len]);
     }
 };
+
+test "create row follows grouped file entry order" {
+    const entries = [_]remote_file.RemoteFileEntry{
+        .{ .name = "..", .kind = .directory },
+        .{ .name = "folder", .kind = .directory },
+        .{ .name = "link", .kind = .symlink },
+        .{ .name = "file.txt", .kind = .file },
+        .{ .name = "socket", .kind = .other },
+    };
+
+    try std.testing.expectEqual(@as(?usize, null), createRowIndex(&entries, .none));
+    try std.testing.expectEqual(@as(?usize, null), createRowIndex(&entries, .rename));
+    try std.testing.expectEqual(@as(?usize, 1), createRowIndex(&entries, .new_folder));
+    try std.testing.expectEqual(@as(?usize, 3), createRowIndex(&entries, .new_file));
+}
+
+test "create row handles missing parent and file groups" {
+    const folders = [_]remote_file.RemoteFileEntry{
+        .{ .name = "alpha", .kind = .directory },
+        .{ .name = "beta", .kind = .directory },
+    };
+    const empty = [_]remote_file.RemoteFileEntry{};
+
+    try std.testing.expectEqual(@as(?usize, 0), createRowIndex(&folders, .new_folder));
+    try std.testing.expectEqual(@as(?usize, folders.len), createRowIndex(&folders, .new_file));
+    try std.testing.expectEqual(@as(?usize, 0), createRowIndex(&empty, .new_folder));
+    try std.testing.expectEqual(@as(?usize, 0), createRowIndex(&empty, .new_file));
+}
 
 pub const PaneLayout = struct {
     columns: ColumnWidths = .{},

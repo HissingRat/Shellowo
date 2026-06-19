@@ -33,6 +33,10 @@ pub const RemoteFileEntry = struct {
     pub fn isDirectory(self: RemoteFileEntry) bool {
         return self.kind == .directory;
     }
+
+    pub fn isRootDirectory(self: RemoteFileEntry) bool {
+        return self.isDirectory() and std.mem.eql(u8, self.full_path, "/");
+    }
 };
 
 pub const FileLocation = enum {
@@ -239,4 +243,20 @@ test "file entry kind exposes directory helper" {
 
     try std.testing.expect(entry.isDirectory());
     try std.testing.expectEqualStrings("folder", entry.kind.label());
+}
+
+test "file entry identifies the remote root directory" {
+    const root = RemoteFileEntry{
+        .name = "/",
+        .kind = .directory,
+        .full_path = "/",
+    };
+    const child = RemoteFileEntry{
+        .name = "home",
+        .kind = .directory,
+        .full_path = "/home",
+    };
+
+    try std.testing.expect(root.isRootDirectory());
+    try std.testing.expect(!child.isRootDirectory());
 }

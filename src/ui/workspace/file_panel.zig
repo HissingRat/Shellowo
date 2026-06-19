@@ -258,7 +258,6 @@ fn drawPathTextEntry(te: *dvui.TextEntryWidget) void {
     dvui.clipSet(te.prevClip);
 }
 
-const TreeRowAction = enum { none, toggle, row_click };
 const PaneOptions = struct {
     app: *App,
     tree: remote_file.FileTreeSnapshot = .{},
@@ -294,7 +293,7 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     }
 
     if (kind == .tree) {
-        treeRows(opts.tree, layout, palette, opts.id_extra + 20, intent);
+        treeRows(opts.tree, palette, opts.id_extra + 20, intent);
         return;
     }
     layout.observeToast(opts.snapshot.error_summary);
@@ -393,24 +392,27 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
     renderDropTooltip(kind, app, snapshot, palette, id_extra + 7000);
     handleDroppedUploads(kind, app, snapshot, layout, path_busy, drop_rect, intent);
 
-    if (layout.edit_mode == .new_file or layout.edit_mode == .new_folder) {
-        editFileRow(snapshot, layout, palette, id_extra + 3, intent);
-    }
-
     if (snapshot.entries.len == 0 and layout.edit_mode == .none) {
         emptyRow("No files", palette, id_extra);
         handleBlankContextMenu(app, snapshot, layout, path_busy, blankContextRect(scroll.data().contentRectScale(), 1), palette, id_extra + 500, intent);
         return;
     }
 
+    const create_row_index = panel_state.createRowIndex(snapshot.entries, layout.edit_mode);
     for (snapshot.entries, 0..) |entry, idx| {
+        if (create_row_index == idx) {
+            editFileRow(snapshot, layout, palette, id_extra + 8000, intent);
+        }
         fileRow(kind, app, snapshot, entry, layout, path_busy, palette, id_extra + idx * 10, intent);
+    }
+    if (create_row_index == snapshot.entries.len) {
+        editFileRow(snapshot, layout, palette, id_extra + 8000, intent);
     }
     const row_count = snapshot.entries.len + if (layout.edit_mode == .new_file or layout.edit_mode == .new_folder) @as(usize, 1) else 0;
     handleBlankContextMenu(app, snapshot, layout, path_busy, blankContextRect(scroll.data().contentRectScale(), row_count), palette, id_extra + 500, intent);
 }
 
-fn treeRows(snapshot: remote_file.FileTreeSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn treeRows(snapshot: remote_file.FileTreeSnapshot, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
@@ -446,11 +448,11 @@ fn treeRows(snapshot: remote_file.FileTreeSnapshot, layout: *PaneLayoutState, pa
     }
 
     for (snapshot.entries, 0..) |entry, idx| {
-        treeRow(snapshot, entry, layout, palette, id_extra + 10 + idx * 10, intent);
+        treeRow(snapshot, entry, palette, id_extra + 10 + idx * 10, intent);
     }
 }
 
-fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFileEntry, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     const selected = treeEntrySelected(snapshot.path, entry);
     var row = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
@@ -469,30 +471,19 @@ fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFile
 
     var hover = false;
     const crs = row.data().contentRectScale();
-    const toggle_rect = treeToggleRect(crs, entry);
-    const action = treeRowAction(row.data(), crs.r, toggle_rect, &hover);
+    const clicked = treeRowClicked(row.data(), crs.r, &hover);
     row.data().options = row.data().options.override(.{
         .color_fill = if (selected) palette.surface_active else if (hover) palette.surface_hover else palette.panel_bg,
     });
     row.drawBackground();
 
-    const path = if (entry.full_path.len > 0) entry.full_path else snapshot.path;
-    switch (action) {
-        .toggle => intent.* = .{ .toggle_tree = .{
+    if (clicked) {
+        const path = if (entry.full_path.len > 0) entry.full_path else snapshot.path;
+        intent.* = .{ .toggle_tree = .{
             .pane = .remote,
             .path = path,
             .name = "",
-        } },
-        .row_click => {
-            if (registerEntryClick(layout, .tree, path) >= 2) {
-                intent.* = .{ .toggle_tree = .{
-                    .pane = .remote,
-                    .path = path,
-                    .name = "",
-                } };
-            }
-        },
-        .none => {},
+        } };
     }
 
     renderTreeEntry(crs, entry, palette);
@@ -506,7 +497,7 @@ fn treeRowWidth(entry: remote_file.RemoteFileEntry) f32 {
     return indent + tree_disclosure_width + file_icon_size + file_icon_gap + text_width + right_padding;
 }
 
-fn treeRowAction(data: *dvui.WidgetData, row_rect: dvui.Rect.Physical, toggle_rect: dvui.Rect.Physical, hovered: *bool) TreeRowAction {
+fn treeRowClicked(data: *dvui.WidgetData, row_rect: dvui.Rect.Physical, hovered: *bool) bool {
     for (dvui.events()) |*event| {
         if (!dvui.eventMatch(event, .{ .id = data.id, .r = row_rect })) continue;
         switch (event.evt) {
@@ -515,24 +506,14 @@ fn treeRowAction(data: *dvui.WidgetData, row_rect: dvui.Rect.Physical, toggle_re
                 .release => if (mouse.button.pointer()) {
                     event.handle(@src(), data);
                     dvui.refresh(null, @src(), data.id);
-                    return if (toggle_rect.contains(mouse.p)) .toggle else .row_click;
+                    return true;
                 },
                 else => {},
             },
             else => {},
         }
     }
-    return .none;
-}
-
-fn treeToggleRect(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry) dvui.Rect.Physical {
-    const indent = (@as(f32, @floatFromInt(entry.depth)) * tree_indent + 8) * crs.s;
-    return .{
-        .x = crs.r.x + indent,
-        .y = crs.r.y,
-        .w = tree_disclosure_width * crs.s,
-        .h = crs.r.h,
-    };
+    return false;
 }
 
 fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
@@ -1277,7 +1258,7 @@ fn renderTreeEntry(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry, pale
         .w = disclosure_w,
         .h = crs.r.h,
     };
-    const glyph = if (entry.expanded) "v" else ">";
+    const glyph = if (entry.isRootDirectory() or entry.expanded) "v" else ">";
     const disclosure_font = theme.textFont(glyph, 9);
     const disclosure_size = disclosure_font.textSize(glyph);
     dvui.renderText(.{

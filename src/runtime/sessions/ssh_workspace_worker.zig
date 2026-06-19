@@ -1501,6 +1501,14 @@ pub const SshWorkspaceWorker = struct {
 
     fn toggleTreeNodeLocked(self: *SshWorkspaceWorker, path: []const u8) void {
         const idx = self.findTreeNodeIndexLocked(path) orelse return;
+        if (std.mem.eql(u8, path, "/")) {
+            self.file_tree_nodes.items[idx].expanded = true;
+            if (!self.file_tree_nodes.items[idx].loaded) {
+                self.setFileTreeLoadPathLocked(path);
+                self.file_tree_load_requested.store(true, .release);
+            }
+            return;
+        }
         if (self.file_tree_nodes.items[idx].expanded) {
             self.file_tree_nodes.items[idx].expanded = false;
             return;
@@ -2196,6 +2204,24 @@ test "set file path accepts overlapping parent path slice" {
     worker.setFilePathLocked("/home/andy");
     worker.setFilePathLocked(parentPath(worker.filePathLocked()));
     try std.testing.expectEqualStrings("/home", worker.filePathLocked());
+}
+
+test "tree root cannot be collapsed" {
+    var worker = SshWorkspaceWorker{
+        .allocator = std.testing.allocator,
+        .connection = undefined,
+        .options = undefined,
+    };
+    defer {
+        worker.clearFileTreeLocked();
+        worker.file_tree_nodes.deinit(std.testing.allocator);
+    }
+
+    try worker.initFileTree();
+    worker.file_tree_nodes.items[0].loaded = true;
+    worker.toggleTreeNodeLocked("/");
+
+    try std.testing.expect(worker.file_tree_nodes.items[0].expanded);
 }
 
 fn yieldThread() void {
