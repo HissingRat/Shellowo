@@ -101,7 +101,7 @@ DVUI App Shell
 - `Protocol Clients`
   - 第三方或自研协议实现
 
-## 5. 计划目录结构
+## 5. 当前目标目录结构
 
 ```txt
 Shellow/
@@ -120,31 +120,60 @@ Shellow/
     skills/
   src/
     main.zig
+    bootstrap.zig
     app/
       App.zig
-      Workspace.zig
+      config.zig
+      keybindings.zig
     core/
       profile.zig
-      session.zig
       transfer.zig
       remote_file.zig
-    services/
-      profile_repository.zig
-      session_registry.zig
-      transfer_queue.zig
-    protocols/
+      terminal/
+        predictive.zig
+    contracts/
+      ssh.zig
+      terminal_emulator.zig
+    backends/
       ssh/
-      sftp/
+        libssh2.zig
+      terminal/
+        libvterm.zig
+        libvterm_shim.c
+    runtime/
+      files/
+        remote_path.zig
+        entry_order.zig
+      monitor/
+        ssh_monitor.zig
+      profiles/
+        profile_repository.zig
+      sessions/
+        registry.zig
+        ssh_session.zig
+        ssh_workspace_worker.zig
+      terminal/
+        pty_slot.zig
+      transfers/
+        progress_store.zig
     ui/
-      home.zig
-      workspace.zig
-      connections.zig
-      files.zig
-      terminal.zig
-      transfers.zig
+      foundation/
+      widgets/
+      layouts/
+      features/
+        app_shell/
+        files/
+        profiles/
+        security/
+        terminal/
+        workspace/
+      workspace/
+  tools/
+    ssh_probe.zig
+    ssh_worker_probe.zig
 ```
 
-这只是目标结构。实现时小步创建，不为了目录完整而提前铺空文件。
+目录按可构建批次演进，不为了结构完整而提前铺空文件。`contracts` 保存 Shellow-owned 稳定能力，`backends` 保存第三方/native 具体实现，`runtime` 保存 session、worker、registry 和 repository 生命周期。`bootstrap.zig` 是具体 backend 的装配入口，App 只持有 connector/factory contract。UI 直接建立在 DVUI 上，但常规视觉控件和重复布局优先经过 `ui/foundation`、`ui/widgets` 与 `ui/layouts`。
 
 ## 6. 会话模型
 

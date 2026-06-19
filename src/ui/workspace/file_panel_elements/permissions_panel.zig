@@ -252,13 +252,14 @@ fn permissionGrid(state: *State, palette: theme.Palette, id_extra: usize) void {
         fieldLabel(label, palette, id_extra + 2 + row_idx * 10);
         for (0..3) |col_idx| {
             const bit_idx = row_idx * 3 + col_idx;
-            if (dvui.checkbox(@src(), &state.bits[bit_idx], bit_labels[col_idx], .{
-                .min_size_content = .{ .w = 78, .h = 22 },
-                .max_size_content = .{ .w = 78, .h = 22 },
-                .color_text = palette.text,
-                .font = theme.textFont(bit_labels[col_idx], 9),
-                .padding = .all(0),
+            if (theme.checkbox(@src(), &state.bits[bit_idx], bit_labels[col_idx], palette, .{
                 .id_extra = id_extra + 3 + row_idx * 10 + col_idx,
+                .font_size = 9,
+                .layout = .{
+                    .min_size_content = .{ .w = 78, .h = 22 },
+                    .max_size_content = .{ .w = 78, .h = 22 },
+                    .padding = .all(0),
+                },
             })) {
                 state.writeModeText(state.modeFromBits());
                 state.error_len = 0;

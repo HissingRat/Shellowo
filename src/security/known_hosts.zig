@@ -1,5 +1,5 @@
 const std = @import("std");
-const ssh = @import("../protocols/ssh.zig");
+const ssh = @import("../contracts/ssh.zig");
 
 pub const Entry = struct {
     host: []const u8,

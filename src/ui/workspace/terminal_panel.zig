@@ -3,12 +3,35 @@ const std = @import("std");
 
 const App = @import("../../app/App.zig");
 const keybindings = @import("../../app/keybindings.zig");
-const ssh_session = @import("../../services/ssh_session.zig");
-const terminal = @import("../../terminal/terminal.zig");
-const predictive = @import("../../terminal/predictive.zig");
+const ssh_session = @import("../../runtime/sessions/ssh_session.zig");
+const terminal = @import("../../contracts/terminal_emulator.zig");
+const predictive = @import("../../core/terminal/predictive.zig");
 const terminal_slot = @import("../../core/terminal_slot.zig");
 const workspace = @import("../../core/workspace.zig");
 const theme = @import("../theme.zig");
+const terminal_colors = @import("../features/terminal/colors.zig");
+const viewport_state = @import("../features/terminal/viewport_state.zig");
+const terminal_search = @import("../features/terminal/search.zig");
+const input_encoding = @import("../features/terminal/input_encoding.zig");
+
+const terminalFont = terminal_colors.font;
+const terminalForegroundColor = terminal_colors.foreground;
+const terminalBackgroundColor = terminal_colors.background;
+const selectedTerminalBackground = terminal_colors.selectedBackground;
+const blendColor = terminal_colors.blend;
+const TerminalRun = viewport_state.Run;
+const TerminalPoint = viewport_state.Point;
+const TerminalSelection = viewport_state.Selection;
+const TerminalSearchMatch = viewport_state.SearchMatch;
+const TerminalSearchMatches = viewport_state.SearchMatches;
+const TerminalRowRenderCacheEntry = viewport_state.RowRenderCacheEntry;
+const TerminalViewport = viewport_state.Viewport;
+const ScrollbarGeometry = viewport_state.ScrollbarGeometry;
+const cachedSearchMatches = terminal_search.cachedMatches;
+const terminalSearchQuery = terminal_search.queryText;
+const clampSearchActiveIndex = terminal_search.clampActiveIndex;
+const isTerminalControlBytes = input_encoding.isControlBytes;
+const terminalControlByte = input_encoding.controlByteForEvent;
 
 const terminal_font_size: f32 = 10;
 const terminal_line_height: f32 = 18;
@@ -46,94 +69,6 @@ const search_bar_width: f32 = 260;
 const search_bar_height: f32 = 34;
 const search_bar_font_size: f32 = 10;
 const row_render_cache_capacity: usize = 256;
-
-const TerminalRun = struct {
-    row: f32,
-    start_col: u16,
-    end_col: u16,
-    style: terminal.Style,
-    text: []const u8,
-};
-
-const TerminalPoint = struct {
-    row: usize,
-    col: u16,
-};
-
-const TerminalSelection = struct {
-    anchor: TerminalPoint,
-    head: TerminalPoint,
-};
-
-const TerminalSearchMatch = struct {
-    row: usize,
-    col: u16,
-    len: u16,
-};
-
-const TerminalSearchMatches = struct {
-    items: [search_max_matches]TerminalSearchMatch = undefined,
-    len: usize = 0,
-    overflow: bool = false,
-};
-
-const TerminalRowRenderCacheEntry = struct {
-    generation: u64 = std.math.maxInt(u64),
-    absolute_row: usize = std.math.maxInt(usize),
-    scrollback_rows: usize = std.math.maxInt(usize),
-    cols: u16 = 0,
-    has_backgrounds: bool = true,
-};
-
-const LocalEchoState = struct {
-    active: bool = false,
-    base_generation: u64 = 0,
-    base_scrollback_rows: usize = 0,
-    row: u16 = 0,
-    start_col: u16 = 0,
-    text: [local_echo_capacity]u8 = std.mem.zeroes([local_echo_capacity]u8),
-    len: usize = 0,
-};
-
-const TerminalViewport = struct {
-    last_size: ?terminal.Size = null,
-    scroll_offset: usize = 0,
-    wheel_remainder: f32 = 0,
-    scrollbar_grab_y: f32 = 0,
-    last_scroll_interaction_ns: i128 = 0,
-    selection_auto_scroll_remainder: f32 = 0,
-    selection: ?TerminalSelection = null,
-    selecting: bool = false,
-    last_click_point: ?TerminalPoint = null,
-    last_click_ns: i128 = 0,
-    click_count: u8 = 0,
-    ime_composition: [ime_composition_capacity]u8 = std.mem.zeroes([ime_composition_capacity]u8),
-    ime_composition_len: usize = 0,
-    search_open: bool = false,
-    search_focus_requested: bool = false,
-    search_scroll_to_active: bool = false,
-    search_query: [search_query_capacity]u8 = std.mem.zeroes([search_query_capacity]u8),
-    search_active_index: usize = 0,
-    search_cache_generation: u64 = std.math.maxInt(u64),
-    search_cache_query: [search_query_capacity]u8 = std.mem.zeroes([search_query_capacity]u8),
-    search_cache_query_len: usize = 0,
-    search_cache_total_rows: usize = 0,
-    search_cache_cols: u16 = 0,
-    search_cache_matches: TerminalSearchMatches = .{},
-    row_render_cache: [row_render_cache_capacity]TerminalRowRenderCacheEntry = [_]TerminalRowRenderCacheEntry{.{}} ** row_render_cache_capacity,
-    local_echo: LocalEchoState = .{},
-    pending_paste: [paste_queue_capacity]u8 = std.mem.zeroes([paste_queue_capacity]u8),
-    pending_paste_len: usize = 0,
-    pending_paste_offset: usize = 0,
-};
-
-const ScrollbarGeometry = struct {
-    track: dvui.Rect.Physical,
-    thumb: dvui.Rect.Physical,
-    hit_rect: dvui.Rect.Physical,
-    max_start: usize,
-    travel: f32,
-};
 
 pub const Options = struct {
     id_extra: usize,
@@ -324,20 +259,15 @@ fn terminalContextMenuOptions(palette: theme.Palette, id_extra: usize) dvui.Opti
 }
 
 fn terminalContextMenuItem(label: []const u8, palette: theme.Palette, id_extra: usize) ?dvui.Rect.Natural {
-    return dvui.menuItemLabel(@src(), label, .{}, .{
+    return theme.menuItem(@src(), label, palette, .{
         .id_extra = id_extra,
-        .expand = .horizontal,
-        .background = true,
-        .font = theme.textFont(label, context_menu_font_size),
-        .color_fill = dvui.Color.transparent,
-        .color_fill_hover = palette.surface_active,
-        .color_fill_press = palette.active_bg,
-        .color_text = palette.text,
-        .color_text_hover = palette.text,
-        .color_text_press = palette.text,
-        .padding = .{ .x = 8, .y = 5, .w = 8, .h = 3 },
-        .min_size_content = .{ .h = context_menu_item_height },
-        .corner_radius = .all(3),
+        .font_size = context_menu_font_size,
+        .layout = .{
+            .expand = .horizontal,
+            .padding = .{ .x = 8, .y = 5, .w = 8, .h = 3 },
+            .min_size_content = .{ .h = context_menu_item_height },
+            .corner_radius = .all(3),
+        },
     });
 }
 
@@ -670,143 +600,6 @@ fn firstSearchMatchForRow(matches: TerminalSearchMatches, row: usize) usize {
         }
     }
     return left;
-}
-
-fn cachedSearchMatches(snapshot: terminal.Snapshot, viewport: *TerminalViewport) TerminalSearchMatches {
-    const query = terminalSearchQuery(viewport);
-    if (viewport.search_cache_generation == snapshot.generation and
-        viewport.search_cache_query_len == query.len and
-        std.mem.eql(u8, viewport.search_cache_query[0..viewport.search_cache_query_len], query))
-    {
-        return viewport.search_cache_matches;
-    }
-
-    const total_rows = snapshot.scrollback_rows + @as(usize, snapshot.size.rows);
-    if (canUpdateSearchCacheIncrementally(snapshot, viewport, query, total_rows)) {
-        updateSearchCacheDirtyRows(snapshot, viewport, query);
-        viewport.search_cache_generation = snapshot.generation;
-        return viewport.search_cache_matches;
-    }
-
-    viewport.search_cache_generation = snapshot.generation;
-    viewport.search_cache_query_len = @min(query.len, viewport.search_cache_query.len);
-    if (viewport.search_cache_query_len > 0) {
-        @memcpy(viewport.search_cache_query[0..viewport.search_cache_query_len], query[0..viewport.search_cache_query_len]);
-    }
-    viewport.search_cache_matches = computeSearchMatches(snapshot, query);
-    viewport.search_cache_total_rows = total_rows;
-    viewport.search_cache_cols = snapshot.size.cols;
-    return viewport.search_cache_matches;
-}
-
-fn canUpdateSearchCacheIncrementally(snapshot: terminal.Snapshot, viewport: *TerminalViewport, query: []const u8, total_rows: usize) bool {
-    if (viewport.search_cache_generation == std.math.maxInt(u64)) return false;
-    if (viewport.search_cache_query_len != query.len) return false;
-    if (!std.mem.eql(u8, viewport.search_cache_query[0..viewport.search_cache_query_len], query)) return false;
-    if (query.len == 0) return false;
-    if (snapshot.scrollback_dirty or snapshot.dirty_rows.empty()) return false;
-    if (viewport.search_cache_total_rows != total_rows) return false;
-    if (viewport.search_cache_cols != snapshot.size.cols) return false;
-    if (viewport.search_cache_matches.overflow) return false;
-    return true;
-}
-
-fn updateSearchCacheDirtyRows(snapshot: terminal.Snapshot, viewport: *TerminalViewport, query: []const u8) void {
-    const dirty_start = snapshot.scrollback_rows + @as(usize, snapshot.dirty_rows.start);
-    const dirty_end = snapshot.scrollback_rows + @as(usize, snapshot.dirty_rows.end);
-    removeSearchMatchesInRows(&viewport.search_cache_matches, dirty_start, dirty_end);
-
-    var row = dirty_start;
-    while (row < dirty_end and !viewport.search_cache_matches.overflow) : (row += 1) {
-        appendRowSearchMatches(snapshot, row, query, &viewport.search_cache_matches);
-    }
-    sortSearchMatches(&viewport.search_cache_matches);
-}
-
-fn removeSearchMatchesInRows(matches: *TerminalSearchMatches, start_row: usize, end_row: usize) void {
-    var write_idx: usize = 0;
-    for (matches.items[0..matches.len]) |item| {
-        if (item.row >= start_row and item.row < end_row) continue;
-        matches.items[write_idx] = item;
-        write_idx += 1;
-    }
-    matches.len = write_idx;
-}
-
-fn sortSearchMatches(matches: *TerminalSearchMatches) void {
-    std.mem.sort(TerminalSearchMatch, matches.items[0..matches.len], {}, searchMatchLessThan);
-}
-
-fn searchMatchLessThan(context: void, a: TerminalSearchMatch, b: TerminalSearchMatch) bool {
-    _ = context;
-    if (a.row != b.row) return a.row < b.row;
-    return a.col < b.col;
-}
-
-fn computeSearchMatches(snapshot: terminal.Snapshot, query: []const u8) TerminalSearchMatches {
-    var matches = TerminalSearchMatches{};
-    if (query.len == 0) return matches;
-
-    const total_rows = snapshot.scrollback_rows + @as(usize, snapshot.size.rows);
-    var row: usize = 0;
-    while (row < total_rows) : (row += 1) {
-        appendRowSearchMatches(snapshot, row, query, &matches);
-    }
-    return matches;
-}
-
-fn appendRowSearchMatches(snapshot: terminal.Snapshot, row: usize, query: []const u8, matches: *TerminalSearchMatches) void {
-    var text_buf: [4096]u8 = undefined;
-    var byte_cols: [4096]u16 = undefined;
-    var col_widths: [4096]u16 = undefined;
-    var text_len: usize = 0;
-
-    var col: u16 = 0;
-    while (col < snapshot.size.cols and text_len < text_buf.len) : (col += 1) {
-        const cell = snapshotDisplayCell(snapshot, row, col) orelse break;
-        if (cell.width == 0) continue;
-
-        var cp_buf: [4]u8 = undefined;
-        const text = codepointToUtf8(cell.codepoint, &cp_buf);
-        if (text_len + text.len > text_buf.len) break;
-        for (text) |byte| {
-            text_buf[text_len] = byte;
-            byte_cols[text_len] = col;
-            col_widths[text_len] = cellDisplayWidth(cell);
-            text_len += 1;
-        }
-    }
-
-    var search_start: usize = 0;
-    while (search_start < text_len) {
-        const found = std.mem.indexOfPos(u8, text_buf[0..text_len], search_start, query) orelse break;
-        if (matches.len >= matches.items.len) {
-            matches.overflow = true;
-            return;
-        }
-        const end_byte = found + query.len -| 1;
-        const start_col = byte_cols[found];
-        const end_col = byte_cols[end_byte] + col_widths[end_byte];
-        matches.items[matches.len] = .{
-            .row = row,
-            .col = start_col,
-            .len = @max(@as(u16, 1), end_col -| start_col),
-        };
-        matches.len += 1;
-        search_start = found + @max(query.len, 1);
-    }
-}
-
-fn terminalSearchQuery(viewport: *TerminalViewport) []const u8 {
-    return std.mem.sliceTo(viewport.search_query[0..], 0);
-}
-
-fn clampSearchActiveIndex(viewport: *TerminalViewport, matches: TerminalSearchMatches) void {
-    if (matches.len == 0) {
-        viewport.search_active_index = 0;
-        return;
-    }
-    viewport.search_active_index = @min(viewport.search_active_index, matches.len - 1);
 }
 
 fn asciiRun(snapshot: terminal.Snapshot, absolute_row: usize, visible_row: f32, start_col: u16, style: terminal.Style, buffer: []u8) TerminalRun {
@@ -1945,116 +1738,6 @@ fn sameStyle(a: terminal.Style, b: terminal.Style) bool {
     return std.meta.eql(a, b);
 }
 
-fn terminalFont(text: []const u8, style: terminal.Style) dvui.Font {
-    var font = theme.textFont(text, terminal_font_size);
-    if (style.bold) font = font.withWeight(.bold);
-    if (style.italic) font = font.withStyle(.italic);
-    if (style.underline) font = font.withUnderline(.{});
-    if (style.strike) font = font.withStrike(.{});
-    return font;
-}
-
-fn terminalForegroundColor(style: terminal.Style, palette: theme.Palette) dvui.Color {
-    if (style.reverse) {
-        return terminalBackgroundColorValue(style, palette) orelse palette.app_bg;
-    }
-    return terminalColor(style.fg, palette.text);
-}
-
-fn terminalBackgroundColor(style: terminal.Style, palette: theme.Palette) ?dvui.Color {
-    if (style.reverse) {
-        return terminalColor(style.fg, palette.text);
-    }
-    return terminalBackgroundColorValue(style, palette);
-}
-
-fn terminalBackgroundColorValue(style: terminal.Style, palette: theme.Palette) ?dvui.Color {
-    return switch (style.bg) {
-        .default => null,
-        else => terminalColor(style.bg, palette.app_bg),
-    };
-}
-
-fn selectedTerminalBackground(background: dvui.Color, palette: theme.Palette) dvui.Color {
-    return darkenColor(blendColor(background, palette.surface_active, selection_background_mix), selection_background_darken);
-}
-
-fn blendColor(a: dvui.Color, b: dvui.Color, t: f32) dvui.Color {
-    return .{
-        .r = blendChannel(a.r, b.r, t),
-        .g = blendChannel(a.g, b.g, t),
-        .b = blendChannel(a.b, b.b, t),
-        .a = blendChannel(a.a, b.a, t),
-    };
-}
-
-fn blendChannel(a: u8, b: u8, t: f32) u8 {
-    const af = @as(f32, @floatFromInt(a));
-    const bf = @as(f32, @floatFromInt(b));
-    return @intFromFloat(std.math.clamp(af + (bf - af) * t, 0, 255));
-}
-
-fn darkenColor(color: dvui.Color, factor: f32) dvui.Color {
-    return .{
-        .r = darkenChannel(color.r, factor),
-        .g = darkenChannel(color.g, factor),
-        .b = darkenChannel(color.b, factor),
-        .a = color.a,
-    };
-}
-
-fn darkenChannel(value: u8, factor: f32) u8 {
-    return @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(value)) * factor, 0, 255));
-}
-
-fn terminalColor(color: terminal.Color, default_color: dvui.Color) dvui.Color {
-    return switch (color) {
-        .default => default_color,
-        .rgb => |rgb| .{ .r = rgb.r, .g = rgb.g, .b = rgb.b },
-        .indexed => |index| indexedTerminalColor(index),
-    };
-}
-
-fn indexedTerminalColor(index: u8) dvui.Color {
-    if (index < 16) return ansi16[index];
-    if (index >= 16 and index <= 231) {
-        const n = index - 16;
-        return .{
-            .r = colorCubeValue(n / 36),
-            .g = colorCubeValue((n / 6) % 6),
-            .b = colorCubeValue(n % 6),
-        };
-    }
-    if (index >= 232) {
-        const value: u8 = 8 + (index - 232) * 10;
-        return .{ .r = value, .g = value, .b = value };
-    }
-    return .{};
-}
-
-fn colorCubeValue(component: u8) u8 {
-    return if (component == 0) 0 else 55 + component * 40;
-}
-
-const ansi16 = [_]dvui.Color{
-    .{ .r = 0x1e, .g = 0x1e, .b = 0x1e },
-    .{ .r = 0xcd, .g = 0x31, .b = 0x31 },
-    .{ .r = 0x0d, .g = 0xa7, .b = 0x0d },
-    .{ .r = 0xe5, .g = 0xe5, .b = 0x10 },
-    .{ .r = 0x24, .g = 0x71, .b = 0xc8 },
-    .{ .r = 0xbc, .g = 0x3f, .b = 0xbc },
-    .{ .r = 0x11, .g = 0xa8, .b = 0xcd },
-    .{ .r = 0xe5, .g = 0xe5, .b = 0xe5 },
-    .{ .r = 0x66, .g = 0x66, .b = 0x66 },
-    .{ .r = 0xf1, .g = 0x4c, .b = 0x4c },
-    .{ .r = 0x23, .g = 0xd1, .b = 0x8b },
-    .{ .r = 0xf5, .g = 0xf5, .b = 0x43 },
-    .{ .r = 0x3b, .g = 0x8e, .b = 0xde },
-    .{ .r = 0xd6, .g = 0x70, .b = 0xd6 },
-    .{ .r = 0x29, .g = 0xb8, .b = 0xdb },
-    .{ .r = 0xff, .g = 0xff, .b = 0xff },
-};
-
 fn handleTerminalBytes(app: *App, tab: workspace.WorkspaceTab, bytes: []const u8) void {
     if (bytes.len == 0) return;
     if (tab.status == .failed or tab.status == .closed) {
@@ -2065,85 +1748,9 @@ fn handleTerminalBytes(app: *App, tab: workspace.WorkspaceTab, bytes: []const u8
 }
 
 fn handleTerminalKey(app: *App, tab: workspace.WorkspaceTab, key: dvui.Event.Key, snapshot: ?terminal.Snapshot, active_slot_id: ?terminal_slot.TerminalSlotId, viewport: *TerminalViewport) bool {
-    var bytes: []const u8 = "";
     var ctrl_buf: [1]u8 = undefined;
-
-    if (terminalControlByte(key)) |byte| {
-        ctrl_buf[0] = byte;
-        if (snapshot) |snap| applyPredictiveInput(app, tab, active_slot_id, viewport, snap, ctrl_buf[0..1]);
-        handleTerminalBytes(app, tab, ctrl_buf[0..1]);
-        return true;
-    }
-
-    if (bytes.len == 0) {
-        bytes = switch (key.code) {
-            .enter, .kp_enter => "\r",
-            .backspace => "\x7f",
-            .tab => "\t",
-            .escape => "\x1b",
-            .up => "\x1b[A",
-            .down => "\x1b[B",
-            .right => "\x1b[C",
-            .left => "\x1b[D",
-            .home => "\x1b[H",
-            .end => "\x1b[F",
-            .page_up => "\x1b[5~",
-            .page_down => "\x1b[6~",
-            .delete => "\x1b[3~",
-            else => return false,
-        };
-    }
-
+    const bytes = input_encoding.keyBytes(key, &ctrl_buf) orelse return false;
     if (snapshot) |snap| applyPredictiveInput(app, tab, active_slot_id, viewport, snap, bytes);
     handleTerminalBytes(app, tab, bytes);
-    return true;
-}
-
-fn terminalControlByte(key: dvui.Event.Key) ?u8 {
-    if (!key.mod.control() or key.mod.alt()) return null;
-    return controlByte(key.code);
-}
-
-fn controlByte(key: dvui.enums.Key) ?u8 {
-    return switch (key) {
-        .a => 0x01,
-        .b => 0x02,
-        .c => 0x03,
-        .d => 0x04,
-        .e => 0x05,
-        .f => 0x06,
-        .g => 0x07,
-        .h => 0x08,
-        .i => 0x09,
-        .j => 0x0a,
-        .k => 0x0b,
-        .l => 0x0c,
-        .m => 0x0d,
-        .n => 0x0e,
-        .o => 0x0f,
-        .p => 0x10,
-        .q => 0x11,
-        .r => 0x12,
-        .s => 0x13,
-        .t => 0x14,
-        .u => 0x15,
-        .v => 0x16,
-        .w => 0x17,
-        .x => 0x18,
-        .y => 0x19,
-        .z => 0x1a,
-        .left_bracket => 0x1b,
-        .backslash => 0x1c,
-        .right_bracket => 0x1d,
-        else => null,
-    };
-}
-
-fn isTerminalControlBytes(bytes: []const u8) bool {
-    if (bytes.len == 0) return false;
-    for (bytes) |byte| {
-        if (byte == '\t' or byte == '\n' or byte == '\r') continue;
-        if (byte >= 0x20 or byte == 0x1b) return false;
-    }
     return true;
 }

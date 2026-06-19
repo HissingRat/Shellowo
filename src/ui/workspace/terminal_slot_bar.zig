@@ -2,7 +2,7 @@ const dvui = @import("dvui");
 const std = @import("std");
 
 const terminal_slot = @import("../../core/terminal_slot.zig");
-const predictive = @import("../../terminal/predictive.zig");
+const predictive = @import("../../core/terminal/predictive.zig");
 const theme = @import("../theme.zig");
 
 const bar_height: f32 = 22;
@@ -381,19 +381,14 @@ fn slotContextMenuOptions(palette: theme.Palette, id_extra: usize) dvui.Options 
 }
 
 fn slotContextMenuItem(label: []const u8, palette: theme.Palette, id_extra: usize) ?dvui.Rect.Natural {
-    return dvui.menuItemLabel(@src(), label, .{}, .{
+    return theme.menuItem(@src(), label, palette, .{
         .id_extra = id_extra,
-        .expand = .horizontal,
-        .background = true,
-        .font = theme.textFont(label, font_size),
-        .color_fill = dvui.Color.transparent,
-        .color_fill_hover = palette.surface_active,
-        .color_fill_press = palette.active_bg,
-        .color_text = palette.text,
-        .color_text_hover = palette.text,
-        .color_text_press = palette.text,
-        .padding = .{ .x = 2, .y = 2, .w = 2, .h = 0 },
-        .min_size_content = .{ .h = menu_item_height },
-        .corner_radius = .all(3),
+        .font_size = font_size,
+        .layout = .{
+            .expand = .horizontal,
+            .padding = .{ .x = 2, .y = 2, .w = 2, .h = 0 },
+            .min_size_content = .{ .h = menu_item_height },
+            .corner_radius = .all(3),
+        },
     });
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const predictive = @import("../terminal/predictive.zig");
+const predictive = @import("../core/terminal/predictive.zig");
 const ui_theme = @import("../ui/theme.zig");
 
 pub const config_file_name = "owoConfig.json";

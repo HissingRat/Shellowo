@@ -2,21 +2,29 @@ const std = @import("std");
 const builtin = @import("builtin");
 const app_config = @import("config.zig");
 const native_event = @import("native_event.zig");
+const profile_actions = @import("profile_actions.zig");
+const settings_actions = @import("settings_actions.zig");
+const terminal_state = @import("terminal_state.zig");
+const transfer_rules = @import("transfer_rules.zig");
+const workspace_actions = @import("workspace_actions.zig");
 const profile = @import("../core/profile.zig");
 const remote_file = @import("../core/remote_file.zig");
 const transfer = @import("../core/transfer.zig");
-const libssh2_backend = @import("../protocols/libssh2_backend.zig");
-const ssh = @import("../protocols/ssh.zig");
-const profile_repository = @import("../services/profile_repository.zig");
-const session_registry = @import("../services/session_registry.zig");
-const ssh_session = @import("../services/ssh_session.zig");
+const ssh = @import("../contracts/ssh.zig");
+const profile_repository = @import("../runtime/profiles/profile_repository.zig");
+const session_registry = @import("../runtime/sessions/registry.zig");
+const ssh_session = @import("../runtime/sessions/ssh_session.zig");
 const known_hosts_store = @import("../security/known_hosts.zig");
-const libvterm_backend = @import("../terminal/libvterm_backend.zig");
-const terminal = @import("../terminal/terminal.zig");
-const predictive = @import("../terminal/predictive.zig");
+const terminal = @import("../contracts/terminal_emulator.zig");
+const predictive = @import("../core/terminal/predictive.zig");
 const ui_theme = @import("../ui/theme.zig");
 
 const App = @This();
+
+pub const Dependencies = struct {
+    ssh_connector: ssh.Connector,
+    terminal_factory: ssh_session.TerminalFactory,
+};
 
 const terminal_snapshot_max_fps: i128 = 60;
 const terminal_snapshot_min_interval_ns: i128 = std.time.ns_per_s / terminal_snapshot_max_fps;
@@ -38,35 +46,8 @@ const TransferRetryRecord = struct {
     intent: remote_file.FilePanelIntent,
 };
 
-const TerminalSnapshotCache = struct {
-    tab_id: ?u64 = null,
-    slot_id: ?u64 = null,
-    generation: u64 = 0,
-    pending_generation: ?u64 = null,
-    last_present_ns: i128 = 0,
-    snapshot: ?terminal.Snapshot = null,
-
-    fn deinit(self: *TerminalSnapshotCache) void {
-        if (self.snapshot) |*snapshot| snapshot.deinit();
-        self.* = .{};
-    }
-
-    fn clear(self: *TerminalSnapshotCache) void {
-        self.deinit();
-    }
-};
-
-const TerminalPredictiveState = struct {
-    tab_id: u64,
-    slot_id: u64,
-    state: predictive.DualState,
-    last_probe_generation: u64 = 0,
-
-    fn deinit(self: *TerminalPredictiveState) void {
-        self.state.deinit();
-        self.* = undefined;
-    }
-};
+const TerminalSnapshotCache = terminal_state.SnapshotCache;
+const TerminalPredictiveState = terminal_state.PredictiveState;
 
 allocator: std.mem.Allocator,
 io: ?std.Io = null,
@@ -74,8 +55,8 @@ config: app_config.Config,
 profiles: profile_repository.MemoryProfileRepository,
 known_hosts: known_hosts_store.KnownHosts,
 sessions: session_registry.MockSessionRegistry,
-ssh_backend: libssh2_backend.Backend,
-terminal_backend: libvterm_backend.Backend,
+ssh_connector: ssh.Connector,
+terminal_factory: ssh_session.TerminalFactory,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
 transfer_retries: std.ArrayList(TransferRetryRecord) = .empty,
 native_events: std.ArrayList(native_event.NativeEvent) = .empty,
@@ -108,7 +89,7 @@ const profiles_path = "data/profiles.json";
 const known_hosts_path = "data/known_hosts.json";
 const transfer_speed_sample_ns: i128 = 500 * std.time.ns_per_ms;
 
-pub fn initMemory(allocator: std.mem.Allocator) !App {
+pub fn initMemory(allocator: std.mem.Allocator, dependencies: Dependencies) !App {
     var config = try app_config.Config.load(allocator, null);
     errdefer config.deinit();
     var app = App{
@@ -117,8 +98,8 @@ pub fn initMemory(allocator: std.mem.Allocator) !App {
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
         .known_hosts = known_hosts_store.KnownHosts.init(allocator),
         .sessions = session_registry.MockSessionRegistry.init(allocator),
-        .ssh_backend = .{ .allocator = allocator },
-        .terminal_backend = .{ .allocator = allocator },
+        .ssh_connector = dependencies.ssh_connector,
+        .terminal_factory = dependencies.terminal_factory,
     };
     app.theme_mode = app.config.theme_mode;
     app.draft.reset();
@@ -127,7 +108,7 @@ pub fn initMemory(allocator: std.mem.Allocator) !App {
     return app;
 }
 
-pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
+pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io, dependencies: Dependencies) !App {
     var config = try app_config.Config.load(allocator, io);
     errdefer config.deinit();
     var app = App{
@@ -137,8 +118,8 @@ pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io) !App {
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
         .known_hosts = known_hosts_store.KnownHosts.init(allocator),
         .sessions = session_registry.MockSessionRegistry.init(allocator),
-        .ssh_backend = .{ .allocator = allocator },
-        .terminal_backend = .{ .allocator = allocator },
+        .ssh_connector = dependencies.ssh_connector,
+        .terminal_factory = dependencies.terminal_factory,
     };
     app.theme_mode = app.config.theme_mode;
     app.draft.reset();
@@ -238,75 +219,43 @@ pub fn clearNativeEvents(self: *App) void {
 }
 
 pub fn selectProfile(self: *App, id: u64) void {
-    self.selected_profile_id = id;
-    if (self.profiles.get(id)) |item| {
-        self.draft.load(item.*);
-        self.message = "Profile selected";
-    }
+    profile_actions.select(self, id);
 }
 
 pub fn newProfile(self: *App) void {
-    self.selected_profile_id = null;
-    self.draft.reset();
-    self.show_config = true;
-    self.message = "New profile";
+    profile_actions.create(self);
 }
 
 pub fn editProfile(self: *App, id: u64) void {
-    self.selectProfile(id);
-    self.show_config = true;
+    profile_actions.edit(self, id);
 }
 
 pub fn cancelConfig(self: *App) void {
-    if (self.selected_profile_id) |id| {
-        if (self.profiles.get(id)) |item| self.draft.load(item.*);
-    } else {
-        self.draft.reset();
-    }
-    self.show_config = false;
-    self.message = "Home";
+    profile_actions.cancel(self);
 }
 
 pub fn goHome(self: *App) void {
-    self.sessions.active_tab_id = null;
-    self.message = "Home";
+    settings_actions.goHome(self);
 }
 
 pub fn toggleTheme(self: *App) void {
-    self.setThemeMode(switch (self.theme_mode) {
-        .dark => .light,
-        .light => .dark,
-    });
+    settings_actions.toggleTheme(self);
 }
 
 pub fn setThemeMode(self: *App, mode: ui_theme.ThemeMode) void {
-    self.theme_mode = mode;
-    self.config.theme_mode = self.theme_mode;
-    self.persistConfig();
+    settings_actions.setThemeMode(self, mode);
 }
 
 pub fn setDownloadPath(self: *App, path: []const u8) void {
-    if (path.len == 0) return;
-    const owned = self.allocator.dupe(u8, path) catch {
-        self.message = "Could not update download path";
-        return;
-    };
-    self.allocator.free(self.config.download_path);
-    self.config.download_path = owned;
-    self.persistConfig();
+    settings_actions.setDownloadPath(self, path);
 }
 
 pub fn setTerminalPredictionMode(self: *App, mode: predictive.PredictionMode) void {
-    self.config.terminal_prediction.mode = mode;
-    self.config.terminal_prediction.enabled = mode != .off;
-    self.applyTerminalPredictionConfig();
+    settings_actions.setTerminalPredictionMode(self, mode);
 }
 
 pub fn applyTerminalPredictionConfig(self: *App) void {
-    for (self.terminal_predictive_states.items) |*slot_state| {
-        slot_state.state.prediction_policy.applyConfig(self.config.terminal_prediction.toCore());
-    }
-    self.persistConfig();
+    settings_actions.applyTerminalPredictionConfig(self);
 }
 
 pub fn beginFrame(self: *App) void {
@@ -582,50 +531,27 @@ pub fn closeTab(self: *App, tab_id: u64) void {
 }
 
 pub fn sendTerminalBytes(self: *App, tab_id: u64, bytes: []const u8) void {
-    if (bytes.len == 0) return;
-    self.sessions.sendSshInput(tab_id, bytes) catch {
-        self.message = "Could not send terminal input";
-        return;
-    };
+    workspace_actions.sendTerminalBytes(self, tab_id, bytes);
 }
 
 pub fn sendTerminalMouse(self: *App, tab_id: u64, event: terminal.MouseEvent) void {
-    self.sessions.sendSshMouse(tab_id, event) catch {
-        self.message = "Could not send terminal mouse event";
-        return;
-    };
+    workspace_actions.sendTerminalMouse(self, tab_id, event);
 }
 
 pub fn resizeTerminal(self: *App, tab_id: u64, size: ssh.PtySize) void {
-    self.sessions.resizeSshTerminal(tab_id, size) catch {
-        self.message = "Could not resize terminal";
-        return;
-    };
+    workspace_actions.resizeTerminal(self, tab_id, size);
 }
 
 pub fn clearTerminalScrollback(self: *App, tab_id: u64) void {
-    self.sessions.clearSshScrollback(tab_id) catch {
-        self.message = "Could not clear terminal scrollback";
-        return;
-    };
+    workspace_actions.clearScrollback(self, tab_id);
 }
 
 pub fn createTerminalSlot(self: *App, tab_id: u64) void {
-    self.terminal_snapshot_cache.clear();
-    _ = self.sessions.createTerminalSlot(tab_id) catch {
-        self.message = "Could not create terminal";
-        return;
-    };
-    self.message = "Terminal created";
+    workspace_actions.createTerminalSlot(self, tab_id);
 }
 
 pub fn activateTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
-    self.terminal_snapshot_cache.clear();
-    if (!self.sessions.activateTerminalSlot(tab_id, slot_id)) {
-        self.message = "Terminal not found";
-        return;
-    }
-    self.message = "Terminal selected";
+    workspace_actions.activateTerminalSlot(self, tab_id, slot_id);
 }
 
 pub fn closeTerminalSlot(self: *App, tab_id: u64, slot_id: u64) void {
@@ -865,28 +791,15 @@ pub fn transferBusyInRemotePath(self: *const App, remote_path: []const u8) bool 
 }
 
 fn remoteEntryMatches(task_path: []const u8, task_name: []const u8, remote_path: []const u8, name: []const u8) bool {
-    return std.mem.eql(u8, task_path, remote_path) and std.mem.eql(u8, task_name, name);
+    return transfer_rules.remoteEntryMatches(task_path, task_name, remote_path, name);
 }
 
 fn batchContainsRemoteEntry(item: remote_file.FileBatchTransferIntent, remote_path: []const u8, name: []const u8) bool {
-    if (!std.mem.eql(u8, item.remote_path, remote_path)) return false;
-    for (item.entries) |entry| {
-        if (std.mem.eql(u8, entry.name, name)) return true;
-    }
-    return false;
+    return transfer_rules.batchContainsRemoteEntry(item, remote_path, name);
 }
 
 fn remotePathOverlaps(a: []const u8, b: []const u8) bool {
-    if (a.len == 0 or b.len == 0) return false;
-    return std.mem.eql(u8, a, b) or remotePathIsAncestor(a, b) or remotePathIsAncestor(b, a);
-}
-
-fn remotePathIsAncestor(parent: []const u8, child: []const u8) bool {
-    if (parent.len == 0 or child.len == 0) return false;
-    if (std.mem.eql(u8, parent, child)) return true;
-    if (std.mem.eql(u8, parent, "/")) return child.len > 1 and child[0] == '/';
-    if (!std.mem.startsWith(u8, child, parent)) return false;
-    return child.len > parent.len and child[parent.len] == '/';
+    return transfer_rules.pathsOverlap(a, b);
 }
 
 fn syncTransferProgress(self: *App) void {
@@ -1177,8 +1090,8 @@ pub fn persistKnownHosts(self: *App) void {
 
 pub fn sshRuntimeOptions(self: *App) ssh_session.Options {
     return .{
-        .connector = self.ssh_backend.connector(),
-        .terminal_factory = terminalFactory(&self.terminal_backend),
+        .connector = self.ssh_connector,
+        .terminal_factory = self.terminal_factory,
         .io = self.io,
         .host_key_verifier = self.known_hosts.verifier(),
         .host_key_policy = .trust_on_first_use,
@@ -1239,13 +1152,6 @@ fn syncTerminalLatencyProbes(self: *App) void {
     }
 }
 
-fn terminalFactory(backend: *libvterm_backend.Backend) ssh_session.TerminalFactory {
-    return .{
-        .context = backend,
-        .vtable = &terminal_factory_vtable,
-    };
-}
-
 fn frameNsToMs(ns: i128) u64 {
     if (ns <= 0) return 0;
     return @intCast(@divTrunc(ns, std.time.ns_per_ms));
@@ -1272,16 +1178,6 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
     };
 }
 
-fn createTerminal(context: *anyopaque, allocator: std.mem.Allocator, size: terminal.Size) terminal.Error!terminal.Emulator {
-    _ = allocator;
-    const backend: *libvterm_backend.Backend = @ptrCast(@alignCast(context));
-    return backend.create(size);
-}
-
-const terminal_factory_vtable: ssh_session.TerminalFactory.VTable = .{
-    .create = createTerminal,
-};
-
 fn normalizedGroup(group_name: []const u8) []const u8 {
     return if (group_name.len == 0) "Default" else group_name;
 }
@@ -1301,7 +1197,7 @@ fn addGroupExpansion(self: *App, group_name: []const u8, expanded: bool) !void {
 }
 
 test "app seeds profiles" {
-    var app = try App.initMemory(std.testing.allocator);
+    var app = try App.initMemory(std.testing.allocator, testingDependencies());
     defer app.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), app.profiles.items().len);
@@ -1309,7 +1205,7 @@ test "app seeds profiles" {
 }
 
 test "terminal predictive state is isolated per workspace slot" {
-    var app = try App.initMemory(std.testing.allocator);
+    var app = try App.initMemory(std.testing.allocator, testingDependencies());
     defer app.deinit();
 
     const first = try app.ensureTerminalPredictiveState(10, 1);
@@ -1324,3 +1220,32 @@ test "terminal predictive state is isolated per workspace slot" {
     try std.testing.expect(app.terminalPredictiveState(10, 1) == null);
     try std.testing.expect(app.terminalPredictiveState(10, 2) != null);
 }
+
+fn testingDependencies() Dependencies {
+    return .{
+        .ssh_connector = .{
+            .context = undefined,
+            .vtable = &testing_connector_vtable,
+        },
+        .terminal_factory = .{
+            .context = undefined,
+            .vtable = &testing_terminal_factory_vtable,
+        },
+    };
+}
+
+fn testingConnect(_: *anyopaque, _: std.mem.Allocator, _: ssh.ConnectOptions) ssh.Error!ssh.Client {
+    return ssh.Error.ConnectionFailed;
+}
+
+fn testingCreateTerminal(_: *anyopaque, _: std.mem.Allocator, _: terminal.Size) terminal.Error!terminal.Emulator {
+    return terminal.Error.InitFailed;
+}
+
+const testing_connector_vtable: ssh.Connector.VTable = .{
+    .connect = testingConnect,
+};
+
+const testing_terminal_factory_vtable: ssh_session.TerminalFactory.VTable = .{
+    .create = testingCreateTerminal,
+};

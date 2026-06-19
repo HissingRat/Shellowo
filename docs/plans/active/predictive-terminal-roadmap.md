@@ -13,12 +13,14 @@
 当前重点文件：
 
 - `src/ui/workspace/terminal_panel.zig`: 只负责渲染 snapshot、输入编码、粘贴分块、resize intent 和未来本地预测显示。
-- `src/services/session_registry.zig`: 负责把 tab intent 路由到 session/workspace worker。
-- `src/services/ssh_workspace_worker.zig`: 负责 terminal slot、PTY read/write/resize queue、snapshot cache、SFTP/file worker 协调。
-- `src/services/ssh_session_worker.zig`: 旧/单 terminal worker 参考路径，后续应与 workspace worker 策略收敛。
-- `src/services/ssh_session.zig`: 单会话 runtime facade，适合沉淀 write queue / read pump / resize 语义。
-- `src/protocols/ssh.zig` 和 `src/protocols/libssh2_backend.zig`: Shellow SSH facade 与 libssh2 backend，不能让 raw libssh2 handle 上浮到 UI。
-- `src/terminal/terminal.zig` 和 `src/terminal/libvterm_backend.zig`: terminal snapshot、dirty 信息、未来双 vterm / reconcile 的落点。
+- `src/runtime/sessions/registry.zig`: 负责把 tab intent 路由到 session/workspace worker。
+- `src/runtime/sessions/ssh_workspace_worker.zig`: workspace coordinator，负责 SSH client、SFTP/file worker 和各 runtime 的生命周期协调。
+- `src/runtime/terminal/pty_slot.zig`: terminal slot、PTY read/write/resize queue 和 snapshot cache。
+- `src/runtime/monitor/ssh_monitor.zig`: 独立 SSH monitor/probe 状态。
+- 单 terminal worker 已移除；probe 与生产路径统一使用 `ssh_workspace_worker.zig`。
+- `src/runtime/sessions/ssh_session.zig`: 单会话 runtime facade，适合沉淀 write queue / read pump / resize 语义。
+- `src/contracts/ssh.zig` 和 `src/backends/ssh/libssh2.zig`: Shellow SSH facade 与 libssh2 backend，不能让 raw libssh2 handle 上浮到 UI。
+- `src/contracts/terminal_emulator.zig` 和 `src/backends/terminal/libvterm.zig`: terminal snapshot、dirty 信息、未来双 vterm / reconcile 的落点。
 
 目标：让 Shellow 在 SSH 高延迟环境下，尽可能接近 FinalShell / Xshell / Mosh 的输入流畅度，同时保证在 Shell、Vim、Nano、Tmux、Htop、Less 等场景下不容易错乱。
 
@@ -73,20 +75,20 @@ Predictive Terminal State
 
 当前进展：
 
-- [x] `src/services/ssh_workspace_worker.zig` 和 `src/services/ssh_session_worker.zig` 的 terminal input 改为 bounded pending byte queue。
+- [x] `src/runtime/sessions/ssh_workspace_worker.zig` 的 terminal input 使用 bounded pending byte queue。
 - [x] `src/ui/workspace/terminal_panel.zig` 的键盘、文本、粘贴、鼠标和 resize intent 都通过 `App` / `session_registry` 路由到 worker，不直接触碰 `libssh2`。
 - [x] SSH write 遇到 `WouldBlock` 时保留 pending input，下一轮继续写。
 - [x] SSH write partial success 时只消费已经写出的字节，未写出的字节继续留在 queue。
 - [x] 鼠标 escape bytes 先进入同一个 pending byte queue，避免 channel 暂时不可写时丢事件。
 - [x] PTY resize 遇到 `WouldBlock` 时保留 latest retry request，不直接丢弃。
-- [x] `src/services/ssh_workspace_worker.zig` 的 terminal pump 线程负责 `shell.read` / `shell.write` / `shell.resize`，远端输出经 `TerminalEmulator.write` 进入 libvterm 状态机。
-- [x] `src/services/ssh_workspace_worker.zig` 的 status monitor exec 移到独立线程和独立 SSH client，避免周期性阻塞 terminal slot pump。
-- [x] `src/services/ssh_workspace_worker.zig` 的 terminal slot 列表锁不再覆盖 open/read/write/resize/snapshot runtime 操作。
-- [x] `src/services/ssh_workspace_worker.zig` 和 `src/services/ssh_session_worker.zig` 的 pump loop 改为 active-aware：有 pending input、resize、mouse、read output 或 dirty snapshot 时连续推进，完全空闲时才让出/sleep。
+- [x] `src/runtime/sessions/ssh_workspace_worker.zig` 的 terminal pump 线程负责 `shell.read` / `shell.write` / `shell.resize`，远端输出经 `TerminalEmulator.write` 进入 libvterm 状态机。
+- [x] `src/runtime/sessions/ssh_workspace_worker.zig` 的 status monitor exec 移到独立线程和独立 SSH client，避免周期性阻塞 terminal slot pump。
+- [x] `src/runtime/sessions/ssh_workspace_worker.zig` 的 terminal slot 列表锁不再覆盖 open/read/write/resize/snapshot runtime 操作。
+- [x] `src/runtime/sessions/ssh_workspace_worker.zig` 的 pump loop 改为 active-aware：有 pending input、resize、mouse、read output 或 dirty snapshot 时连续推进，完全空闲时才让出/sleep。
 - [x] `terminal.Snapshot` 增加 generation，App 侧缓存当前可见 terminal snapshot；generation 未变化时复用 cached snapshot，避免空闲帧重复复制整屏 cells/scrollback。
 - [x] `src/ui/workspace/terminal_panel.zig` 只渲染 `terminal.Snapshot` / fallback transcript，真实 SSH tab 的 screen 内容来自 `app.cachedSshSnapshot`。
-- [x] `src/terminal/libvterm_shim.c` 接入 libvterm screen damage callback，`terminal.Snapshot` 带 dirty row range 和 scrollback dirty 标记，为后续只更新变化行/光标区域做准备。
-- [x] `terminal.Snapshot` 增加 cursor dirty/visible 元数据，`src/terminal/libvterm_shim.c` 接入 libvterm `movecursor` callback，并把新旧光标所在行并入 dirty rows。
+- [x] `src/backends/terminal/libvterm_shim.c` 接入 libvterm screen damage callback，`terminal.Snapshot` 带 dirty row range 和 scrollback dirty 标记，为后续只更新变化行/光标区域做准备。
+- [x] `terminal.Snapshot` 增加 cursor dirty/visible 元数据，`src/backends/terminal/libvterm_shim.c` 接入 libvterm `movecursor` callback，并把新旧光标所在行并入 dirty rows。
 - [x] `src/ui/workspace/terminal_panel.zig` 的搜索结果按 snapshot generation/query 缓存；仅当前 screen dirty rows 变化且 scrollback 未变时，增量替换 dirty 行的搜索结果。
 - [x] `src/ui/workspace/terminal_panel.zig` 的搜索高亮按已排序 match 做行级二分定位，避免每个可见行扫描全部搜索结果。
 - [x] `src/ui/workspace/terminal_panel.zig` 缓存行级背景元数据；无选区且该行无背景样式时跳过整行 background pass，且未命中 dirty rows 的行可跨 snapshot generation 复用缓存。
@@ -136,11 +138,11 @@ libvterm
 
 当前进展：
 
-- [x] `src/terminal/libvterm_backend.zig` 通过 `TerminalEmulator.write` 把 PTY bytes 写入 `libvterm`，并用 `snapshot` 读取 screen cells、scrollback、cursor、mode 和 title。
-- [x] `src/terminal/libvterm_shim.c` / `src/terminal/libvterm_shim.h` 把 libvterm cell 的 codepoint、width、fg/bg、bold、italic、underline、blink、reverse、strike 映射到 Shellow `terminal.Cell` / `terminal.Style`。
+- [x] `src/backends/terminal/libvterm.zig` 通过 `TerminalEmulator.write` 把 PTY bytes 写入 `libvterm`，并用 `snapshot` 读取 screen cells、scrollback、cursor、mode 和 title。
+- [x] `src/backends/terminal/libvterm_shim.c` / `src/backends/terminal/libvterm_shim.h` 把 libvterm cell 的 codepoint、width、fg/bg、bold、italic、underline、blink、reverse、strike 映射到 Shellow `terminal.Cell` / `terminal.Style`。
 - [x] `src/ui/workspace/terminal_panel.zig` 按 snapshot cell 渲染字符 run、前景色、背景色、粗体、斜体、下划线、删除线、reverse 和 cursor。
-- [x] `src/terminal/libvterm_backend.zig` 已有文本、Unicode、ANSI color、scrollback、clear scrollback、alternate screen、bracketed paste、dirty rows 和 mouse mode 相关测试。
-- [x] `src/services/ssh_workspace_worker.zig` 在 resize intent 到达时同步 resize libvterm emulator 和远端 PTY；远端 PTY `WouldBlock` 时保留 latest retry request。
+- [x] `src/backends/terminal/libvterm.zig` 已有文本、Unicode、ANSI color、scrollback、clear scrollback、alternate screen、bracketed paste、dirty rows 和 mouse mode 相关测试。
+- [x] `src/runtime/sessions/ssh_workspace_worker.zig` 在 resize intent 到达时同步 resize libvterm emulator 和远端 PTY；远端 PTY `WouldBlock` 时保留 latest retry request。
 
 ## 数据流
 
@@ -178,11 +180,11 @@ dvui renderer
 
 当前进展：
 
-- [x] `src/terminal/libvterm_shim.c` 记录 libvterm damage callback 给出的 dirty rect，并在 C shim 内合并相邻/重叠 rect；rect 过多时降级为 overflow/full dirty 语义。
-- [x] `terminal.Snapshot` 增加 fixed-capacity `DirtyRects`，`src/terminal/libvterm_backend.zig` 把 C shim 的 dirty rects 映射到 Zig snapshot，并已有 snapshot 后清空 dirty metadata 的测试覆盖。
+- [x] `src/backends/terminal/libvterm_shim.c` 记录 libvterm damage callback 给出的 dirty rect，并在 C shim 内合并相邻/重叠 rect；rect 过多时降级为 overflow/full dirty 语义。
+- [x] `terminal.Snapshot` 增加 fixed-capacity `DirtyRects`，`src/backends/terminal/libvterm.zig` 把 C shim 的 dirty rects 映射到 Zig snapshot，并已有 snapshot 后清空 dirty metadata 的测试覆盖。
 - [x] `src/ui/workspace/terminal_panel.zig` 的行级背景缓存优先使用 dirty rects 判断行是否变化；普通输入只让 dirty/cursor 命中的行失效，未变化行跨 snapshot generation 复用。
 - [x] `src/app/App.zig` 对 terminal snapshot present 做约 60 FPS gate；worker 可继续高频 pump/read/write，但 UI 不会无限制复制并交付新 snapshot。
-- [x] `src/ui/workspace_view.zig` 在有 pending snapshot generation 时通过 DVUI timer 请求下一次 present frame。
+- [x] `src/ui/features/workspace/view.zig` 在有 pending snapshot generation 时通过 DVUI timer 请求下一次 present frame。
 
 说明：Shellow 当前 DVUI 渲染仍是 immediate-mode frame 提交；这里的“只重绘变化区域”落在 terminal 层的 dirty-aware 行处理、缓存失效和 snapshot present 调度上，而不是底层窗口系统的像素级 partial present。若后续引入 retained terminal surface，可继续把 dirty rects 下沉为真正的纹理局部更新。
 
@@ -302,7 +304,7 @@ reconcile
 
 当前进展：
 
-- [x] 新增 `src/terminal/predictive.zig`，提供 `DualState`，拥有 real snapshot 和 predicted snapshot 两套状态。
+- [x] 新增 `src/core/terminal/predictive.zig`，提供 `DualState`，拥有 real snapshot 和 predicted snapshot 两套状态。
 - [x] `DualState.syncReal` 接收远端真实 snapshot；首次同步时初始化 predicted snapshot，后续同步时先 diff 再 reconcile。
 - [x] `diffSnapshots` 比较 screen cells、cursor、alternate screen、bracketed paste、mouse mode、size、scrollback 内容，并输出 dirty rects / mismatch count / structural flags。
 - [x] `DualState.feedLocalInput` 支持最小本地预测输入：printable ASCII 和 Backspace，直接修改 predicted snapshot。
@@ -359,7 +361,7 @@ const PendingInput = struct {
 
 当前进展：
 
-- [x] `src/terminal/predictive.zig` 增加 `PredictionKind` 和 owned `PendingInput`，记录 id、timestamp、bytes、prediction kind。
+- [x] `src/core/terminal/predictive.zig` 增加 `PredictionKind` 和 owned `PendingInput`，记录 id、timestamp、bytes、prediction kind。
 - [x] `DualState.recordLocalInput` 为每次本地输入分配递增 id，复制 bytes，进入 pending queue，并同步调用 `feedLocalInput` 更新 predicted snapshot。
 - [x] pending queue 设置总字节上限；超过上限会清空 pending 并回滚 predicted 到 real，避免网络卡顿时无限增长。
 - [x] `DualState.syncReal` 在远端真实 snapshot 到达时比较 real/predicted；一致则确认并清空 pending input，不一致则按 Phase 4 reconcile 后清空未确认预测。
@@ -463,7 +465,7 @@ Bracketed paste
 
 当前进展：
 
-- [x] `src/terminal/predictive.zig` 增加 `PredictionLevel`：`safe_shell`、`readline`、`tui_insert`、`disabled`。
+- [x] `src/core/terminal/predictive.zig` 增加 `PredictionLevel`：`safe_shell`、`readline`、`tui_insert`、`disabled`。
 - [x] `classifyPrediction` 覆盖 printable、Backspace、Enter、Tab、方向键、readline control 和 unknown。
 - [x] 新增 `PredictionContext` / `PredictionDecision` / `decidePrediction`，根据 snapshot mode、bracketed paste、mouse mode、敏感 prompt、选区、搜索、滚动、粘贴队列、输入类型和 prediction level 决定是否预测。
 - [x] `DualState` 增加 `PredictionPolicyState`，作为 session 级 prediction level 状态；`syncRealAt` 会根据 diff 自动记录稳定/冲突。
@@ -512,7 +514,7 @@ Backspace 删除前一个 cell
 
 当前进展：
 
-- [x] `src/terminal/predictive.zig` 的 `decidePrediction` 已区分 normal screen / alternate screen；alternate screen 只有 `tui_insert` level 且配置允许时才预测。
+- [x] `src/core/terminal/predictive.zig` 的 `decidePrediction` 已区分 normal screen / alternate screen；alternate screen 只有 `tui_insert` level 且配置允许时才预测。
 - [x] `DualState.recordLocalInput` 在 `tui_insert` level 下可对 alternate screen 做 cell-level printable insert 和 Backspace delete。
 - [x] Enter 采用保守预测：只在有下一行时移动 predicted cursor 到下一行行首，不猜 prompt 或程序语义。
 - [x] Tab 默认不预测，除非用户配置 `predict_tab = true`。
@@ -737,7 +739,7 @@ Local PTY on server
 
 当前进展：
 
-- [x] `RemoteAgentPlan` / `RemoteAgentMode` 已作为 capability stub 放入 `src/terminal/predictive.zig`。
+- [x] `RemoteAgentPlan` / `RemoteAgentMode` 已作为 capability stub 放入 `src/core/terminal/predictive.zig`。
 - [x] 默认保持 disabled；只有 proposed 且支持 state diff 时才视为 available。
 - [x] 未实现远端安装、协议、agent 传输或状态同步运行时，符合本阶段“先不要做”的路线图建议。
 

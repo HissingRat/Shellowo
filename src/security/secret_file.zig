@@ -15,4 +15,3 @@ test "placeholder crypto returns the original text" {
     defer std.testing.allocator.free(decrypted);
     try std.testing.expectEqualStrings("secret", decrypted);
 }
-

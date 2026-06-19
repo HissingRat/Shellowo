@@ -29,7 +29,7 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。
 - 远程文件能力走 SSH/SFTP 路线。
 - 终端通道只传 PTY 字节流；文件传输走 transfer system，不把二进制传输塞进 shell。
 - Transfer 进度统一进入 transfer system，不在各个 widget 里零散维护。
-- Raw libssh2 handle 不得越过 `src/protocols/libssh2_backend.zig` 一类 backend 边界。
+- Raw libssh2 handle 不得越过 `src/backends/ssh/libssh2.zig` 一类 backend 边界。
 - 新功能先定义数据模型和边界，再写 DVUI 界面。
 - 新依赖必须登记到 `docs/integration-inventory.md`。
 - 维护的时候不要每轮对话都查git状态
@@ -41,8 +41,12 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台。
 - DVUI + SDL3 app 入口：`src/main.zig`
 - 计划中的领域模型：`src/core/`
 - 计划中的 app 状态与路由：`src/app/`
-- 计划中的 protocol controllers：`src/protocols/`
+- Shellow-owned 能力契约：`src/contracts/`
+- 第三方/native backend：`src/backends/`
+- session、worker 和 repository runtime：`src/runtime/`
 - 计划中的 UI feature：`src/ui/`
+- Shellow UI design system：`src/ui/foundation/`、`src/ui/widgets/`、`src/ui/layouts/`
+- 产品 feature UI：`src/ui/features/` 与逐步迁移中的 `src/ui/workspace/`
 
 ## 5. 当前热点
 

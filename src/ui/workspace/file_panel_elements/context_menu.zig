@@ -165,23 +165,17 @@ fn menuOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
 }
 
 fn menuItem(label: []const u8, enabled: bool, palette: theme.Palette, id_extra: usize) ?dvui.Rect.Natural {
-    const text_color = if (enabled) palette.text else palette.text_subtle;
-    const result = dvui.menuItemLabel(@src(), label, .{}, .{
+    return theme.menuItem(@src(), label, palette, .{
         .id_extra = id_extra,
-        .expand = .horizontal,
-        .background = true,
-        .font = theme.textFont(label, context_menu_font_size),
-        .color_fill = dvui.Color.transparent,
-        .color_fill_hover = if (enabled) palette.surface_active else dvui.Color.transparent,
-        .color_fill_press = if (enabled) palette.active_bg else dvui.Color.transparent,
-        .color_text = text_color,
-        .color_text_hover = text_color,
-        .color_text_press = text_color,
-        .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
-        .min_size_content = .{ .h = 17 },
-        .corner_radius = .all(2),
+        .font_size = context_menu_font_size,
+        .enabled = enabled,
+        .layout = .{
+            .expand = .horizontal,
+            .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
+            .min_size_content = .{ .h = 17 },
+            .corner_radius = .all(2),
+        },
     });
-    return if (enabled) result else null;
 }
 
 fn rowSeparator(palette: theme.Palette, id_extra: usize) void {

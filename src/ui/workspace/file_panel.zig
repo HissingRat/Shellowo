@@ -12,9 +12,16 @@ const details_panel = @import("file_panel_elements/details_panel.zig");
 const file_format = @import("file_panel_elements/file_format.zig");
 const permissions_panel = @import("file_panel_elements/permissions_panel.zig");
 const remote_editor = @import("file_panel_elements/remote_editor.zig");
-const resize = @import("resize.zig");
+const split_view = @import("../layouts/split_view.zig");
 const theme = @import("../theme.zig");
 const transfer_confirm = @import("file_panel_elements/transfer_confirm.zig");
+const panel_state = @import("../features/files/panel_state.zig");
+
+const ColumnWidths = panel_state.ColumnWidths;
+const PathBarState = panel_state.PathBar;
+const PaneLayoutState = panel_state.PaneLayout;
+const EditMode = panel_state.EditMode;
+const PaneKind = panel_state.PaneKind;
 
 const folder_icon_bytes = @embedFile("shellowo-folder-icon");
 const file_icon_bytes = @embedFile("shellowo-file-icon");
@@ -61,225 +68,6 @@ const drop_tooltip_width: f32 = 58;
 const drop_tooltip_height: f32 = 22;
 const drop_tooltip_offset: dvui.Point.Natural = .{ .x = 14, .y = 16 };
 
-const ColumnWidths = app_config.FileColumnWidths;
-
-const PathBarState = struct {
-    editing: bool = false,
-    focus_requested: bool = false,
-    buffer: [path_entry_max_len]u8 = std.mem.zeroes([path_entry_max_len]u8),
-    observed_path: [path_entry_max_len]u8 = undefined,
-    observed_path_len: usize = 0,
-
-    fn observePath(self: *PathBarState, path: []const u8) void {
-        if (self.editing) return;
-        if (std.mem.eql(u8, self.observedPath(), path)) return;
-        self.setBuffer(path);
-        const len = @min(self.observed_path.len, path.len);
-        if (len > 0) @memcpy(self.observed_path[0..len], path[0..len]);
-        self.observed_path_len = len;
-    }
-
-    fn beginEdit(self: *PathBarState, path: []const u8) void {
-        self.setBuffer(path);
-        self.editing = true;
-        self.focus_requested = true;
-    }
-
-    fn cancelEdit(self: *PathBarState) void {
-        self.editing = false;
-        self.focus_requested = false;
-    }
-
-    fn text(self: *const PathBarState) []const u8 {
-        const end = std.mem.indexOfScalar(u8, &self.buffer, 0) orelse self.buffer.len;
-        return self.buffer[0..end];
-    }
-
-    fn observedPath(self: *const PathBarState) []const u8 {
-        return self.observed_path[0..self.observed_path_len];
-    }
-
-    fn setBuffer(self: *PathBarState, path: []const u8) void {
-        self.buffer = std.mem.zeroes([path_entry_max_len]u8);
-        const len = @min(path_entry_max_len - 1, path.len);
-        if (len > 0) @memcpy(self.buffer[0..len], path[0..len]);
-    }
-};
-
-const PaneLayoutState = struct {
-    columns: ColumnWidths = .{},
-    columns_initialized: bool = false,
-    last_click_pane: PaneKind = .remote,
-    last_click_name: [256]u8 = undefined,
-    last_click_name_len: usize = 0,
-    last_click_ns: i128 = 0,
-
-    selected_names: [max_selected_entries][max_selected_name_len]u8 = undefined,
-    selected_name_lens: [max_selected_entries]usize = [_]usize{0} ** max_selected_entries,
-    selected_count: usize = 0,
-    action_entries: [max_selected_entries]remote_file.FileBatchEntry = undefined,
-
-    edit_mode: EditMode = .none,
-    edit_buffer: [edit_name_max_len]u8 = std.mem.zeroes([edit_name_max_len]u8),
-    edit_target_name: [edit_name_max_len]u8 = undefined,
-    edit_target_name_len: usize = 0,
-    edit_focus_requested: bool = false,
-    edit_select_requested: bool = false,
-    edit_was_focused: bool = false,
-
-    delete_pending: bool = false,
-    delete_name: [edit_name_max_len]u8 = undefined,
-    delete_name_len: usize = 0,
-    delete_kind: remote_file.RemoteFileKind = .file,
-    delete_anchor: dvui.Point.Natural = .{},
-
-    details: details_panel.State = .{},
-    permissions: permissions_panel.State = .{},
-    editor: remote_editor.State = .{},
-    transfer_confirm: transfer_confirm.State = .{},
-
-    toast_message: [96]u8 = undefined,
-    toast_message_len: usize = 0,
-    toast_started_ns: i128 = 0,
-    dismissed_toast: [96]u8 = undefined,
-    dismissed_toast_len: usize = 0,
-
-    fn isSelected(self: *const PaneLayoutState, name: []const u8) bool {
-        for (0..self.selected_count) |idx| {
-            if (std.mem.eql(u8, self.selectedName(idx), name)) return true;
-        }
-        return false;
-    }
-
-    fn applySelection(self: *PaneLayoutState, name: []const u8, additive: bool) void {
-        if (additive) {
-            if (self.removeSelection(name)) return;
-            self.addSelection(name);
-            return;
-        }
-        self.selected_count = 0;
-        self.addSelection(name);
-    }
-
-    fn selectedName(self: *const PaneLayoutState, idx: usize) []const u8 {
-        return self.selected_names[idx][0..self.selected_name_lens[idx]];
-    }
-
-    fn addSelection(self: *PaneLayoutState, name: []const u8) void {
-        if (self.isSelected(name) or self.selected_count >= max_selected_entries) return;
-        const idx = self.selected_count;
-        const len = @min(name.len, max_selected_name_len);
-        if (len > 0) @memcpy(self.selected_names[idx][0..len], name[0..len]);
-        self.selected_name_lens[idx] = len;
-        self.selected_count += 1;
-    }
-
-    fn removeSelection(self: *PaneLayoutState, name: []const u8) bool {
-        for (0..self.selected_count) |idx| {
-            if (!std.mem.eql(u8, self.selectedName(idx), name)) continue;
-            var move_idx = idx;
-            while (move_idx + 1 < self.selected_count) : (move_idx += 1) {
-                self.selected_names[move_idx] = self.selected_names[move_idx + 1];
-                self.selected_name_lens[move_idx] = self.selected_name_lens[move_idx + 1];
-            }
-            self.selected_count -= 1;
-            return true;
-        }
-        return false;
-    }
-
-    fn startCreate(self: *PaneLayoutState, mode: EditMode) void {
-        self.edit_mode = mode;
-        self.edit_buffer = std.mem.zeroes([edit_name_max_len]u8);
-        self.edit_target_name_len = 0;
-        self.edit_focus_requested = true;
-        self.edit_select_requested = false;
-        self.edit_was_focused = false;
-    }
-
-    fn startRename(self: *PaneLayoutState, name: []const u8) void {
-        self.edit_mode = .rename;
-        self.edit_buffer = std.mem.zeroes([edit_name_max_len]u8);
-        const len = @min(name.len, edit_name_max_len - 1);
-        if (len > 0) {
-            @memcpy(self.edit_buffer[0..len], name[0..len]);
-            @memcpy(self.edit_target_name[0..len], name[0..len]);
-        }
-        self.edit_target_name_len = len;
-        self.edit_focus_requested = true;
-        self.edit_select_requested = true;
-        self.edit_was_focused = false;
-    }
-
-    fn editingTargetName(self: *const PaneLayoutState) []const u8 {
-        return self.edit_target_name[0..self.edit_target_name_len];
-    }
-
-    fn cancelEdit(self: *PaneLayoutState) void {
-        self.edit_mode = .none;
-        self.edit_focus_requested = false;
-        self.edit_select_requested = false;
-        self.edit_was_focused = false;
-    }
-
-    fn setDeletePending(self: *PaneLayoutState, name: []const u8, kind: remote_file.RemoteFileKind, anchor: dvui.Point.Natural) void {
-        const len = @min(name.len, edit_name_max_len);
-        if (len > 0) @memcpy(self.delete_name[0..len], name[0..len]);
-        self.delete_name_len = len;
-        self.delete_kind = kind;
-        self.delete_anchor = anchor;
-        self.delete_pending = true;
-    }
-
-    fn deleteName(self: *const PaneLayoutState) []const u8 {
-        return self.delete_name[0..self.delete_name_len];
-    }
-
-    fn observeToast(self: *PaneLayoutState, message: ?[]const u8) void {
-        const value = message orelse {
-            self.clearToastGate();
-            return;
-        };
-        if (value.len == 0) {
-            self.clearToastGate();
-            return;
-        }
-        if (std.mem.eql(u8, self.dismissedToast(), value)) return;
-        if (std.mem.eql(u8, self.toastMessage(), value)) return;
-        const len = @min(self.toast_message.len, value.len);
-        if (len > 0) @memcpy(self.toast_message[0..len], value[0..len]);
-        self.toast_message_len = len;
-        self.toast_started_ns = dvui.frameTimeNS();
-    }
-
-    fn dismissToast(self: *PaneLayoutState) void {
-        const message = self.toastMessage();
-        const len = @min(self.dismissed_toast.len, message.len);
-        if (len > 0) @memcpy(self.dismissed_toast[0..len], message[0..len]);
-        self.dismissed_toast_len = len;
-        self.toast_message_len = 0;
-    }
-
-    fn clearToastGate(self: *PaneLayoutState) void {
-        self.dismissed_toast_len = 0;
-    }
-
-    fn toastMessage(self: *const PaneLayoutState) []const u8 {
-        return self.toast_message[0..self.toast_message_len];
-    }
-
-    fn dismissedToast(self: *const PaneLayoutState) []const u8 {
-        return self.dismissed_toast[0..self.dismissed_toast_len];
-    }
-};
-
-const EditMode = enum {
-    none,
-    new_file,
-    new_folder,
-    rename,
-};
-
 pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent {
     _ = tab;
     var intent: ?remote_file.FilePanelIntent = null;
@@ -307,7 +95,7 @@ pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) 
         .columns = opts.columns,
         .id_extra = opts.id_extra + 30,
     }, &intent);
-    resize.handle(palette, .{
+    split_view.handle(palette, .{
         .axis = .vertical,
         .value = opts.local_width,
         .min = min_local_width,
@@ -470,7 +258,6 @@ fn drawPathTextEntry(te: *dvui.TextEntryWidget) void {
     dvui.clipSet(te.prevClip);
 }
 
-const PaneKind = enum { tree, remote };
 const TreeRowAction = enum { none, toggle, row_click };
 const PaneOptions = struct {
     app: *App,
@@ -556,13 +343,13 @@ fn tableHeader(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize
     defer row.deinit();
 
     headerCell("Name", columns.name, palette, id_extra + 1);
-    resize.handle(palette, .{ .axis = .vertical, .value = &layout.columns.name, .min = min_name_width, .max = max_name_width, .id_extra = id_extra + 2, .thickness = 7, .sep_thickness = 0 });
+    split_view.handle(palette, .{ .axis = .vertical, .value = &layout.columns.name, .min = min_name_width, .max = max_name_width, .id_extra = id_extra + 2, .thickness = 7, .sep_thickness = 0 });
     headerCell("Size", columns.size, palette, id_extra + 3);
-    resize.handle(palette, .{ .axis = .vertical, .value = &layout.columns.size, .min = min_size_width, .max = max_size_width, .id_extra = id_extra + 4, .thickness = 7, .sep_thickness = 0 });
+    split_view.handle(palette, .{ .axis = .vertical, .value = &layout.columns.size, .min = min_size_width, .max = max_size_width, .id_extra = id_extra + 4, .thickness = 7, .sep_thickness = 0 });
     headerCell("Modified", columns.modified, palette, id_extra + 5);
-    resize.handle(palette, .{ .axis = .vertical, .value = &layout.columns.modified, .min = min_modified_width, .max = max_modified_width, .id_extra = id_extra + 6, .thickness = 7, .sep_thickness = 0 });
+    split_view.handle(palette, .{ .axis = .vertical, .value = &layout.columns.modified, .min = min_modified_width, .max = max_modified_width, .id_extra = id_extra + 6, .thickness = 7, .sep_thickness = 0 });
     headerCell("Perm", columns.perm, palette, id_extra + 7);
-    resize.handle(palette, .{ .axis = .vertical, .value = &layout.columns.perm, .min = min_perm_width, .max = max_perm_width, .id_extra = id_extra + 8, .thickness = 7, .sep_thickness = 0 });
+    split_view.handle(palette, .{ .axis = .vertical, .value = &layout.columns.perm, .min = min_perm_width, .max = max_perm_width, .id_extra = id_extra + 8, .thickness = 7, .sep_thickness = 0 });
     headerCell("User/Group", columns.owner, palette, id_extra + 9);
 
     drawColumnSeparators(row.data().contentRectScale(), columns, palette);

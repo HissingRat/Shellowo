@@ -90,7 +90,7 @@ pub fn build(b: *std.Build) void {
     const ssh_probe = b.addExecutable(.{
         .name = "shellow-ssh-probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ssh_probe.zig"),
+            .root_source_file = b.path("tools/ssh_probe.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -120,7 +120,7 @@ pub fn build(b: *std.Build) void {
     const ssh_worker_probe = b.addExecutable(.{
         .name = "shellow-ssh-worker-probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ssh_worker_probe.zig"),
+            .root_source_file = b.path("tools/ssh_worker_probe.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -245,7 +245,7 @@ fn addNativeDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
     });
     libvterm.root_module.addIncludePath(b.path("third_party/libvterm-0.3.3/include"));
     libvterm.root_module.addIncludePath(b.path("third_party/libvterm-0.3.3/src"));
-    libvterm.root_module.addIncludePath(b.path("src/terminal"));
+    libvterm.root_module.addIncludePath(b.path("src/backends/terminal"));
     libvterm.root_module.addCSourceFiles(.{
         .root = b.path("third_party/libvterm-0.3.3/src"),
         .files = &libvterm_sources,
@@ -255,7 +255,7 @@ fn addNativeDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         },
     });
     libvterm.root_module.addCSourceFile(.{
-        .file = b.path("src/terminal/libvterm_shim.c"),
+        .file = b.path("src/backends/terminal/libvterm_shim.c"),
         .flags = &.{
             "-D_XOPEN_SOURCE=600",
             "-std=c99",
@@ -309,7 +309,7 @@ fn attachNativeDeps(b: *std.Build, compile: *std.Build.Step.Compile, native_deps
     compile.root_module.addIncludePath(b.path("third_party/libssh2-1.11.1/include"));
     compile.root_module.addIncludePath(b.path("third_party/mbedtls-3.6.6/include"));
     compile.root_module.addIncludePath(b.path("third_party/libvterm-0.3.3/include"));
-    compile.root_module.addIncludePath(b.path("src/terminal"));
+    compile.root_module.addIncludePath(b.path("src/backends/terminal"));
 
     if (compile.root_module.resolved_target.?.result.os.tag == .windows) {
         compile.root_module.linkSystemLibrary("bcrypt", .{});

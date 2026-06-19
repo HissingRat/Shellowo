@@ -1,10 +1,11 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const App = @import("app/App.zig");
-const libssh2_backend = @import("protocols/libssh2_backend.zig");
+const bootstrap = @import("bootstrap.zig");
+const libssh2_backend = @import("backends/ssh/libssh2.zig");
 const sdl_app = @import("platform/sdl_app.zig");
 const ui_fonts = @import("ui/fonts.zig");
-const screen = @import("ui/screen.zig");
+const screen = @import("ui/features/app_shell/screen.zig");
 
 const min_idle_fps: i32 = 4;
 const min_idle_frame_interval_us: i32 = std.time.us_per_s / min_idle_fps;
@@ -31,12 +32,15 @@ pub const std_options: std.Options = .{
 
 var gpa_instance: std.heap.DebugAllocator(.{}) = .init;
 var app_state: ?App = null;
+var runtime_backends: ?bootstrap.RuntimeBackends = null;
 
 fn appInit(window: *dvui.Window) !void {
     const init = dvui.App.main_init orelse return error.MissingProcessInit;
     try libssh2_backend.init();
     ui_fonts.loadEmbedded(window);
-    app_state = App.initPersistent(gpa_instance.allocator(), init.io) catch |err| {
+    runtime_backends = bootstrap.RuntimeBackends.init(gpa_instance.allocator());
+    app_state = App.initPersistent(gpa_instance.allocator(), init.io, runtime_backends.?.dependencies()) catch |err| {
+        runtime_backends = null;
         libssh2_backend.deinit();
         return err;
     };
@@ -47,6 +51,7 @@ fn appDeinit() void {
         app.deinit();
     }
     app_state = null;
+    runtime_backends = null;
     libssh2_backend.deinit();
     _ = gpa_instance.deinit();
 }
