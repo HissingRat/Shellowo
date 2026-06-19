@@ -2,7 +2,6 @@ const dvui = @import("dvui");
 const std = @import("std");
 
 const status_panel = @import("../../core/status_panel.zig");
-const workspace = @import("../../core/workspace.zig");
 const theme = @import("../theme.zig");
 
 const section_font_size: f32 = 9;
@@ -38,8 +37,7 @@ pub const Options = struct {
     id_extra: usize,
 };
 
-pub fn show(tab: workspace.WorkspaceTab, snapshot: status_panel.StatusPanelSnapshot, palette: theme.Palette, opts: Options) void {
-    _ = tab;
+pub fn show(snapshot: status_panel.StatusPanelSnapshot, palette: theme.Palette, opts: Options) void {
     var panel = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
         .expand = .vertical,
         .min_size_content = .width(opts.width),
@@ -321,15 +319,6 @@ fn bytesText(buffer: []u8, bytes: u64) []const u8 {
     return std.fmt.bufPrint(buffer, "{d}B", .{bytes}) catch "--";
 }
 
-fn networkText(buffer: []u8, network: status_panel.NetworkMetric) []const u8 {
-    var up_buf: [16]u8 = undefined;
-    var down_buf: [16]u8 = undefined;
-    return std.fmt.bufPrint(buffer, "↑ {s}/s   ↓ {s}/s", .{
-        bytesText(&up_buf, network.tx_bytes_per_sec),
-        bytesText(&down_buf, network.rx_bytes_per_sec),
-    }) catch "↑ --   ↓ --";
-}
-
 fn networkHeader(chart_rect: dvui.Rect.Physical, maybe_network: ?status_panel.NetworkMetric, palette: theme.Palette) void {
     var tx_buf: [16]u8 = undefined;
     var rx_buf: [16]u8 = undefined;
@@ -531,12 +520,6 @@ fn visibleNetworkSourceIndex(history_len: usize, slot_index: usize, slot_count: 
         return slot_index - empty_slots;
     }
     return history_len - slot_count + slot_index;
-}
-
-fn maxHistory(history: []const f32) f32 {
-    var max_value: f32 = 0;
-    for (history) |value| max_value = @max(max_value, value);
-    return max_value;
 }
 
 fn hoveredNetworkSlot(chart_rect: dvui.Rect.Physical, slot_count: usize) ?usize {

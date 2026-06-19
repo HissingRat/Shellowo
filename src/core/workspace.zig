@@ -32,13 +32,6 @@ pub const TabStatus = enum {
             .closed => "closed",
         };
     }
-
-    pub fn isOpening(self: TabStatus) bool {
-        return switch (self) {
-            .resolving, .connecting, .verifying_host_key, .authenticating, .opening_shell => true,
-            else => false,
-        };
-    }
 };
 
 pub const WorkspaceTab = struct {

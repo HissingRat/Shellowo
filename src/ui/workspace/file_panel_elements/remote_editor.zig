@@ -223,21 +223,6 @@ fn header(state: *State, snapshot: remote_file.FileEditorSnapshot, dirty: bool, 
         .id_extra = id_extra + 1,
     });
 
-    // const status = snapshot.error_summary orelse switch (snapshot.state) {
-    //     .loading => "Loading",
-    //     .ready => "",
-    //     .failed => "Failed",
-    //     .closed => "",
-    // };
-    // if (status.len > 0) {
-    //     dvui.label(@src(), "{s}", .{status}, .{
-    //         .font = theme.textFont(status, 9),
-    //         .color_text = palette.muted_text,
-    //         .gravity_y = 0.5,
-    //         .id_extra = id_extra + 2,
-    //     });
-    // }
-
     searchBox(state, palette, id_extra + 20);
 }
 

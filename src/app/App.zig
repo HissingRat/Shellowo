@@ -54,7 +54,7 @@ io: ?std.Io = null,
 config: app_config.Config,
 profiles: profile_repository.MemoryProfileRepository,
 known_hosts: known_hosts_store.KnownHosts,
-sessions: session_registry.MockSessionRegistry,
+sessions: session_registry.SessionRegistry,
 ssh_connector: ssh.Connector,
 terminal_factory: ssh_session.TerminalFactory,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
@@ -97,7 +97,7 @@ pub fn initMemory(allocator: std.mem.Allocator, dependencies: Dependencies) !App
         .config = config,
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
         .known_hosts = known_hosts_store.KnownHosts.init(allocator),
-        .sessions = session_registry.MockSessionRegistry.init(allocator),
+        .sessions = session_registry.SessionRegistry.init(allocator),
         .ssh_connector = dependencies.ssh_connector,
         .terminal_factory = dependencies.terminal_factory,
     };
@@ -117,7 +117,7 @@ pub fn initPersistent(allocator: std.mem.Allocator, io: std.Io, dependencies: De
         .config = config,
         .profiles = profile_repository.MemoryProfileRepository.init(allocator),
         .known_hosts = known_hosts_store.KnownHosts.init(allocator),
-        .sessions = session_registry.MockSessionRegistry.init(allocator),
+        .sessions = session_registry.SessionRegistry.init(allocator),
         .ssh_connector = dependencies.ssh_connector,
         .terminal_factory = dependencies.terminal_factory,
     };
@@ -502,14 +502,6 @@ pub fn openProfile(self: *App, id: u64) void {
     self.message = "SSH session starting";
 }
 
-pub fn openSelectedProfile(self: *App) void {
-    const id = self.selected_profile_id orelse {
-        self.message = "No profile selected";
-        return;
-    };
-    self.openProfile(id);
-}
-
 pub fn profileClicked(self: *App, id: u64) void {
     self.selectProfile(id);
     if (self.last_profile_click_id == id and self.frame_index -% self.last_profile_click_frame <= 30) {
@@ -765,10 +757,10 @@ pub fn remoteEntryTransferBusy(self: *const App, remote_path: []const u8, name: 
         if (task.status != .pending and task.status != .running) continue;
         const record = self.retryRecord(task.id) orelse continue;
         switch (record.intent) {
-            .download => |item| if (remoteEntryMatches(item.remote_path, item.name, remote_path, name)) return true,
-            .upload => |item| if (remoteEntryMatches(item.remote_path, item.name, remote_path, name)) return true,
-            .download_many => |item| if (batchContainsRemoteEntry(item, remote_path, name)) return true,
-            .upload_many => |item| if (batchContainsRemoteEntry(item, remote_path, name)) return true,
+            .download => |item| if (transfer_rules.remoteEntryMatches(item.remote_path, item.name, remote_path, name)) return true,
+            .upload => |item| if (transfer_rules.remoteEntryMatches(item.remote_path, item.name, remote_path, name)) return true,
+            .download_many => |item| if (transfer_rules.batchContainsRemoteEntry(item, remote_path, name)) return true,
+            .upload_many => |item| if (transfer_rules.batchContainsRemoteEntry(item, remote_path, name)) return true,
             else => {},
         }
     }
@@ -780,26 +772,14 @@ pub fn transferBusyInRemotePath(self: *const App, remote_path: []const u8) bool 
         if (task.status != .pending and task.status != .running) continue;
         const record = self.retryRecord(task.id) orelse continue;
         switch (record.intent) {
-            .download => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
-            .download_many => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
-            .upload => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
-            .upload_many => |item| if (remotePathOverlaps(item.remote_path, remote_path)) return true,
+            .download => |item| if (transfer_rules.pathsOverlap(item.remote_path, remote_path)) return true,
+            .download_many => |item| if (transfer_rules.pathsOverlap(item.remote_path, remote_path)) return true,
+            .upload => |item| if (transfer_rules.pathsOverlap(item.remote_path, remote_path)) return true,
+            .upload_many => |item| if (transfer_rules.pathsOverlap(item.remote_path, remote_path)) return true,
             else => {},
         }
     }
     return false;
-}
-
-fn remoteEntryMatches(task_path: []const u8, task_name: []const u8, remote_path: []const u8, name: []const u8) bool {
-    return transfer_rules.remoteEntryMatches(task_path, task_name, remote_path, name);
-}
-
-fn batchContainsRemoteEntry(item: remote_file.FileBatchTransferIntent, remote_path: []const u8, name: []const u8) bool {
-    return transfer_rules.batchContainsRemoteEntry(item, remote_path, name);
-}
-
-fn remotePathOverlaps(a: []const u8, b: []const u8) bool {
-    return transfer_rules.pathsOverlap(a, b);
 }
 
 fn syncTransferProgress(self: *App) void {
@@ -1042,14 +1022,6 @@ fn nowNs(self: *const App) i128 {
         }
     }
 }
-
-// fn nowNs() i128 {
-//     var ts: std.posix.timespec = undefined;
-//     switch (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts))) {
-//         .SUCCESS => return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec,
-//         else => return 0,
-//     }
-// }
 
 fn selectFirstProfile(self: *App) void {
     if (self.profiles.items().len == 0) return;

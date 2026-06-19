@@ -31,11 +31,6 @@ pub const ConnectionProfile = struct {
     private_key_passphrase: []const u8 = "",
     sftp_enabled: bool = true,
 
-    pub fn layoutLabel(self: ConnectionProfile) []const u8 {
-        _ = self;
-        return "terminal + files";
-    }
-
     pub fn deinit(self: ConnectionProfile, allocator: std.mem.Allocator) void {
         const b = self.base;
         allocator.free(b.name);

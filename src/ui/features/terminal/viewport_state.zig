@@ -3,7 +3,6 @@ const std = @import("std");
 const terminal = @import("../../../contracts/terminal_emulator.zig");
 
 pub const search_max_matches: usize = 512;
-pub const local_echo_capacity: usize = 512;
 pub const ime_composition_capacity: usize = 128;
 pub const search_query_capacity: usize = 128;
 pub const row_render_cache_capacity: usize = 256;
@@ -47,16 +46,6 @@ pub const RowRenderCacheEntry = struct {
     has_backgrounds: bool = true,
 };
 
-pub const LocalEcho = struct {
-    active: bool = false,
-    base_generation: u64 = 0,
-    base_scrollback_rows: usize = 0,
-    row: u16 = 0,
-    start_col: u16 = 0,
-    text: [local_echo_capacity]u8 = std.mem.zeroes([local_echo_capacity]u8),
-    len: usize = 0,
-};
-
 pub const Viewport = struct {
     last_size: ?terminal.Size = null,
     scroll_offset: usize = 0,
@@ -83,7 +72,6 @@ pub const Viewport = struct {
     search_cache_cols: u16 = 0,
     search_cache_matches: SearchMatches = .{},
     row_render_cache: [row_render_cache_capacity]RowRenderCacheEntry = [_]RowRenderCacheEntry{.{}} ** row_render_cache_capacity,
-    local_echo: LocalEcho = .{},
     pending_paste: [paste_queue_capacity]u8 = std.mem.zeroes([paste_queue_capacity]u8),
     pending_paste_len: usize = 0,
     pending_paste_offset: usize = 0,

@@ -38,7 +38,7 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     });
     defer shell.deinit();
 
-    status_panel.show(tab, app.sessions.statusPanelSnapshot(tab.id), palette, .{
+    status_panel.show(app.sessions.statusPanelSnapshot(tab.id), palette, .{
         .width = layout.sidebar_width,
         .id_extra = 620,
     });
@@ -100,7 +100,7 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
 
     var tree_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
-    if (file_panel.show(tab, palette, .{
+    if (file_panel.show(palette, .{
         .app = app,
         .snapshot = app.filePanelSnapshot(tab.id, &tree_entries, &remote_entries),
         .height = layout.file_panel_height,

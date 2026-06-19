@@ -34,20 +34,16 @@ pub const topBarTextOffset = typography.topBarTextOffset;
 pub const withFontSize = typography.withFontSize;
 pub const withThemeFontSize = typography.withThemeFontSize;
 
-pub const ButtonIntent = button_widget.Intent;
-pub const ButtonState = button_widget.State;
-pub const ButtonVariant = button_widget.Variant;
 pub const ButtonStyle = button_widget.Style;
 pub const ButtonWidget = button_widget.Widget;
-pub const ButtonWidgetOptions = button_widget.WidgetOptions;
 pub const CheckboxOptions = checkbox_widget.Options;
 pub const IconButtonOptions = icon_button_widget.Options;
 pub const IconButtonResult = icon_button_widget.Result;
 pub const MenuItemOptions = menu_item_widget.Options;
-pub const TextEntry = text_field_widget.Entry;
-pub const TextFieldOptions = text_field_widget.Options;
 pub const ProgressOptions = progress_widget.Options;
 pub const ProgressState = progress_widget.State;
+pub const TextEntry = text_field_widget.Entry;
+pub const TextFieldOptions = text_field_widget.Options;
 
 pub fn app(opts: dvui.Options, palette: Palette) dvui.Options {
     return surface.app(opts, palette);

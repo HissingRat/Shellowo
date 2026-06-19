@@ -15,11 +15,6 @@ pub const path_entry_max_len: usize = 512;
 
 pub const ColumnWidths = app_config.FileColumnWidths;
 
-pub const PaneKind = enum {
-    tree,
-    remote,
-};
-
 pub const EditMode = enum {
     none,
     new_file,
@@ -121,7 +116,6 @@ test "create row handles missing parent and file groups" {
 pub const PaneLayout = struct {
     columns: ColumnWidths = .{},
     columns_initialized: bool = false,
-    last_click_pane: PaneKind = .remote,
     last_click_name: [256]u8 = undefined,
     last_click_name_len: usize = 0,
     last_click_ns: i128 = 0,

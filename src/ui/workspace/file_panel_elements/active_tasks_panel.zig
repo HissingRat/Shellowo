@@ -201,11 +201,6 @@ fn taskRow(task: transfer.TransferTask, width: f32, palette: theme.Palette, id_e
         });
         defer title_line.deinit();
 
-        // var title_buf: [96]u8 = undefined;
-        // const title = if (task.attempt > 1)
-        //     std.fmt.bufPrint(&title_buf, "{s}  attempt {d}", .{ task.title, task.attempt }) catch task.title
-        // else
-        //     task.title;
         const title = task.title;
         dvui.label(@src(), "{s}", .{title}, .{
             .font = theme.textFont(title, 9),

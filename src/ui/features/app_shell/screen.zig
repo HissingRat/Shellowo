@@ -68,38 +68,6 @@ fn spacer(src: std.builtin.SourceLocation, width: f32, id_extra: usize) void {
     defer slot.deinit();
 }
 
-fn textSlot(src: std.builtin.SourceLocation, text: []const u8, width: f32, font: dvui.Font, color: dvui.Color, id_extra: usize) void {
-    var slot = dvui.box(src, .{}, .{
-        .expand = .vertical,
-        .gravity_y = 0.5,
-        .min_size_content = .width(width),
-        .max_size_content = .width(width),
-        .padding = .all(0),
-        .margin = .all(0),
-        .role = .none,
-        .tab_index = 0,
-        .id_extra = id_extra,
-    });
-    defer slot.deinit();
-
-    const crs = slot.data().contentRectScale();
-    const old_clip = dvui.clip(crs.r);
-    defer dvui.clipSet(old_clip);
-
-    const text_size = font.textSize(text);
-    const text_height = text_size.h * crs.s;
-    dvui.renderText(.{
-        .font = font,
-        .text = text,
-        .rs = crs,
-        .p = .{
-            .x = crs.r.x,
-            .y = crs.r.y + @round((crs.r.h - text_height) / 2),
-        },
-        .color = color,
-    }) catch {};
-}
-
 fn iconButtonPlaceholder(src: std.builtin.SourceLocation, width: f32, height: f32, gap: f32, id_extra: usize) void {
     var slot = dvui.box(src, .{}, .{
         .gravity_x = 1,
@@ -326,7 +294,6 @@ fn settingDownloadRow(app: *App, max_width: f32, palette: theme.Palette, id_extr
     });
     defer row.deinit();
 
-    // settingLabel("Download", 86, palette, id_extra + 1);
     if (folderPathButton(palette, id_extra + 2)) {
         const arena = dvui.currentWindow().arena();
         const selected = dvui.dialogNativeFolderSelect(arena, .{ .title = "Download Folder" }) catch null;
@@ -1028,7 +995,7 @@ fn groupedConnectionList(app: *App, palette: theme.Palette) void {
 
     for (app.profiles.items(), 0..) |item, idx| {
         const group = normalizedGroup(item.base.group);
-        if (!isFirstVisibleGroup(app, group, idx, query)) continue;
+        if (!isFirstVisibleGroup(app, group, idx)) continue;
 
         const count = groupMatchCount(app, group, query);
         if (count == 0) continue;
@@ -1162,8 +1129,7 @@ fn normalizedGroup(group_name: []const u8) []const u8 {
     return if (group_name.len == 0) "Default" else group_name;
 }
 
-fn isFirstVisibleGroup(app: *App, group: []const u8, current_idx: usize, query: []const u8) bool {
-    _ = query;
+fn isFirstVisibleGroup(app: *App, group: []const u8, current_idx: usize) bool {
     for (app.profiles.items()[0..current_idx]) |item| {
         if (!std.mem.eql(u8, normalizedGroup(item.base.group), group)) continue;
         return false;

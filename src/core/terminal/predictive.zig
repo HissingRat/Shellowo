@@ -1,7 +1,6 @@
 const std = @import("std");
 const terminal = @import("../../contracts/terminal_emulator.zig");
 
-pub const max_diff_rects = terminal.max_dirty_rects;
 pub const max_pending_input_bytes = 64 * 1024;
 pub const default_prediction_cooldown_ms: u64 = 250;
 pub const default_full_rollback_threshold: u32 = 64;
@@ -164,22 +163,6 @@ pub const PredictionDiagnostics = struct {
     output_paused: bool = false,
 };
 
-pub const RemoteAgentMode = enum {
-    disabled,
-    proposed,
-};
-
-pub const RemoteAgentPlan = struct {
-    mode: RemoteAgentMode = .disabled,
-    protocol_version: u16 = 0,
-    supports_state_diff: bool = false,
-    supports_reconnect: bool = false,
-
-    pub fn available(self: RemoteAgentPlan) bool {
-        return self.mode == .proposed and self.supports_state_diff;
-    }
-};
-
 pub const PredictionPolicyState = struct {
     level: PredictionLevel = .safe_shell,
     conflict_score: u8 = 0,
@@ -190,7 +173,6 @@ pub const PredictionPolicyState = struct {
     rollback_count: u32 = 0,
     rtt: RttSampler = .{},
     config: PredictionConfig = .{},
-    remote_agent: RemoteAgentPlan = .{},
 
     pub fn observeDiff(self: *PredictionPolicyState, diff: ScreenDiff, now_ms: u64) void {
         const assessment = assessDiff(diff, self.config);
@@ -407,10 +389,6 @@ pub const DualState = struct {
         return diff;
     }
 
-    pub fn realSnapshot(self: *const DualState) ?*const terminal.Snapshot {
-        return if (self.real) |*real| real else null;
-    }
-
     pub fn predictedSnapshot(self: *const DualState) ?*const terminal.Snapshot {
         return if (self.predicted) |*predicted| predicted else null;
     }
@@ -420,12 +398,6 @@ pub const DualState = struct {
         const next_predicted = try cloneSnapshot(self.allocator, real);
         if (self.predicted) |*old_predicted| old_predicted.deinit();
         self.predicted = next_predicted;
-    }
-
-    pub fn feedLocalInput(self: *DualState, bytes: []const u8) void {
-        if (self.predicted) |*predicted| {
-            applyLocalInput(predicted, bytes, self.prediction_policy.level, self.prediction_policy.config);
-        }
     }
 
     pub fn recordLocalInput(self: *DualState, bytes: []const u8, timestamp_ms: u64) !?u64 {
@@ -1103,7 +1075,7 @@ test "dual state rolls prediction forward and patches from real" {
     const diff = try state.syncReal(confirmed);
     try std.testing.expect(diff.empty());
     try std.testing.expectEqual(@as(usize, 0), state.pendingInputCount());
-    try std.testing.expectEqual(@as(u21, 'c'), state.realSnapshot().?.cellAt(0, 2).?.codepoint);
+    try std.testing.expectEqual(@as(u21, 'c'), state.real.?.cellAt(0, 2).?.codepoint);
 }
 
 test "dual state resets structural differences" {
@@ -1410,17 +1382,4 @@ test "diagnostics retain echo and probe latency separately" {
     const diagnostics = state.diagnostics();
     try std.testing.expectEqual(@as(?u32, 180), diagnostics.echo_latency_ms);
     try std.testing.expectEqual(@as(?u32, 40), diagnostics.probe_latency_ms);
-}
-
-test "remote agent plan stays disabled unless state diff is available" {
-    const disabled: RemoteAgentPlan = .{};
-    try std.testing.expect(!disabled.available());
-
-    const proposed: RemoteAgentPlan = .{
-        .mode = .proposed,
-        .protocol_version = 1,
-        .supports_state_diff = true,
-        .supports_reconnect = true,
-    };
-    try std.testing.expect(proposed.available());
 }

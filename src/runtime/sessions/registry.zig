@@ -10,11 +10,6 @@ const terminal = @import("../../contracts/terminal_emulator.zig");
 const ssh_session = @import("ssh_session.zig");
 const ssh_workspace_worker = @import("ssh_workspace_worker.zig");
 
-const SshRuntimeSlot = struct {
-    tab_id: u64,
-    session: ssh_session.SshSession,
-};
-
 const SshWorkspaceRuntimeSlot = struct {
     tab_id: u64,
     worker: *ssh_workspace_worker.SshWorkspaceWorker,
@@ -25,21 +20,20 @@ const ActiveTerminalSlot = struct {
     slot_id: terminal_slot.TerminalSlotId,
 };
 
-pub const MockSessionRegistry = struct {
+pub const SessionRegistry = struct {
     allocator: std.mem.Allocator,
     tabs: std.ArrayList(workspace.WorkspaceTab) = .empty,
-    ssh_sessions: std.ArrayList(SshRuntimeSlot) = .empty,
     ssh_workspaces: std.ArrayList(SshWorkspaceRuntimeSlot) = .empty,
     retired_ssh_workspaces: std.ArrayList(*ssh_workspace_worker.SshWorkspaceWorker) = .empty,
     active_terminal_slots: std.ArrayList(ActiveTerminalSlot) = .empty,
     next_id: u64 = 1,
     active_tab_id: ?u64 = null,
 
-    pub fn init(allocator: std.mem.Allocator) MockSessionRegistry {
+    pub fn init(allocator: std.mem.Allocator) SessionRegistry {
         return .{ .allocator = allocator };
     }
 
-    pub fn deinit(self: *MockSessionRegistry) void {
+    pub fn deinit(self: *SessionRegistry) void {
         for (self.ssh_workspaces.items) |slot| {
             slot.worker.destroy();
         }
@@ -49,50 +43,13 @@ pub const MockSessionRegistry = struct {
         }
         self.retired_ssh_workspaces.deinit(self.allocator);
         self.active_terminal_slots.deinit(self.allocator);
-        for (self.ssh_sessions.items) |*slot| {
-            slot.session.deinit();
-        }
-        self.ssh_sessions.deinit(self.allocator);
         for (self.tabs.items) |tab| {
             self.allocator.free(tab.title);
         }
         self.tabs.deinit(self.allocator);
     }
 
-    pub fn openMockTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile) !u64 {
-        if (self.findByProfileId(connection.base.id)) |existing| {
-            self.active_tab_id = existing;
-            return existing;
-        }
-
-        return self.createTab(connection, .connected);
-    }
-
-    pub fn openSshRuntimeTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile, options: ssh_session.Options) !u64 {
-        if (self.findByProfileId(connection.base.id)) |existing| {
-            if (self.reuseExistingTab(existing)) return existing;
-            self.closeTab(existing);
-        }
-
-        const id = try self.createTab(connection, .connecting);
-        errdefer self.closeTab(id);
-
-        var session = ssh_session.SshSession.init(self.allocator);
-        session.open(connection, options) catch |err| {
-            self.setTabStatus(id, .failed);
-            session.deinit();
-            return err;
-        };
-
-        try self.ssh_sessions.append(self.allocator, .{
-            .tab_id = id,
-            .session = session,
-        });
-        self.setTabStatus(id, .connected);
-        return id;
-    }
-
-    pub fn openSshWorkerTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile, options: ssh_session.Options) !u64 {
+    pub fn openSshWorkerTab(self: *SessionRegistry, connection: profile.ConnectionProfile, options: ssh_session.Options) !u64 {
         if (self.findByProfileId(connection.base.id)) |existing| {
             if (self.reuseExistingTab(existing)) return existing;
             self.closeTab(existing);
@@ -111,7 +68,7 @@ pub const MockSessionRegistry = struct {
         return id;
     }
 
-    pub fn pollWorkers(self: *MockSessionRegistry) void {
+    pub fn pollWorkers(self: *SessionRegistry) void {
         self.reapRetiredWorkspaces();
         for (self.tabs.items) |tab| {
             const worker = self.sshWorkspace(tab.id) orelse {
@@ -133,7 +90,7 @@ pub const MockSessionRegistry = struct {
         }
     }
 
-    pub fn activate(self: *MockSessionRegistry, id: u64) void {
+    pub fn activate(self: *SessionRegistry, id: u64) void {
         for (self.tabs.items) |tab| {
             if (tab.id == id) {
                 self.active_tab_id = id;
@@ -142,7 +99,7 @@ pub const MockSessionRegistry = struct {
         }
     }
 
-    pub fn closeTab(self: *MockSessionRegistry, id: u64) void {
+    pub fn closeTab(self: *SessionRegistry, id: u64) void {
         if (self.sshWorkspaceIndex(id)) |worker_idx| {
             const slot = self.ssh_workspaces.orderedRemove(worker_idx);
             slot.worker.requestRetire();
@@ -153,11 +110,6 @@ pub const MockSessionRegistry = struct {
 
         if (self.activeTerminalSlotIndex(id)) |active_idx| {
             _ = self.active_terminal_slots.orderedRemove(active_idx);
-        }
-
-        if (self.sshSessionIndex(id)) |runtime_idx| {
-            self.ssh_sessions.items[runtime_idx].session.deinit();
-            _ = self.ssh_sessions.orderedRemove(runtime_idx);
         }
 
         for (self.tabs.items, 0..) |tab, i| {
@@ -172,59 +124,50 @@ pub const MockSessionRegistry = struct {
         }
     }
 
-    pub fn sshSession(self: *MockSessionRegistry, tab_id: u64) ?*ssh_session.SshSession {
-        const idx = self.sshSessionIndex(tab_id) orelse return null;
-        return &self.ssh_sessions.items[idx].session;
-    }
-
-    pub fn sshWorkspace(self: *MockSessionRegistry, tab_id: u64) ?*ssh_workspace_worker.SshWorkspaceWorker {
+    pub fn sshWorkspace(self: *SessionRegistry, tab_id: u64) ?*ssh_workspace_worker.SshWorkspaceWorker {
         const idx = self.sshWorkspaceIndex(tab_id) orelse return null;
         return self.ssh_workspaces.items[idx].worker;
     }
 
-    pub fn copySshSnapshot(self: *MockSessionRegistry, allocator: std.mem.Allocator, tab_id: u64) !?terminal.Snapshot {
+    pub fn copySshSnapshot(self: *SessionRegistry, allocator: std.mem.Allocator, tab_id: u64) !?terminal.Snapshot {
         const worker = self.sshWorkspace(tab_id) orelse return null;
         const slot_id = self.activeTerminalSlotId(tab_id) orelse return null;
         return worker.copySnapshot(allocator, slot_id);
     }
 
-    pub fn sshSnapshotGeneration(self: *MockSessionRegistry, tab_id: u64, slot_id: u64) ?u64 {
+    pub fn sshSnapshotGeneration(self: *SessionRegistry, tab_id: u64, slot_id: u64) ?u64 {
         const worker = self.sshWorkspace(tab_id) orelse return null;
         return worker.snapshotGeneration(slot_id);
     }
 
-    pub fn statusPanelSnapshot(self: *MockSessionRegistry, tab_id: u64) status_panel.StatusPanelSnapshot {
+    pub fn statusPanelSnapshot(self: *SessionRegistry, tab_id: u64) status_panel.StatusPanelSnapshot {
         const worker = self.sshWorkspace(tab_id) orelse return status_panel.unavailable();
         return worker.statusPanelSnapshot();
     }
 
-    pub fn latencyProbeSnapshot(self: *MockSessionRegistry, tab_id: u64) ssh_workspace_worker.LatencyProbeSnapshot {
+    pub fn latencyProbeSnapshot(self: *SessionRegistry, tab_id: u64) ssh_workspace_worker.LatencyProbeSnapshot {
         const worker = self.sshWorkspace(tab_id) orelse return .{};
         return worker.latencyProbeSnapshot();
     }
 
-    pub fn filePanelSnapshot(self: *MockSessionRegistry, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
-        const tab = self.tabById(tab_id) orelse return .{};
-        if (self.sshWorkspace(tab_id)) |worker| {
-            return .{
-                .tree = worker.fileTreeSnapshot(tree_buffer),
-                .remote = worker.filePanelSnapshot(remote_buffer),
-                .editor = worker.fileEditorSnapshot(),
-            };
-        }
-        const remote = mockSftpPane(tab.status);
-        const tree = remoteTreeSnapshot(remote, tree_buffer);
-        return .{ .tree = tree, .remote = remote };
+    pub fn filePanelSnapshot(self: *SessionRegistry, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
+        _ = self.tabById(tab_id) orelse return .{};
+        const worker = self.sshWorkspace(tab_id) orelse return .{};
+        return .{
+            .tree = worker.fileTreeSnapshot(tree_buffer),
+            .remote = worker.filePanelSnapshot(remote_buffer),
+            .editor = worker.fileEditorSnapshot(),
+        };
     }
 
-    pub fn handleFilePanelIntent(self: *MockSessionRegistry, tab_id: u64, intent: remote_file.FilePanelIntent) !void {
+    pub fn handleFilePanelIntent(self: *SessionRegistry, tab_id: u64, intent: remote_file.FilePanelIntent) !void {
         if (self.tabById(tab_id) == null) return ssh_session.Error.ChannelClosed;
         if (self.sshWorkspace(tab_id)) |worker| {
             try worker.queueFileIntent(intent);
         }
     }
 
-    pub fn transferProgress(self: *MockSessionRegistry, buffer: []transfer.TransferProgress) []transfer.TransferProgress {
+    pub fn transferProgress(self: *SessionRegistry, buffer: []transfer.TransferProgress) []transfer.TransferProgress {
         var count: usize = 0;
         for (self.ssh_workspaces.items) |slot| {
             if (count >= buffer.len) break;
@@ -234,20 +177,20 @@ pub const MockSessionRegistry = struct {
         return buffer[0..count];
     }
 
-    pub fn cancelTransfer(self: *MockSessionRegistry, transfer_id: u64) void {
+    pub fn cancelTransfer(self: *SessionRegistry, transfer_id: u64) void {
         for (self.ssh_workspaces.items) |slot| {
             slot.worker.requestCancelTransfer(transfer_id);
         }
     }
 
-    pub fn terminalSlots(self: *MockSessionRegistry, tab_id: u64, buffer: []terminal_slot.TerminalSlotSummary) []terminal_slot.TerminalSlotSummary {
+    pub fn terminalSlots(self: *SessionRegistry, tab_id: u64, buffer: []terminal_slot.TerminalSlotSummary) []terminal_slot.TerminalSlotSummary {
         if (buffer.len == 0) return buffer[0..0];
         _ = self.tabById(tab_id) orelse return buffer[0..0];
         const worker = self.sshWorkspace(tab_id) orelse return buffer[0..0];
         return worker.slotSummaries(buffer);
     }
 
-    pub fn activeTerminalSlotId(self: *MockSessionRegistry, tab_id: u64) ?terminal_slot.TerminalSlotId {
+    pub fn activeTerminalSlotId(self: *SessionRegistry, tab_id: u64) ?terminal_slot.TerminalSlotId {
         if (self.activeTerminalSlotIndex(tab_id)) |idx| {
             const slot_id = self.active_terminal_slots.items[idx].slot_id;
             if (self.sshWorkspace(tab_id)) |worker| {
@@ -258,14 +201,14 @@ pub const MockSessionRegistry = struct {
         return worker.firstVisibleSlotId();
     }
 
-    pub fn activateTerminalSlot(self: *MockSessionRegistry, tab_id: u64, slot_id: terminal_slot.TerminalSlotId) bool {
+    pub fn activateTerminalSlot(self: *SessionRegistry, tab_id: u64, slot_id: terminal_slot.TerminalSlotId) bool {
         const worker = self.sshWorkspace(tab_id) orelse return false;
         if (!worker.hasSlot(slot_id)) return false;
         self.setActiveTerminalSlot(tab_id, slot_id) catch return false;
         return true;
     }
 
-    pub fn createTerminalSlot(self: *MockSessionRegistry, tab_id: u64) !terminal_slot.TerminalSlotId {
+    pub fn createTerminalSlot(self: *SessionRegistry, tab_id: u64) !terminal_slot.TerminalSlotId {
         _ = self.tabById(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const worker = self.sshWorkspace(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const slot_id = try worker.createSlot();
@@ -273,7 +216,7 @@ pub const MockSessionRegistry = struct {
         return slot_id;
     }
 
-    pub fn closeTerminalSlot(self: *MockSessionRegistry, tab_id: u64, slot_id: terminal_slot.TerminalSlotId) bool {
+    pub fn closeTerminalSlot(self: *SessionRegistry, tab_id: u64, slot_id: terminal_slot.TerminalSlotId) bool {
         const worker = self.sshWorkspace(tab_id) orelse return false;
         if (!worker.hasSlot(slot_id)) return false;
         if (worker.visibleSlotCount() <= 1) {
@@ -292,55 +235,55 @@ pub const MockSessionRegistry = struct {
         return true;
     }
 
-    pub fn sendSshInput(self: *MockSessionRegistry, tab_id: u64, bytes: []const u8) !void {
+    pub fn sendSshInput(self: *SessionRegistry, tab_id: u64, bytes: []const u8) !void {
         const worker = self.sshWorkspace(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const slot_id = self.activeTerminalSlotId(tab_id) orelse return ssh_session.Error.ChannelClosed;
         try worker.queueInput(slot_id, bytes);
     }
 
-    pub fn sendSshMouse(self: *MockSessionRegistry, tab_id: u64, event: terminal.MouseEvent) !void {
+    pub fn sendSshMouse(self: *SessionRegistry, tab_id: u64, event: terminal.MouseEvent) !void {
         const worker = self.sshWorkspace(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const slot_id = self.activeTerminalSlotId(tab_id) orelse return ssh_session.Error.ChannelClosed;
         try worker.queueMouse(slot_id, event);
     }
 
-    pub fn resizeSshTerminal(self: *MockSessionRegistry, tab_id: u64, size: ssh.PtySize) !void {
+    pub fn resizeSshTerminal(self: *SessionRegistry, tab_id: u64, size: ssh.PtySize) !void {
         const worker = self.sshWorkspace(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const slot_id = self.activeTerminalSlotId(tab_id) orelse return ssh_session.Error.ChannelClosed;
         try worker.queueResize(slot_id, size);
     }
 
-    pub fn clearSshScrollback(self: *MockSessionRegistry, tab_id: u64) !void {
+    pub fn clearSshScrollback(self: *SessionRegistry, tab_id: u64) !void {
         const worker = self.sshWorkspace(tab_id) orelse return ssh_session.Error.ChannelClosed;
         const slot_id = self.activeTerminalSlotId(tab_id) orelse return ssh_session.Error.ChannelClosed;
         try worker.queueClearScrollback(slot_id);
     }
 
-    pub fn sshFailure(self: *MockSessionRegistry, tab_id: u64) ?ssh_session.Error {
+    pub fn sshFailure(self: *SessionRegistry, tab_id: u64) ?ssh_session.Error {
         const worker = self.sshWorkspace(tab_id) orelse return null;
         return worker.last_error;
     }
 
-    pub fn activeTab(self: *MockSessionRegistry) ?workspace.WorkspaceTab {
+    pub fn activeTab(self: *SessionRegistry) ?workspace.WorkspaceTab {
         const id = self.active_tab_id orelse return null;
         return self.tabById(id);
     }
 
-    pub fn tabById(self: *MockSessionRegistry, id: u64) ?workspace.WorkspaceTab {
+    pub fn tabById(self: *SessionRegistry, id: u64) ?workspace.WorkspaceTab {
         for (self.tabs.items) |tab| {
             if (tab.id == id) return tab;
         }
         return null;
     }
 
-    pub fn findByProfileId(self: *MockSessionRegistry, profile_id: u64) ?u64 {
+    pub fn findByProfileId(self: *SessionRegistry, profile_id: u64) ?u64 {
         for (self.tabs.items) |tab| {
             if (tab.profile_id == profile_id) return tab.id;
         }
         return null;
     }
 
-    fn createTab(self: *MockSessionRegistry, connection: profile.ConnectionProfile, status: workspace.TabStatus) !u64 {
+    fn createTab(self: *SessionRegistry, connection: profile.ConnectionProfile, status: workspace.TabStatus) !u64 {
         const id = self.next_id;
         self.next_id += 1;
 
@@ -359,7 +302,7 @@ pub const MockSessionRegistry = struct {
         return id;
     }
 
-    fn setActiveTerminalSlot(self: *MockSessionRegistry, tab_id: u64, slot_id: terminal_slot.TerminalSlotId) !void {
+    fn setActiveTerminalSlot(self: *SessionRegistry, tab_id: u64, slot_id: terminal_slot.TerminalSlotId) !void {
         if (self.activeTerminalSlotIndex(tab_id)) |idx| {
             self.active_terminal_slots.items[idx].slot_id = slot_id;
             return;
@@ -367,7 +310,7 @@ pub const MockSessionRegistry = struct {
         try self.active_terminal_slots.append(self.allocator, .{ .tab_id = tab_id, .slot_id = slot_id });
     }
 
-    fn setTabStatus(self: *MockSessionRegistry, id: u64, status: workspace.TabStatus) void {
+    fn setTabStatus(self: *SessionRegistry, id: u64, status: workspace.TabStatus) void {
         for (self.tabs.items) |*tab| {
             if (tab.id == id) {
                 tab.status = status;
@@ -376,7 +319,7 @@ pub const MockSessionRegistry = struct {
         }
     }
 
-    fn reuseExistingTab(self: *MockSessionRegistry, id: u64) bool {
+    fn reuseExistingTab(self: *SessionRegistry, id: u64) bool {
         for (self.tabs.items) |tab| {
             if (tab.id != id) continue;
             if (tab.status == .failed or tab.status == .closed) return false;
@@ -386,28 +329,21 @@ pub const MockSessionRegistry = struct {
         return false;
     }
 
-    fn sshSessionIndex(self: *MockSessionRegistry, tab_id: u64) ?usize {
-        for (self.ssh_sessions.items, 0..) |slot, idx| {
-            if (slot.tab_id == tab_id) return idx;
-        }
-        return null;
-    }
-
-    fn sshWorkspaceIndex(self: *MockSessionRegistry, tab_id: u64) ?usize {
+    fn sshWorkspaceIndex(self: *SessionRegistry, tab_id: u64) ?usize {
         for (self.ssh_workspaces.items, 0..) |slot, idx| {
             if (slot.tab_id == tab_id) return idx;
         }
         return null;
     }
 
-    fn activeTerminalSlotIndex(self: *MockSessionRegistry, tab_id: u64) ?usize {
+    fn activeTerminalSlotIndex(self: *SessionRegistry, tab_id: u64) ?usize {
         for (self.active_terminal_slots.items, 0..) |active, idx| {
             if (active.tab_id == tab_id) return idx;
         }
         return null;
     }
 
-    fn reapRetiredWorkspaces(self: *MockSessionRegistry) void {
+    fn reapRetiredWorkspaces(self: *SessionRegistry) void {
         var idx: usize = 0;
         while (idx < self.retired_ssh_workspaces.items.len) {
             const worker = self.retired_ssh_workspaces.items[idx];
@@ -421,120 +357,3 @@ pub const MockSessionRegistry = struct {
         }
     }
 };
-
-const mock_sftp_entries = [_]remote_file.RemoteFileEntry{
-    .{ .name = "home", .kind = .directory, .permissions = 0o755 },
-    .{ .name = "etc", .kind = .directory, .permissions = 0o755 },
-    .{ .name = "var", .kind = .directory, .permissions = 0o755 },
-    .{ .name = "motd.dynamic", .kind = .file, .size = 1024, .permissions = 0o644 },
-};
-
-fn mockSftpPane(status: workspace.TabStatus) remote_file.FilePaneSnapshot {
-    if (status.isOpening()) {
-        return .{
-            .location = .sftp,
-            .path = "/",
-            .state = .loading,
-            .capabilities = .{ .can_refresh = true },
-        };
-    }
-    if (status == .failed or status == .closed) {
-        return .{
-            .location = .sftp,
-            .path = "/",
-            .state = .failed,
-            .error_summary = "SFTP is unavailable until the SSH workspace reconnects.",
-        };
-    }
-    return .{
-        .location = .sftp,
-        .path = "/",
-        .state = .ready,
-        .entries = &mock_sftp_entries,
-        .capabilities = .{
-            .can_refresh = true,
-            .can_go_parent = true,
-            .can_create_directory = true,
-            .can_rename = true,
-            .can_delete = true,
-            .can_upload = true,
-            .can_download = true,
-            .can_edit = true,
-        },
-    };
-}
-
-fn remoteTreeSnapshot(remote: remote_file.FilePaneSnapshot, buffer: []remote_file.RemoteFileEntry) remote_file.FileTreeSnapshot {
-    var count: usize = 0;
-    if (buffer.len > 0) {
-        buffer[count] = .{
-            .name = "/",
-            .kind = .directory,
-            .full_path = "/",
-            .depth = 0,
-            .expanded = true,
-        };
-        count += 1;
-    }
-
-    count = appendPathAncestors(remote.path, buffer, count);
-    const child_depth: u8 = @intCast(pathDepth(remote.path) + 1);
-    for (remote.entries) |entry| {
-        if (count >= buffer.len) break;
-        if (!entry.isDirectory() or std.mem.eql(u8, entry.name, "..")) continue;
-        buffer[count] = .{
-            .name = entry.name,
-            .kind = .directory,
-            .full_path = entry.full_path,
-            .depth = child_depth,
-            .expanded = false,
-        };
-        count += 1;
-    }
-
-    return .{
-        .path = remote.path,
-        .state = remote.state,
-        .entries = buffer[0..count],
-        .error_summary = remote.error_summary,
-    };
-}
-
-fn appendPathAncestors(path: []const u8, buffer: []remote_file.RemoteFileEntry, start: usize) usize {
-    if (path.len <= 1) return start;
-    var count = start;
-    var depth: u8 = 1;
-    var i: usize = 1;
-    while (i < path.len and count < buffer.len) {
-        while (i < path.len and path[i] == '/') i += 1;
-        if (i >= path.len) break;
-        const name_start = i;
-        while (i < path.len and path[i] != '/') i += 1;
-        const name = path[name_start..i];
-        buffer[count] = .{
-            .name = name,
-            .kind = .directory,
-            .full_path = path[0..i],
-            .depth = depth,
-            .expanded = true,
-        };
-        count += 1;
-        depth += 1;
-    }
-    return count;
-}
-
-fn pathDepth(path: []const u8) usize {
-    if (path.len <= 1) return 0;
-    var depth: usize = 0;
-    var in_segment = false;
-    for (path) |ch| {
-        if (ch == '/') {
-            in_segment = false;
-        } else if (!in_segment) {
-            in_segment = true;
-            depth += 1;
-        }
-    }
-    return depth;
-}

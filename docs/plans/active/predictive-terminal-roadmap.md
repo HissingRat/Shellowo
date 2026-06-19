@@ -739,9 +739,8 @@ Local PTY on server
 
 当前进展：
 
-- [x] `RemoteAgentPlan` / `RemoteAgentMode` 已作为 capability stub 放入 `src/core/terminal/predictive.zig`。
-- [x] 默认保持 disabled；只有 proposed 且支持 state diff 时才视为 available。
-- [x] 未实现远端安装、协议、agent 传输或状态同步运行时，符合本阶段“先不要做”的路线图建议。
+- [ ] 未实现远端安装、协议、agent 传输或状态同步运行时。
+- [ ] 在真正启动该阶段前不预留 production capability stub。
 
 ---
 

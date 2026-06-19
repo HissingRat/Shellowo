@@ -147,13 +147,6 @@ pub const KnownHosts = struct {
         });
     }
 
-    pub fn find(self: *KnownHosts, endpoint: ssh.Endpoint) ?Entry {
-        self.lockKnownHosts();
-        defer self.unlockKnownHosts();
-        const idx = self.findIndexLocked(endpoint) orelse return null;
-        return self.entries.items[idx];
-    }
-
     pub fn copyPendingHostKey(self: *KnownHosts, allocator: std.mem.Allocator) !?PendingHostKey {
         self.lockKnownHosts();
         defer self.unlockKnownHosts();

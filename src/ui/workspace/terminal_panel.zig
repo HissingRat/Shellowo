@@ -59,7 +59,6 @@ const paste_queue_capacity: usize = 512 * 1024;
 const paste_queue_timer_us: i32 = 16_000;
 const bracketed_paste_start = "\x1b[200~";
 const bracketed_paste_end = "\x1b[201~";
-const local_echo_capacity: usize = 512;
 const multi_click_window_ns: i128 = 500 * std.time.ns_per_ms;
 const context_menu_font_size: f32 = terminal_font_size;
 const context_menu_item_height: f32 = 18;
@@ -165,7 +164,6 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, real_snapshot: termi
     }));
     defer host.deinit();
     const viewport = viewportState(host.data());
-    reconcileLocalEcho(viewport, real_snapshot);
     processTerminalInput(app, tab, host.data(), viewport, real_snapshot, active_slot_id);
     drainPendingPaste(app, tab, host.data().id, viewport);
     const snapshot = app.predictedSshSnapshot(tab.id, active_slot_id) orelse real_snapshot;
@@ -194,7 +192,7 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, real_snapshot: termi
     }
     renderImeComposition(snapshot, crs, start_row, rows, viewport, palette);
     renderCursor(snapshot, crs, start_row, rows, viewport, palette, host.data().id);
-    scrollbar(app, tab, host.data(), viewport, crs, total_rows, rows, start_row, palette);
+    scrollbar(host.data(), viewport, crs, total_rows, rows, start_row, palette);
     terminalContextMenu(app, tab, viewport, crs, snapshot, palette, id_extra + 2, host.data().id);
     terminalSearchBar(viewport, crs, snapshot, search_matches, palette, id_extra + 20, host.data().id);
 }
@@ -639,44 +637,6 @@ fn renderTerminalRun(run: TerminalRun, crs: dvui.RectScale, palette: theme.Palet
     }) catch {};
 }
 
-fn renderLocalEcho(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, viewport: *TerminalViewport, palette: theme.Palette) void {
-    if (!viewport.local_echo.active or viewport.local_echo.len == 0) return;
-    if (viewport.scroll_offset != 0) return;
-
-    const absolute_row = viewport.local_echo.base_scrollback_rows + @as(usize, viewport.local_echo.row);
-    if (absolute_row < start_row or absolute_row >= start_row + rows) return;
-
-    const visible_row = @as(f32, @floatFromInt(absolute_row - start_row));
-    renderTerminalRun(.{
-        .row = visible_row,
-        .start_col = viewport.local_echo.start_col,
-        .end_col = predictedCursorCol(viewport, snapshot.size.cols),
-        .style = .{},
-        .text = viewport.local_echo.text[0..viewport.local_echo.len],
-    }, crs, palette);
-}
-
-fn reconcileLocalEcho(viewport: *TerminalViewport, snapshot: terminal.Snapshot) void {
-    if (!viewport.local_echo.active) return;
-    if (viewport.local_echo.base_generation != snapshot.generation) {
-        clearLocalEcho(viewport);
-        return;
-    }
-    if (snapshot.alternate_screen or snapshot.bracketed_paste or snapshot.mouse_mode != .none) {
-        clearLocalEcho(viewport);
-    }
-}
-
-fn clearLocalEcho(viewport: *TerminalViewport) void {
-    viewport.local_echo = .{};
-}
-
-fn predictedCursorCol(viewport: *const TerminalViewport, cols: u16) u16 {
-    if (!viewport.local_echo.active) return 0;
-    const advanced = viewport.local_echo.start_col +| @as(u16, @intCast(@min(viewport.local_echo.len, std.math.maxInt(u16))));
-    return @min(advanced, cols);
-}
-
 fn renderImeComposition(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, viewport: *TerminalViewport, palette: theme.Palette) void {
     if (viewport.ime_composition_len == 0 or rows == 0 or crs.r.empty()) return;
     if (viewport.scroll_offset != 0) return;
@@ -738,12 +698,8 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
     if (viewport.scroll_offset != 0) return;
     if (!snapshot.cursor.visible or rows == 0 or crs.r.empty()) return;
 
-    const cursor_row = if (viewport.local_echo.active)
-        viewport.local_echo.base_scrollback_rows + @as(usize, viewport.local_echo.row)
-    else
-        snapshot.scrollback_rows + @as(usize, snapshot.cursor.row);
+    const cursor_row = snapshot.scrollback_rows + @as(usize, snapshot.cursor.row);
     if (cursor_row < start_row or cursor_row >= start_row + rows) return;
-    const cursor_col = if (viewport.local_echo.active) predictedCursorCol(viewport, snapshot.size.cols) else snapshot.cursor.col;
 
     dvui.timer(id, cursor_blink_timer_us);
     const frame_time = dvui.frameTimeNS();
@@ -751,7 +707,7 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
 
     const visible_row = cursor_row - start_row;
     const cell_width = terminalCellWidth() * crs.s;
-    const x = crs.r.x + @as(f32, @floatFromInt(cursor_col)) * cell_width;
+    const x = crs.r.x + @as(f32, @floatFromInt(snapshot.cursor.col)) * cell_width;
     const line_top = crs.r.y + @as(f32, @floatFromInt(visible_row)) * terminal_line_height * crs.s;
     const glyph_height = theme.textFont("M", terminal_font_size).textSize("M").h * crs.s;
     const cursor_rect = dvui.Rect.Physical{
@@ -764,8 +720,6 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
 }
 
 fn scrollbar(
-    app: *App,
-    tab: workspace.WorkspaceTab,
     data: *dvui.WidgetData,
     viewport: *TerminalViewport,
     crs: dvui.RectScale,
@@ -774,8 +728,6 @@ fn scrollbar(
     start_row: usize,
     palette: theme.Palette,
 ) void {
-    _ = app;
-    _ = tab;
     const geometry = scrollbarGeometry(crs, total_rows, visible_rows, start_row) orelse return;
     processScrollbarEvents(data, viewport, crs, geometry);
 
@@ -1545,10 +1497,7 @@ fn clearPendingPaste(viewport: *TerminalViewport) void {
 fn applyPredictiveInput(app: *App, tab: workspace.WorkspaceTab, active_slot_id: ?terminal_slot.TerminalSlotId, viewport: *TerminalViewport, snapshot: terminal.Snapshot, bytes: []const u8) void {
     if (bytes.len == 0) return;
     const decision = app.decideTerminalPrediction(tab.id, active_slot_id, snapshot, localEchoContext(viewport, snapshot), bytes, dvui.frameTimeNS());
-    if (!decision.allowed) {
-        clearLocalEcho(viewport);
-        return;
-    }
+    if (!decision.allowed) return;
     app.recordTerminalPrediction(tab.id, active_slot_id, bytes, dvui.frameTimeNS());
 }
 
@@ -1562,36 +1511,6 @@ fn localEchoContext(viewport: *const TerminalViewport, snapshot: terminal.Snapsh
         .scrolled_back = viewport.scroll_offset != 0,
         .paste_active = viewport.pending_paste_len != 0,
     };
-}
-
-fn ensureLocalEchoStarted(viewport: *TerminalViewport, snapshot: terminal.Snapshot) bool {
-    if (viewport.local_echo.active) return true;
-    if (!canStartLocalEcho(viewport, snapshot)) return false;
-
-    viewport.local_echo = .{
-        .active = true,
-        .base_generation = snapshot.generation,
-        .base_scrollback_rows = snapshot.scrollback_rows,
-        .row = snapshot.cursor.row,
-        .start_col = snapshot.cursor.col,
-    };
-    return true;
-}
-
-fn localEchoEnvironmentSafe(viewport: *const TerminalViewport, snapshot: terminal.Snapshot) bool {
-    if (snapshot.alternate_screen or snapshot.bracketed_paste or snapshot.mouse_mode != .none) return false;
-    if (!snapshot.cursor.visible) return false;
-    if (viewport.scroll_offset != 0 or viewport.selection != null or viewport.search_open) return false;
-    if (viewport.pending_paste_len != 0) return false;
-    return true;
-}
-
-fn canStartLocalEcho(viewport: *const TerminalViewport, snapshot: terminal.Snapshot) bool {
-    if (!localEchoEnvironmentSafe(viewport, snapshot)) return false;
-    if (snapshot.cursor.row >= snapshot.size.rows or snapshot.cursor.col >= snapshot.size.cols) return false;
-    if (!cursorAtLineEnd(snapshot)) return false;
-    if (lineLooksSensitivePrompt(snapshot)) return false;
-    return lineLooksShellPrompt(snapshot);
 }
 
 fn cursorAtLineEnd(snapshot: terminal.Snapshot) bool {

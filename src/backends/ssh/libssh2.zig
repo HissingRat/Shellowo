@@ -266,14 +266,6 @@ fn sleepMs(ms: c_long) void {
     io.sleep(.fromMilliseconds(ms), .awake) catch {};
 }
 
-// fn sleepMs(ms: c_long) void {
-//     const request: c.timespec = .{
-//         .tv_sec = @divTrunc(ms, 1000),
-//         .tv_nsec = @rem(ms, 1000) * std.time.ns_per_ms,
-//     };
-//     _ = c.nanosleep(&request, null);
-// }
-
 fn yieldThread() void {
     std.Thread.yield() catch {};
 }

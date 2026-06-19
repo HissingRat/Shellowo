@@ -253,15 +253,6 @@ fn posixCurrentUnixMs() u64 {
     return seconds * std.time.ms_per_s + nanos / std.time.ns_per_ms;
 }
 
-// fn currentUnixMs() u64 {
-//     if (@TypeOf(std.c.CLOCK) == void) return 0;
-//     var ts: std.c.timespec = undefined;
-//     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
-//     const seconds: u64 = @intCast(@max(0, ts.sec));
-//     const nanos: u64 = @intCast(@max(0, ts.nsec));
-//     return seconds * std.time.ms_per_s + nanos / std.time.ns_per_ms;
-// }
-
 const StatusJson = struct {
     schema: []const u8,
     platform: []const u8 = "",

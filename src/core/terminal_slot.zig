@@ -30,11 +30,6 @@ pub const TerminalSlotSummary = struct {
     }
 };
 
-pub const TerminalSlotCreateIntent = struct {
-    requested_cols: u16,
-    requested_rows: u16,
-};
-
 test "terminal slot summary uses osc title before fallback label" {
     var buffer: [32]u8 = undefined;
     const titled = TerminalSlotSummary{ .id = 1, .ordinal = 1, .title = "vim", .status = .active };

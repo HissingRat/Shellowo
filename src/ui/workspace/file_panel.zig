@@ -5,7 +5,6 @@ const App = @import("../../app/App.zig");
 const app_config = @import("../../app/config.zig");
 const native_event = @import("../../app/native_event.zig");
 const remote_file = @import("../../core/remote_file.zig");
-const workspace = @import("../../core/workspace.zig");
 const active_tasks_panel = @import("file_panel_elements/active_tasks_panel.zig");
 const context_menu = @import("file_panel_elements/context_menu.zig");
 const details_panel = @import("file_panel_elements/details_panel.zig");
@@ -21,7 +20,7 @@ const ColumnWidths = panel_state.ColumnWidths;
 const PathBarState = panel_state.PathBar;
 const PaneLayoutState = panel_state.PaneLayout;
 const EditMode = panel_state.EditMode;
-const PaneKind = panel_state.PaneKind;
+const PaneKind = enum { tree, remote };
 
 const folder_icon_bytes = @embedFile("shellowo-folder-icon");
 const file_icon_bytes = @embedFile("shellowo-file-icon");
@@ -68,8 +67,7 @@ const drop_tooltip_width: f32 = 58;
 const drop_tooltip_height: f32 = 22;
 const drop_tooltip_offset: dvui.Point.Natural = .{ .x = 14, .y = 16 };
 
-pub fn show(tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent {
-    _ = tab;
+pub fn show(palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent {
     var intent: ?remote_file.FilePanelIntent = null;
     var root = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(panelOptions(opts), palette).override(.{
         .color_fill = palette.panel_bg,
@@ -302,7 +300,7 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     const path_busy = opts.app.transferBusyInRemotePath(opts.snapshot.path);
     tableHeader(layout, palette, opts.id_extra + 10);
     opts.columns.* = layout.columns;
-    fileRows(kind, opts.app, opts.snapshot, layout, path_busy, palette, opts.id_extra + 30, intent);
+    fileRows(opts.app, opts.snapshot, layout, path_busy, palette, opts.id_extra + 30, intent);
     handleDeleteConfirm(opts.snapshot, layout, palette, opts.id_extra + 5000, intent);
     if (details_panel.show(&layout.details, palette, opts.id_extra + 5200)) |action| {
         switch (action) {
@@ -354,7 +352,7 @@ fn tableHeader(layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize
     drawColumnSeparators(row.data().contentRectScale(), columns, palette);
 }
 
-fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn fileRows(app: *App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     var scroll = dvui.scrollArea(@src(), .{
         .vertical = .auto,
         .vertical_bar = .auto_overlay,
@@ -388,9 +386,9 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
         .ready => {},
     }
 
-    registerDropTarget(kind, app, snapshot, path_busy, drop_rect);
-    renderDropTooltip(kind, app, snapshot, palette, id_extra + 7000);
-    handleDroppedUploads(kind, app, snapshot, layout, path_busy, drop_rect, intent);
+    registerDropTarget(app, snapshot, path_busy, drop_rect);
+    renderDropTooltip(app, snapshot, palette, id_extra + 7000);
+    handleDroppedUploads(app, snapshot, layout, path_busy, drop_rect, intent);
 
     if (snapshot.entries.len == 0 and layout.edit_mode == .none) {
         emptyRow("No files", palette, id_extra);
@@ -403,7 +401,7 @@ fn fileRows(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, l
         if (create_row_index == idx) {
             editFileRow(snapshot, layout, palette, id_extra + 8000, intent);
         }
-        fileRow(kind, app, snapshot, entry, layout, path_busy, palette, id_extra + idx * 10, intent);
+        fileRow(app, snapshot, entry, layout, path_busy, palette, id_extra + idx * 10, intent);
     }
     if (create_row_index == snapshot.entries.len) {
         editFileRow(snapshot, layout, palette, id_extra + 8000, intent);
@@ -516,7 +514,7 @@ fn treeRowClicked(data: *dvui.WidgetData, row_rect: dvui.Rect.Physical, hovered:
     return false;
 }
 
-fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn fileRow(app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
     if (layout.edit_mode == .rename and std.mem.eql(u8, layout.editingTargetName(), entry.name)) {
         editFileRow(snapshot, layout, palette, id_extra, intent);
         return;
@@ -546,16 +544,15 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
     button.drawBackground();
 
     if (click_event) |event| {
-        const pane = paneTarget(kind);
         const additive = clickAdditive(event);
-        const click_count = registerEntryClick(layout, kind, entry.name);
+        const click_count = registerEntryClick(layout, entry.name);
         if (entry.isDirectory() and click_count >= 2) {
             intent.* = .{ .open = .{
-                .pane = pane,
+                .pane = .remote,
                 .path = snapshot.path,
                 .name = entry.name,
             } };
-        } else if (kind == .remote and entry.kind == .file and snapshot.capabilities.can_edit and click_count >= 2) {
+        } else if (entry.kind == .file and snapshot.capabilities.can_edit and click_count >= 2) {
             intent.* = .{ .open_edit = .{
                 .pane = .remote,
                 .path = snapshot.path,
@@ -566,7 +563,7 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
             layout.applySelection(entry.name, additive);
             intent.* = .{ .select = .{
                 .target = .{
-                    .pane = pane,
+                    .pane = .remote,
                     .path = snapshot.path,
                     .name = entry.name,
                     .kind = entry.kind,
@@ -578,22 +575,22 @@ fn fileRow(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, en
 
     const crs = button.data().contentRectScale();
     var x: f32 = 0;
-    renderNameCell(crs, x, columns.name, entry, palette, id_extra + 1);
-    maybeNameTooltip(entry.name, crs, x, columns.name, id_extra + 2);
+    renderNameCell(crs, x, columns.name, entry, palette);
+    maybeNameTooltip(entry.name, crs, x, columns.name);
     x += columns.name;
     var size_buf: [32]u8 = undefined;
-    renderCellText(crs, x, columns.size, file_format.sizeText(entry, &size_buf), palette.muted_text, id_extra + 3);
+    renderCellText(crs, x, columns.size, file_format.sizeText(entry, &size_buf), palette.muted_text);
     x += columns.size;
     var modified_buf: [32]u8 = undefined;
-    renderCellText(crs, x, columns.modified, file_format.modifiedText(entry, &modified_buf), palette.muted_text, id_extra + 4);
+    renderCellText(crs, x, columns.modified, file_format.modifiedText(entry, &modified_buf), palette.muted_text);
     x += columns.modified;
     var perm_buf: [12]u8 = undefined;
-    renderCellText(crs, x, columns.perm, file_format.permissionText(entry, &perm_buf), palette.muted_text, id_extra + 5);
+    renderCellText(crs, x, columns.perm, file_format.permissionText(entry, &perm_buf), palette.muted_text);
     x += columns.perm;
     var owner_buf: [40]u8 = undefined;
-    renderCellText(crs, x, columns.owner, file_format.ownerText(entry, &owner_buf), palette.muted_text, id_extra + 6);
+    renderCellText(crs, x, columns.owner, file_format.ownerText(entry, &owner_buf), palette.muted_text);
 
-    handleEntryContextMenu(kind, app, snapshot, entry, layout, path_busy, crs.r, palette, id_extra + 100, intent);
+    handleEntryContextMenu(app, snapshot, entry, layout, path_busy, crs.r, palette, id_extra + 100, intent);
 }
 
 fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
@@ -787,8 +784,8 @@ fn droppedUploadIntent(snapshot: remote_file.FilePaneSnapshot, path: []const u8)
     } };
 }
 
-fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
-    if (intent.* != null or kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
+fn handleDroppedUploads(app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
+    if (intent.* != null or snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
     var paths: [max_selected_entries][]const u8 = undefined;
     var count: usize = 0;
     for (app.nativeEvents()) |event| {
@@ -835,8 +832,8 @@ fn handleDroppedUploads(kind: PaneKind, app: *const App, snapshot: remote_file.F
     } }, intent);
 }
 
-fn registerDropTarget(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, path_busy: bool, rect: dvui.Rect.Physical) void {
-    if (kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
+fn registerDropTarget(app: *App, snapshot: remote_file.FilePaneSnapshot, path_busy: bool, rect: dvui.Rect.Physical) void {
+    if (snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
     app.registerFileDropTarget(.{
         .x = rect.x,
         .y = rect.y,
@@ -845,8 +842,8 @@ fn registerDropTarget(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneS
     });
 }
 
-fn renderDropTooltip(kind: PaneKind, app: *const App, snapshot: remote_file.FilePaneSnapshot, palette: theme.Palette, id_extra: usize) void {
-    if (kind != .remote or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
+fn renderDropTooltip(app: *const App, snapshot: remote_file.FilePaneSnapshot, palette: theme.Palette, id_extra: usize) void {
+    if (snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
     const point = app.fileDragPoint() orelse return;
     if (!app.canAcceptFileDrop(point.x, point.y)) return;
     const natural_point = dvui.windowRectScale().pointFromPhysical(.{ .x = point.x, .y = point.y });
@@ -1063,12 +1060,10 @@ fn toastAlpha(elapsed: i128) f32 {
     return @min(1.0, @as(f32, @floatFromInt(ramp_ns)) / @as(f32, @floatFromInt(toast_fade_ns)));
 }
 
-fn registerEntryClick(layout: *PaneLayoutState, pane: PaneKind, name: []const u8) u8 {
+fn registerEntryClick(layout: *PaneLayoutState, name: []const u8) u8 {
     const now = dvui.frameTimeNS();
-    const same_pane = layout.last_click_pane == pane;
     const same_name = std.mem.eql(u8, lastClickName(layout), name);
-    const count: u8 = if (same_pane and same_name and now - layout.last_click_ns <= double_click_window_ns) 2 else 1;
-    layout.last_click_pane = pane;
+    const count: u8 = if (same_name and now - layout.last_click_ns <= double_click_window_ns) 2 else 1;
     layout.last_click_ns = now;
     const len = @min(layout.last_click_name.len, name.len);
     if (len > 0) @memcpy(layout.last_click_name[0..len], name[0..len]);
@@ -1136,8 +1131,8 @@ fn emptyRow(text: []const u8, palette: theme.Palette, id_extra: usize) void {
     });
 }
 
-fn handleEntryContextMenu(kind: PaneKind, app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
-    const can_mutate = kind == .remote and snapshot.state == .ready;
+fn handleEntryContextMenu(app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file.RemoteFileEntry, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+    const can_mutate = snapshot.state == .ready;
     const entry_busy = app.remoteEntryTransferBusy(snapshot.path, entry.name);
     const action = context_menu.entry(palette, .{
         .rect = rect,
@@ -1195,8 +1190,7 @@ fn blankContextRect(crs: dvui.RectScale, row_count: usize) dvui.Rect.Physical {
     };
 }
 
-fn renderNameCell(crs: dvui.RectScale, x_offset: f32, width: f32, entry: remote_file.RemoteFileEntry, palette: theme.Palette, id_extra: usize) void {
-    _ = id_extra;
+fn renderNameCell(crs: dvui.RectScale, x_offset: f32, width: f32, entry: remote_file.RemoteFileEntry, palette: theme.Palette) void {
     const pad: f32 = 8 * crs.s;
     const icon_size = file_icon_size * crs.s;
     const icon_gap = file_icon_gap * crs.s;
@@ -1302,19 +1296,11 @@ fn treeEntrySelected(current_path: []const u8, entry: remote_file.RemoteFileEntr
     return std.mem.eql(u8, current_path, entry.full_path);
 }
 
-fn paneTarget(kind: PaneKind) remote_file.FilePaneTarget {
-    return switch (kind) {
-        .tree => .remote,
-        .remote => .remote,
-    };
-}
-
 fn totalColumnWidth(columns: ColumnWidths) f32 {
     return columns.name + columns.size + columns.modified + columns.perm + columns.owner;
 }
 
-fn renderCellText(crs: dvui.RectScale, x_offset: f32, width: f32, text: []const u8, color: dvui.Color, id_extra: usize) void {
-    _ = id_extra;
+fn renderCellText(crs: dvui.RectScale, x_offset: f32, width: f32, text: []const u8, color: dvui.Color) void {
     const pad: f32 = 8 * crs.s;
     const cell_rect = dvui.Rect.Physical{
         .x = crs.r.x + x_offset * crs.s,
@@ -1340,8 +1326,7 @@ fn renderCellText(crs: dvui.RectScale, x_offset: f32, width: f32, text: []const 
     }) catch {};
 }
 
-fn maybeNameTooltip(name: []const u8, crs: dvui.RectScale, x_offset: f32, width: f32, id_extra: usize) void {
-    _ = id_extra;
+fn maybeNameTooltip(name: []const u8, crs: dvui.RectScale, x_offset: f32, width: f32) void {
     const font = theme.textFont(name, 10);
     const available = @max(0, width - 16);
     if (font.textSize(name).w <= available) return;

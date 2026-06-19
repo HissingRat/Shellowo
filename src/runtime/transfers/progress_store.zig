@@ -36,12 +36,6 @@ pub const Store = struct {
         return buffer[0..count];
     }
 
-    pub fn snapshot(self: *const Store, buffer: []transfer.TransferProgress) []transfer.TransferProgress {
-        const count = @min(buffer.len, self.items.items.len);
-        for (self.items.items[0..count], 0..) |item, idx| buffer[idx] = toSnapshot(item);
-        return buffer[0..count];
-    }
-
     pub fn requestCancel(self: *Store, allocator: std.mem.Allocator, id: u64) void {
         const state = self.ensure(allocator, id) catch return;
         state.cancel_requested = true;

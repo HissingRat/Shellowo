@@ -424,10 +424,6 @@ pub const SshWorkspaceWorker = struct {
         return self.transfer_progress.consumeFinished(buffer);
     }
 
-    fn transferProgressSnapshotLocked(self: *const SshWorkspaceWorker, buffer: []transfer_core.TransferProgress) []transfer_core.TransferProgress {
-        return self.transfer_progress.snapshot(buffer);
-    }
-
     pub fn requestCancelTransfer(self: *SshWorkspaceWorker, transfer_id: u64) void {
         self.lockFile();
         defer self.unlockFile();
@@ -1602,20 +1598,6 @@ pub const SshWorkspaceWorker = struct {
             if (std.mem.eql(u8, node.path, path)) return idx;
         }
         return null;
-    }
-
-    fn removeTreeDescendantsLocked(self: *SshWorkspaceWorker, path: []const u8) void {
-        var idx: usize = 0;
-        while (idx < self.file_tree_nodes.items.len) {
-            const node = self.file_tree_nodes.items[idx];
-            if (!treePathIsDescendant(path, node.path)) {
-                idx += 1;
-                continue;
-            }
-            self.allocator.free(node.path);
-            self.allocator.free(node.name);
-            _ = self.file_tree_nodes.orderedRemove(idx);
-        }
     }
 
     fn removeStaleDirectTreeChildrenLocked(self: *SshWorkspaceWorker, path: []const u8, child_depth: u8, entries: []const remote_file.RemoteFileEntry) void {
