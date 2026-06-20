@@ -26,7 +26,7 @@ pub fn show(app: *App, palette: theme.Palette) void {
     };
 
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -34,10 +34,7 @@ pub fn show(app: *App, palette: theme.Palette) void {
         .border = .all(1),
         .corner_radius = .all(8),
         .id_extra = 50_002,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border_subtle,
-    }));
+    }, palette));
     defer panel.deinit();
     dvui.focusSubwindow(panel.data().id, null);
 
@@ -97,7 +94,7 @@ fn form(app: *App, palette: theme.Palette, content_height: f32) void {
         .corner_radius = .all(0),
         .id_extra = 50_020,
     }, palette).override(.{
-        .color_fill = palette.panel_bg,
+        .color_fill = palette.popup_bg,
         .color_border = palette.border_subtle,
     }));
     defer scroll.deinit();

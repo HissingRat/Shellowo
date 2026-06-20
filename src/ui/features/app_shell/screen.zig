@@ -192,7 +192,7 @@ fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extr
         .h = popup_h,
     };
     var win: dvui.FloatingWidget = undefined;
-    win.init(@src(), .{}, theme.panel(.{
+    win.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -200,10 +200,7 @@ fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extr
         .border = .all(1),
         .corner_radius = .all(5),
         .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.surface_bg,
-        .color_border = palette.border,
-    }));
+    }, palette));
     defer win.deinit();
     dvui.focusSubwindow(win.data().id, null);
 
@@ -356,8 +353,8 @@ fn masterPasswordToggleSwitch(app: *App, state: *TopBarState, palette: theme.Pal
     const track_rect = crs.r;
     const radius = dvui.Rect.Physical.all(track_rect.h / 2);
     const visual_enabled = app.masterPasswordEnabled();
-    const track_color = if (visual_enabled) theme.c(0x2f, 0x7d, 0xff) else palette.surface_active;
-    const border_color = if (visual_enabled) theme.c(0x75, 0xa8, 0xff) else palette.border;
+    const track_color = if (visual_enabled) palette.active_bg else palette.surface_active;
+    const border_color = if (visual_enabled) palette.border_selected else palette.border;
     track_rect.fill(radius, .{ .color = track_color, .fade = 1.0 });
     track_rect.stroke(radius, .{ .thickness = 1 * crs.s, .color = border_color });
 
@@ -429,7 +426,7 @@ fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
         .w = size,
         .h = size,
     };
-    renderPng(folder_icon_bytes, "folder.png", .{ .r = icon_rect, .s = crs.s }, palette.accent);
+    renderPng(folder_icon_bytes, "folder.png", .{ .r = icon_rect, .s = crs.s }, palette.folder_icon);
 
     const clicked = bw.clicked();
     bw.deinit();
@@ -492,8 +489,8 @@ fn themeToggleSwitch(app: *App, state: *TopBarState, palette: theme.Palette, id_
     const knob_pos = if (state.theme_switch_animating)
         std.math.lerp(if (state.theme_switch_from_light) @as(f32, 1) else @as(f32, 0), if (state.theme_switch_to_light) @as(f32, 1) else @as(f32, 0), t)
     else if (active) @as(f32, 1) else @as(f32, 0);
-    const track_color = if (active) theme.c(0x2f, 0x7d, 0xff) else palette.surface_active;
-    const border_color = if (active) theme.c(0x75, 0xa8, 0xff) else palette.border;
+    const track_color = if (active) palette.active_bg else palette.surface_active;
+    const border_color = if (active) palette.border_selected else palette.border;
     track_rect.fill(radius, .{ .color = track_color, .fade = 1.0 });
     track_rect.stroke(radius, .{ .thickness = 1 * crs.s, .color = border_color });
 
@@ -549,7 +546,7 @@ fn renderThemeSwitchIcons(state: *const TopBarState, active_light: bool, knob_re
 }
 
 fn switchIconColor(sun: bool) dvui.Color {
-    return if (sun) theme.c(0xf3, 0xa9, 0x16) else theme.c(0x1f, 0x2b, 0x3a);
+    return if (sun) theme.c(0xf3, 0xa9, 0x16) else theme.c(0x2b, 0x2b, 0x2e);
 }
 
 fn themeSwitchProgressConst(state: *const TopBarState) f32 {
@@ -782,7 +779,7 @@ fn hostKeyPrompt(app: *App, palette: theme.Palette) void {
     };
 
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -790,10 +787,7 @@ fn hostKeyPrompt(app: *App, palette: theme.Palette) void {
         .border = .all(1),
         .corner_radius = .all(8),
         .id_extra = 920_001,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border,
-    }));
+    }, palette));
     defer panel.deinit();
 
     dvui.label(@src(), "Trust SSH Host Key", .{}, .{

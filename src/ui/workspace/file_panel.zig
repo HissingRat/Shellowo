@@ -141,6 +141,7 @@ fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palet
     if (!editable and state.editing) state.cancelEdit();
 
     if (state.editing) {
+        var entry_theme = theme.textEntryTheme();
         var te: dvui.TextEntryWidget = undefined;
         te.init(@src(), .{
             .text = .{ .buffer = &state.buffer },
@@ -156,6 +157,7 @@ fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palet
         }, palette).override(.{
             .color_fill = palette.surface_bg,
             .color_border = palette.surface_bg,
+            .theme = &entry_theme,
         }));
         if (state.focus_requested) {
             dvui.focusWidget(te.data().id, null, null);
@@ -167,6 +169,7 @@ fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palet
         const focused = dvui.focusedWidgetIdInCurrentSubwindow() == te.data().id;
         const path = std.mem.trim(u8, state.buffer[0..te.len], " \t\r\n");
         drawPathTextEntry(&te);
+        theme.drawTextEntryFocus(te.data(), palette);
         te.deinit();
 
         if (canceled) {
@@ -642,6 +645,7 @@ fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState,
     renderPng(icon.bytes, icon.name, .{ .r = icon_rect, .s = icon_crs.s }, iconColor(icon_entry, palette));
     icon_slot.deinit();
 
+    var entry_theme = theme.textEntryTheme();
     var te: dvui.TextEntryWidget = undefined;
     te.init(@src(), .{ .text = .{ .buffer = &layout.edit_buffer } }, theme.panel(.{
         .expand = .horizontal,
@@ -653,6 +657,7 @@ fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState,
     }, palette).override(.{
         .color_fill = palette.surface_bg,
         .color_border = palette.border,
+        .theme = &entry_theme,
     }));
     if (layout.edit_focus_requested) {
         dvui.focusWidget(te.data().id, null, null);
@@ -667,6 +672,7 @@ fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState,
     }
     te.processEvents();
     te.draw();
+    theme.drawTextEntryFocus(te.data(), palette);
     const entered = te.enter_pressed;
     const focused = dvui.focusedWidgetIdInCurrentSubwindow() == te.data().id;
     const should_commit = entered or (layout.edit_was_focused and !focused);
@@ -754,6 +760,7 @@ fn uploadFilesIntent(snapshot: remote_file.FilePaneSnapshot) ?remote_file.FilePa
         entries[idx] = .{
             .name = std.fs.path.basename(path),
             .kind = .file,
+            .size = null,
         };
     }
     return .{ .upload_many = .{
@@ -823,6 +830,7 @@ fn handleDroppedUploads(app: *const App, snapshot: remote_file.FilePaneSnapshot,
         entries[idx] = .{
             .name = std.fs.path.basename(path),
             .kind = .file,
+            .size = null,
         };
     }
     queueTransferIntent(app, snapshot, layout, .{ .upload_many = .{
@@ -955,7 +963,7 @@ fn localTargetExists(app: *const App, local_path: []const u8, name: []const u8) 
 
 fn selectedEntriesForAction(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, fallback: remote_file.RemoteFileEntry) usize {
     if (layout.selected_count == 0 or !layout.isSelected(fallback.name)) {
-        layout.action_entries[0] = .{ .name = fallback.name, .kind = fallback.kind };
+        layout.action_entries[0] = .{ .name = fallback.name, .kind = fallback.kind, .size = fallback.size };
         return 1;
     }
 
@@ -964,13 +972,13 @@ fn selectedEntriesForAction(snapshot: remote_file.FilePaneSnapshot, layout: *Pan
         const name = name_buf[0..name_len];
         if (std.mem.eql(u8, name, "..")) continue;
         if (entryByName(snapshot, name)) |entry| {
-            layout.action_entries[count] = .{ .name = entry.name, .kind = entry.kind };
+            layout.action_entries[count] = .{ .name = entry.name, .kind = entry.kind, .size = entry.size };
             count += 1;
             if (count >= layout.action_entries.len) break;
         }
     }
     if (count == 0) {
-        layout.action_entries[0] = .{ .name = fallback.name, .kind = fallback.kind };
+        layout.action_entries[0] = .{ .name = fallback.name, .kind = fallback.kind, .size = fallback.size };
         return 1;
     }
     return count;
@@ -1265,7 +1273,7 @@ fn renderTreeEntry(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry, pale
         },
         .color = palette.text_subtle,
     }) catch {};
-    renderPng(folder_icon_bytes, "folder.png", .{ .r = icon_rect, .s = crs.s }, palette.accent);
+    renderPng(folder_icon_bytes, "folder.png", .{ .r = icon_rect, .s = crs.s }, palette.folder_icon);
 
     const text_x = icon_rect.x + icon_rect.w + icon_gap;
     const text_rect = dvui.Rect.Physical{
@@ -1287,7 +1295,7 @@ fn renderTreeEntry(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry, pale
             .x = text_rect.x,
             .y = text_rect.y + @round((text_rect.h - text_size.h * crs.s) / 2),
         },
-        .color = palette.text,
+        .color = if (entry.cache_stale) palette.warning else palette.text,
     }) catch {};
 }
 
@@ -1362,9 +1370,9 @@ fn iconForEntry(entry: remote_file.RemoteFileEntry) FileIcon {
 
 fn iconColor(entry: remote_file.RemoteFileEntry, palette: theme.Palette) dvui.Color {
     return switch (entry.kind) {
-        .directory => palette.accent,
-        .file => palette.muted_text,
-        .symlink => palette.text_subtle,
+        .directory => palette.folder_icon,
+        .file => palette.file_icon,
+        .symlink => palette.network_rx,
         .other => palette.text_subtle,
     };
 }

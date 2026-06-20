@@ -24,57 +24,45 @@ pub fn handle(palette: theme.Palette, opts: Options) void {
     else
         dvui.Size{ .w = 1, .h = opts.sep_thickness };
 
-    var button: theme.ButtonWidget = undefined;
-    button.init(@src(), .{
-        .background = false,
+    var splitter = dvui.box(@src(), .{}, .{
+        .background = opts.sep_thickness > 0,
+        .color_fill = palette.border_subtle,
         .min_size_content = size,
         .max_size_content = if (opts.axis == .vertical) .width(opts.sep_thickness) else .height(opts.sep_thickness),
         .expand = if (opts.axis == .vertical) .vertical else .horizontal,
         .padding = .all(0),
         .margin = .all(0),
+        .border = .all(0),
         .corner_radius = .all(0),
         .id_extra = opts.id_extra,
-    }, palette, .{ .variant = .ghost }, .{
-        .interactive = false,
-        .touch_drag = true,
-        .override = .{
-            .background = false,
-            .color_fill = palette.border_subtle,
-            .color_fill_hover = palette.surface_hover,
-            .color_fill_press = palette.accent,
-            .color_text = palette.text_subtle,
-        },
     });
-    defer button.deinit();
+    defer splitter.deinit();
 
-    separatorLine(palette, opts);
-
-    const hit_rect = hitRect(button.data().borderRectScale(), opts);
+    const hit_rect = hitRect(splitter.data().borderRectScale(), opts);
     for (dvui.events()) |*e| {
-        if (!dvui.eventMatch(e, .{ .id = button.data().id, .r = hit_rect }))
+        if (!dvui.eventMatch(e, .{ .id = splitter.data().id, .r = hit_rect }))
             continue;
 
         switch (e.evt) {
             .mouse => |me| {
                 const cursor: dvui.enums.Cursor = if (opts.axis == .vertical) .arrow_w_e else .arrow_n_s;
                 if (me.action == .press and me.button.pointer()) {
-                    e.handle(@src(), button.data());
-                    dvui.captureMouse(button.data(), e.num);
+                    e.handle(@src(), splitter.data());
+                    dvui.captureMouse(splitter.data(), e.num);
                     dvui.dragPreStart(me.p, .{ .cursor = cursor });
                 } else if (me.action == .release and me.button.pointer()) {
-                    e.handle(@src(), button.data());
+                    e.handle(@src(), splitter.data());
                     dvui.captureMouse(null, e.num);
                     dvui.dragEnd();
-                } else if (me.action == .motion and dvui.captured(button.data().id)) {
-                    e.handle(@src(), button.data());
+                } else if (me.action == .motion and dvui.captured(splitter.data().id)) {
+                    e.handle(@src(), splitter.data());
                     if (dvui.dragging(me.p, null)) |delta| {
-                        const scale = button.data().borderRectScale().s;
+                        const scale = splitter.data().borderRectScale().s;
                         const amount = if (opts.axis == .vertical) delta.x / scale else delta.y / scale;
                         opts.value.* = clamp(opts.value.* + amount * opts.direction, opts.min, opts.max);
-                        dvui.refresh(null, @src(), button.data().id);
+                        dvui.refresh(null, @src(), splitter.data().id);
                     }
                 } else if (me.action == .position) {
-                    button.setHovered(true);
                     dvui.cursorSet(cursor);
                 }
             },
@@ -93,26 +81,4 @@ fn hitRect(rs: dvui.RectScale, opts: Options) dvui.Rect.Physical {
         .vertical => rs.r.outset(.{ .x = extra, .w = extra }),
         .horizontal => rs.r.outset(.{ .y = extra, .h = extra }),
     };
-}
-
-fn separatorLine(palette: theme.Palette, opts: Options) void {
-    const size = if (opts.axis == .vertical)
-        dvui.Size{ .w = opts.sep_thickness, .h = 1 }
-    else
-        dvui.Size{ .w = 1, .h = opts.sep_thickness };
-
-    var line = dvui.box(@src(), .{}, .{
-        .background = true,
-        .color_fill = palette.border_subtle,
-        .expand = if (opts.axis == .vertical) .vertical else .horizontal,
-        .min_size_content = size,
-        .max_size_content = if (opts.axis == .vertical) .width(opts.sep_thickness) else .height(opts.sep_thickness),
-        .gravity_x = 0.5,
-        .gravity_y = 0.5,
-        .padding = .all(0),
-        .margin = .all(0),
-        .corner_radius = .all(0),
-        .id_extra = opts.id_extra + 1,
-    });
-    defer line.deinit();
 }

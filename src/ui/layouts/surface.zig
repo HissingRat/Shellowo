@@ -19,6 +19,15 @@ pub fn panel(opts: dvui.Options, palette: palette_module.Palette) dvui.Options {
     });
 }
 
+pub fn popup(opts: dvui.Options, palette: palette_module.Palette) dvui.Options {
+    return opts.override(.{
+        .background = true,
+        .color_fill = palette.popup_bg,
+        .color_text = palette.text,
+        .color_border = palette.border,
+    });
+}
+
 pub fn topbar(opts: dvui.Options, palette: palette_module.Palette) dvui.Options {
     return opts.override(.{
         .background = true,

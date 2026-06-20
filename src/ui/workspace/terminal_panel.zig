@@ -83,7 +83,7 @@ pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, opts
         .padding = .{ .x = 12, .y = 10, .w = 12, .h = 10 },
         .id_extra = opts.id_extra,
     }, palette).override(.{
-        .color_fill = palette.app_bg,
+        .color_fill = palette.terminal_bg,
         .color_border = palette.border_subtle,
     }));
     defer panel.deinit();
@@ -138,7 +138,7 @@ fn terminalText(app: *App, tab: workspace.WorkspaceTab, text: []const u8, palett
         .tab_index = 1,
         .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.app_bg,
+        .color_fill = palette.terminal_bg,
         .color_border = palette.border_subtle,
     }));
     defer host.deinit();
@@ -159,7 +159,7 @@ fn terminalSnapshot(app: *App, tab: workspace.WorkspaceTab, real_snapshot: termi
         .tab_index = 1,
         .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.app_bg,
+        .color_fill = palette.terminal_bg,
         .color_border = palette.border_subtle,
     }));
     defer host.deinit();
@@ -247,7 +247,7 @@ fn terminalContextMenuOptions(palette: theme.Palette, id_extra: usize) dvui.Opti
     return .{
         .id_extra = id_extra,
         .background = true,
-        .color_fill = palette.app_bg,
+        .color_fill = palette.popup_bg,
         .color_border = palette.border,
         .color_text = palette.text,
         .border = .all(1),
@@ -462,7 +462,7 @@ fn renderTerminalLine(text: []const u8, crs: dvui.RectScale, row: f32, palette: 
             .x = text_rect.x,
             .y = text_rect.y,
         },
-        .color = palette.text,
+        .color = palette.terminal_text,
     }) catch {};
 }
 
@@ -567,7 +567,7 @@ fn renderTerminalBackgrounds(snapshot: terminal.Snapshot, crs: dvui.RectScale, v
                 const fill = if (selected) selectedTerminalBackground(color, palette) else color;
                 terminalCellRect(crs, visible_row, col, width).fill(.{}, .{ .color = fill, .fade = 0 });
             } else if (selected) {
-                terminalCellRect(crs, visible_row, col, width).fill(.{}, .{ .color = palette.surface_active, .fade = 0 });
+                terminalCellRect(crs, visible_row, col, width).fill(.{}, .{ .color = palette.terminal_selection, .fade = 0 });
             }
         }
         col += width;
@@ -580,9 +580,9 @@ fn renderTerminalSearchHighlights(crs: dvui.RectScale, matches: TerminalSearchMa
         const match = matches.items[idx];
         const active = idx == active_index;
         const fill = if (active)
-            blendColor(palette.accent, palette.app_bg, 0.22).opacity(0.72)
+            blendColor(palette.accent, palette.terminal_bg, 0.22).opacity(0.72)
         else
-            blendColor(palette.accent, palette.app_bg, 0.55).opacity(0.42);
+            blendColor(palette.accent, palette.terminal_bg, 0.55).opacity(0.42);
         terminalCellRect(crs, visible_row, match.col, match.len).fill(.{ .x = 1, .y = 1, .w = 1, .h = 1 }, .{ .color = fill, .fade = 0 });
     }
 }
@@ -716,7 +716,7 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
         .w = @max(1, cell_width * 0.8),
         .h = @max(1, cursor_underline_height * crs.s),
     };
-    cursor_rect.fill(.{}, .{ .color = palette.text, .fade = 0 });
+    cursor_rect.fill(.{}, .{ .color = palette.terminal_text, .fade = 0 });
 }
 
 fn scrollbar(

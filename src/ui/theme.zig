@@ -44,6 +44,8 @@ pub const ProgressOptions = progress_widget.Options;
 pub const ProgressState = progress_widget.State;
 pub const TextEntry = text_field_widget.Entry;
 pub const TextFieldOptions = text_field_widget.Options;
+pub const textEntryTheme = text_field_widget.entryTheme;
+pub const drawTextEntryFocus = text_field_widget.drawFocusBorder;
 
 pub fn app(opts: dvui.Options, palette: Palette) dvui.Options {
     return surface.app(opts, palette);
@@ -51,6 +53,10 @@ pub fn app(opts: dvui.Options, palette: Palette) dvui.Options {
 
 pub fn panel(opts: dvui.Options, palette: Palette) dvui.Options {
     return surface.panel(opts, palette);
+}
+
+pub fn popup(opts: dvui.Options, palette: Palette) dvui.Options {
+    return surface.popup(opts, palette);
 }
 
 pub fn topbar(opts: dvui.Options, palette: Palette) dvui.Options {

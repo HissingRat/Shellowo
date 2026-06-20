@@ -368,7 +368,7 @@ fn slotContextMenuOptions(palette: theme.Palette, id_extra: usize) dvui.Options 
     return .{
         .id_extra = id_extra,
         .background = true,
-        .color_fill = palette.app_bg,
+        .color_fill = palette.popup_bg,
         .color_border = palette.border,
         .color_text = palette.text,
         .border = .all(1),

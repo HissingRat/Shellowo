@@ -102,7 +102,7 @@ pub fn show(state: *State, palette: theme.Palette, id_extra: usize) ?Action {
     };
 
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -110,10 +110,7 @@ pub fn show(state: *State, palette: theme.Palette, id_extra: usize) ?Action {
         .border = .all(1),
         .corner_radius = .all(6),
         .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border_subtle,
-    }));
+    }, palette));
     defer panel.deinit();
     dvui.focusSubwindow(panel.data().id, null);
 
@@ -162,8 +159,8 @@ fn content(state: *const State, palette: theme.Palette, height: f32, id_extra: u
         .margin = .all(0),
         .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.panel_bg,
+        .color_fill = palette.popup_bg,
+        .color_border = palette.popup_bg,
     }));
     defer scroll.deinit();
 
@@ -192,8 +189,8 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?Action {
         .padding = .all(0),
         .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.panel_bg,
+        .color_fill = palette.popup_bg,
+        .color_border = palette.popup_bg,
     }));
     defer box.deinit();
 

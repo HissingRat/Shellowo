@@ -20,7 +20,7 @@ pub fn show(app: *App, palette: theme.Palette) void {
     };
 
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -28,10 +28,7 @@ pub fn show(app: *App, palette: theme.Palette) void {
         .border = .all(1),
         .corner_radius = .all(8),
         .id_extra = 930_000,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border,
-    }));
+    }, palette));
     defer panel.deinit();
     dvui.focusSubwindow(panel.data().id, null);
 

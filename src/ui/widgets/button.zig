@@ -106,7 +106,12 @@ pub fn fill(palette: palette_module.Palette, style: Style) dvui.Color {
             },
         },
         .normal => switch (style.variant) {
-            .ghost, .tab => dvui.Color.transparent,
+            .ghost => switch (style.intent) {
+                .neutral => dvui.Color.transparent,
+                .primary => palette.accent.opacity(0.12),
+                .danger => palette.danger.opacity(0.10),
+            },
+            .tab => dvui.Color.transparent,
             .row => palette.surface_bg,
             .solid => switch (style.intent) {
                 .neutral => palette.button_bg,
@@ -119,14 +124,18 @@ pub fn fill(palette: palette_module.Palette, style: Style) dvui.Color {
 
 pub fn options(opts: dvui.Options, palette: palette_module.Palette, style: Style) dvui.Options {
     const background = fill(palette, style);
+    const text_color = if (style.state == .normal and style.variant == .solid and style.intent == .primary)
+        palette.app_bg
+    else
+        palette.text;
     return typography.withFontSize(opts.override(.{
         .background = true,
         .color_fill = background,
         .color_fill_hover = background,
         .color_fill_press = background,
-        .color_text = palette.text,
-        .color_text_hover = palette.text,
-        .color_text_press = palette.text,
+        .color_text = text_color,
+        .color_text_hover = text_color,
+        .color_text_press = text_color,
         .color_border = dvui.Color.transparent,
         .border = .all(metrics.defaults.control_border_width),
         .corner_radius = .all(metrics.defaults.radius_small),

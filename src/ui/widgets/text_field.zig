@@ -23,9 +23,9 @@ pub const Entry = struct {
         layout: dvui.Options,
         palette: palette_module.Palette,
     ) void {
-        self.theme = dvui.themeGet();
-        self.theme.focus = palette.border_selected;
+        self.theme = entryTheme();
         self.inner = dvui.textEntry(src, init_opts, entryOptions(layout, palette).override(.{ .theme = &self.theme }));
+        drawFocusBorder(self.inner.data(), palette);
     }
 
     pub fn data(self: *Entry) *dvui.WidgetData {
@@ -65,9 +65,23 @@ pub fn number(
     layout: dvui.Options,
     palette: palette_module.Palette,
 ) dvui.TextEntryNumberResult(T) {
-    var entry_theme = dvui.themeGet();
-    entry_theme.focus = palette.border_selected;
+    var entry_theme = entryTheme();
     return dvui.textEntryNumber(src, T, init_opts, entryOptions(layout, palette).override(.{ .theme = &entry_theme }));
+}
+
+pub fn entryTheme() dvui.Theme {
+    var entry_theme = dvui.themeGet();
+    entry_theme.focus = dvui.Color.transparent;
+    return entry_theme;
+}
+
+pub fn drawFocusBorder(data: *const dvui.WidgetData, palette: palette_module.Palette) void {
+    if (data.id != dvui.focusedWidgetId() or !data.visible()) return;
+    const rs = data.borderRectScale();
+    rs.r.stroke(
+        data.options.corner_radiusGet().scale(rs.s, dvui.Rect.Physical),
+        .{ .thickness = rs.s, .color = palette.border_selected, .after = true },
+    );
 }
 
 pub fn show(

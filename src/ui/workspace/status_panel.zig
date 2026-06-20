@@ -340,11 +340,11 @@ fn networkHeader(chart_rect: dvui.Rect.Physical, maybe_network: ?status_panel.Ne
 }
 
 fn networkTxColor(palette: theme.Palette) dvui.Color {
-    return palette.accent;
+    return palette.network_tx;
 }
 
-fn networkRxColor(_: theme.Palette) dvui.Color {
-    return .{ .r = 0x45, .g = 0xd6, .b = 0xb5, .a = 0xff };
+fn networkRxColor(palette: theme.Palette) dvui.Color {
+    return palette.network_rx;
 }
 
 fn blendColor(a: dvui.Color, b: dvui.Color, amount_b: f32) dvui.Color {
@@ -419,7 +419,7 @@ fn drawNetworkGrid(chart_rect: dvui.Rect.Physical, plot_rect: dvui.Rect.Physical
         .w = chart_rect.w,
         .h = @max(1, scale),
     };
-    baseline.fill(.all(0), .{ .color = palette.accent.opacity(0.55), .fade = 0 });
+    baseline.fill(.all(0), .{ .color = palette.border_hover.opacity(0.55), .fade = 0 });
 }
 
 fn drawDashedLine(x0: f32, y: f32, x1: f32, color: dvui.Color, scale: f32) void {

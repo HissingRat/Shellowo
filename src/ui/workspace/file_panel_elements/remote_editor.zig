@@ -336,7 +336,7 @@ fn replacePopup(state: *State, palette: theme.Palette, id_extra: usize) void {
     if (searchQuery(state).len == 0) return;
     const rect = replacePopupRect();
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -346,8 +346,8 @@ fn replacePopup(state: *State, palette: theme.Palette, id_extra: usize) void {
         .id_extra = id_extra,
         .gravity_x = 1,
     }, palette).override(.{
-        .color_fill = palette.panel_bg.opacity(0.86),
-        .color_border = palette.border_subtle.opacity(0.78),
+        .color_fill = palette.popup_bg.opacity(0.94),
+        .color_border = palette.border.opacity(0.86),
     }));
     defer panel.deinit();
     focusReplacePopupOnClick(&panel);
@@ -955,7 +955,7 @@ fn unsavedPrompt(palette: theme.Palette, id_extra: usize) ?ConfirmAction {
     };
 
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -963,10 +963,7 @@ fn unsavedPrompt(palette: theme.Palette, id_extra: usize) ?ConfirmAction {
         .border = .all(1),
         .corner_radius = .all(6),
         .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border_subtle,
-    }));
+    }, palette));
     defer panel.deinit();
     dvui.focusSubwindow(panel.data().id, null);
 

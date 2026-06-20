@@ -17,23 +17,23 @@ pub fn font(text: []const u8, style: terminal.Style) dvui.Font {
 }
 
 pub fn foreground(style: terminal.Style, palette: theme.Palette) dvui.Color {
-    if (style.reverse) return backgroundValue(style, palette) orelse palette.app_bg;
-    return resolve(style.fg, palette.text);
+    if (style.reverse) return backgroundValue(style, palette) orelse palette.terminal_bg;
+    return resolve(style.fg, palette.terminal_text);
 }
 
 pub fn background(style: terminal.Style, palette: theme.Palette) ?dvui.Color {
-    if (style.reverse) return resolve(style.fg, palette.text);
+    if (style.reverse) return resolve(style.fg, palette.terminal_text);
     return backgroundValue(style, palette);
 }
 
 pub fn selectedBackground(background_color: dvui.Color, palette: theme.Palette) dvui.Color {
-    return darken(blend(background_color, palette.surface_active, selection_background_mix), selection_background_darken);
+    return darken(blend(background_color, palette.terminal_selection, selection_background_mix), selection_background_darken);
 }
 
 fn backgroundValue(style: terminal.Style, palette: theme.Palette) ?dvui.Color {
     return switch (style.bg) {
         .default => null,
-        else => resolve(style.bg, palette.app_bg),
+        else => resolve(style.bg, palette.terminal_bg),
     };
 }
 

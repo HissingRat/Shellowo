@@ -108,7 +108,7 @@ pub fn show(state: *State, palette: theme.Palette, id_extra: usize) ?remote_file
     };
 
     var panel: dvui.FloatingWidget = undefined;
-    panel.init(@src(), .{}, theme.panel(.{
+    panel.init(@src(), .{}, theme.popup(.{
         .rect = .cast(rect),
         .min_size_content = .{ .w = rect.w, .h = rect.h },
         .max_size_content = .{ .w = rect.w, .h = rect.h },
@@ -116,10 +116,7 @@ pub fn show(state: *State, palette: theme.Palette, id_extra: usize) ?remote_file
         .border = .all(1),
         .corner_radius = .all(6),
         .id_extra = id_extra,
-    }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.border_subtle,
-    }));
+    }, palette));
     defer panel.deinit();
     dvui.focusSubwindow(panel.data().id, null);
 
@@ -159,8 +156,8 @@ fn content(state: *State, palette: theme.Palette, height: f32, id_extra: usize) 
         .padding = .{ .x = 12, .y = 8, .w = 12, .h = 8 },
         .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.panel_bg,
+        .color_fill = palette.popup_bg,
+        .color_border = palette.popup_bg,
     }));
     defer box.deinit();
 
@@ -209,6 +206,7 @@ fn modeRow(state: *State, palette: theme.Palette, id_extra: usize) void {
     defer row.deinit();
 
     fieldLabel("Mode", palette, id_extra + 1);
+    var entry_theme = theme.textEntryTheme();
     var te: dvui.TextEntryWidget = undefined;
     te.init(@src(), .{ .text = .{ .buffer = &state.mode_text } }, theme.panel(.{
         .min_size_content = .{ .w = 72, .h = 22 },
@@ -220,9 +218,11 @@ fn modeRow(state: *State, palette: theme.Palette, id_extra: usize) void {
     }, palette).override(.{
         .color_fill = palette.surface_bg,
         .color_border = palette.border,
+        .theme = &entry_theme,
     }));
     te.processEvents();
     te.draw();
+    theme.drawTextEntryFocus(te.data(), palette);
     te.deinit();
 
     if (state.parseMode()) |mode| state.bitsFromMode(mode);
@@ -276,8 +276,8 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?remote_file.F
         .padding = .all(0),
         .id_extra = id_extra,
     }, palette).override(.{
-        .color_fill = palette.panel_bg,
-        .color_border = palette.panel_bg,
+        .color_fill = palette.popup_bg,
+        .color_border = palette.popup_bg,
     }));
     defer box.deinit();
 
