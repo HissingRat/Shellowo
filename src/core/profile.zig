@@ -44,23 +44,20 @@ pub const ConnectionProfile = struct {
 
     pub fn clone(self: ConnectionProfile, allocator: std.mem.Allocator) !ConnectionProfile {
         const b = self.base;
-        const copied_base = BaseProfile{
-            .id = b.id,
-            .name = try allocator.dupe(u8, b.name),
-            .host = try allocator.dupe(u8, b.host),
-            .port = b.port,
-            .username = try allocator.dupe(u8, b.username),
-            .group = try allocator.dupe(u8, b.group),
-        };
-
-        return .{
-            .base = copied_base,
-            .auth_type = self.auth_type,
-            .password = try allocator.dupe(u8, self.password),
-            .private_key_path = try allocator.dupe(u8, self.private_key_path),
-            .private_key_passphrase = try allocator.dupe(u8, self.private_key_passphrase),
-            .sftp_enabled = self.sftp_enabled,
-        };
+        return cloneFields(
+            allocator,
+            b.id,
+            b.name,
+            b.host,
+            b.port,
+            b.username,
+            b.group,
+            self.auth_type,
+            self.password,
+            self.private_key_path,
+            self.private_key_passphrase,
+            self.sftp_enabled,
+        );
     }
 };
 
@@ -100,25 +97,67 @@ pub const ProfileDraft = struct {
     }
 
     pub fn toProfile(self: *const ProfileDraft, allocator: std.mem.Allocator, id: u64) !ConnectionProfile {
-        const base_profile = BaseProfile{
-            .id = id,
-            .name = try allocator.dupe(u8, textFromBuffer(&self.name)),
-            .host = try allocator.dupe(u8, textFromBuffer(&self.host)),
-            .port = self.port,
-            .username = try allocator.dupe(u8, textFromBuffer(&self.username)),
-            .group = try allocator.dupe(u8, textFromBuffer(&self.group)),
-        };
-
-        return .{
-            .base = base_profile,
-            .auth_type = self.auth_type,
-            .password = try allocator.dupe(u8, textFromBuffer(&self.password)),
-            .private_key_path = try allocator.dupe(u8, textFromBuffer(&self.private_key_path)),
-            .private_key_passphrase = try allocator.dupe(u8, textFromBuffer(&self.private_key_passphrase)),
-            .sftp_enabled = self.sftp_enabled,
-        };
+        return cloneFields(
+            allocator,
+            id,
+            textFromBuffer(&self.name),
+            textFromBuffer(&self.host),
+            self.port,
+            textFromBuffer(&self.username),
+            textFromBuffer(&self.group),
+            self.auth_type,
+            textFromBuffer(&self.password),
+            textFromBuffer(&self.private_key_path),
+            textFromBuffer(&self.private_key_passphrase),
+            self.sftp_enabled,
+        );
     }
 };
+
+fn cloneFields(
+    allocator: std.mem.Allocator,
+    id: u64,
+    name_source: []const u8,
+    host_source: []const u8,
+    port: u16,
+    username_source: []const u8,
+    group_source: []const u8,
+    auth_type: AuthType,
+    password_source: []const u8,
+    private_key_path_source: []const u8,
+    private_key_passphrase_source: []const u8,
+    sftp_enabled: bool,
+) !ConnectionProfile {
+    const name = try allocator.dupe(u8, name_source);
+    errdefer allocator.free(name);
+    const host = try allocator.dupe(u8, host_source);
+    errdefer allocator.free(host);
+    const username = try allocator.dupe(u8, username_source);
+    errdefer allocator.free(username);
+    const group = try allocator.dupe(u8, group_source);
+    errdefer allocator.free(group);
+    const password = try allocator.dupe(u8, password_source);
+    errdefer allocator.free(password);
+    const private_key_path = try allocator.dupe(u8, private_key_path_source);
+    errdefer allocator.free(private_key_path);
+    const private_key_passphrase = try allocator.dupe(u8, private_key_passphrase_source);
+
+    return .{
+        .base = .{
+            .id = id,
+            .name = name,
+            .host = host,
+            .port = port,
+            .username = username,
+            .group = group,
+        },
+        .auth_type = auth_type,
+        .password = password,
+        .private_key_path = private_key_path,
+        .private_key_passphrase = private_key_passphrase,
+        .sftp_enabled = sftp_enabled,
+    };
+}
 
 pub fn textFromBuffer(buffer: []const u8) []const u8 {
     const end = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
@@ -172,4 +211,24 @@ test "draft can create private key auth profile" {
     try std.testing.expectEqual(AuthType.private_key, item.auth_type);
     try std.testing.expectEqualStrings("/Users/dev/.ssh/id_ed25519", item.private_key_path);
     try std.testing.expectEqualStrings("phrase", item.private_key_passphrase);
+}
+
+test "profile clone releases partial allocations" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testProfileCloneAllocationFailure, .{});
+}
+
+fn testProfileCloneAllocationFailure(allocator: std.mem.Allocator) !void {
+    var draft = ProfileDraft{};
+    draft.reset();
+    setBuffer(&draft.name, "Allocation Test");
+    setBuffer(&draft.host, "example.test");
+    setBuffer(&draft.username, "dev");
+    setBuffer(&draft.password, "secret");
+    setBuffer(&draft.private_key_path, "/tmp/key");
+    setBuffer(&draft.private_key_passphrase, "phrase");
+
+    const item = try draft.toProfile(allocator, 7);
+    defer item.deinit(allocator);
+    const copied = try item.clone(allocator);
+    defer copied.deinit(allocator);
 }
