@@ -3,6 +3,8 @@ pub const TransferDirection = enum {
     download,
 };
 
+pub const max_error_summary: usize = 192;
+
 pub const TransferStatus = enum {
     pending,
     running,
@@ -36,6 +38,12 @@ pub const TransferTask = struct {
     last_sample_ns: i128 = 0,
     last_sample_bytes: u64 = 0,
     attempt: u16 = 1,
+    error_summary: [max_error_summary]u8 = undefined,
+    error_len: usize = 0,
+
+    pub fn errorSummary(self: *const TransferTask) ?[]const u8 {
+        return if (self.error_len > 0) self.error_summary[0..self.error_len] else null;
+    }
 };
 
 pub const TransferProgress = struct {
@@ -44,4 +52,10 @@ pub const TransferProgress = struct {
     progress: f32,
     bytes_done: u64 = 0,
     bytes_total: ?u64 = null,
+    error_summary: [max_error_summary]u8 = undefined,
+    error_len: usize = 0,
+
+    pub fn errorSummary(self: *const TransferProgress) ?[]const u8 {
+        return if (self.error_len > 0) self.error_summary[0..self.error_len] else null;
+    }
 };

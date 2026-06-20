@@ -12,6 +12,7 @@ pub const Error = error{
     ChannelOpenFailed,
     ChannelClosed,
     SftpUnavailable,
+    PathAlreadyExists,
     TransferFailed,
     TransferCanceled,
     WouldBlock,
@@ -167,6 +168,33 @@ pub const FileProgressReporter = struct {
     }
 };
 
+pub const FileChunkSource = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+    total_bytes: ?u64 = null,
+
+    pub const VTable = struct {
+        read: *const fn (*anyopaque, []u8) Error!usize,
+    };
+
+    pub fn read(self: FileChunkSource, buffer: []u8) Error!usize {
+        return self.vtable.read(self.context, buffer);
+    }
+};
+
+pub const FileChunkSink = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        write: *const fn (*anyopaque, []const u8) Error!void,
+    };
+
+    pub fn write(self: FileChunkSink, bytes: []const u8) Error!void {
+        return self.vtable.write(self.context, bytes);
+    }
+};
+
 pub const SessionState = enum {
     idle,
     connecting,
@@ -215,7 +243,10 @@ pub const Sftp = struct {
     pub const VTable = struct {
         list: *const fn (*anyopaque, std.mem.Allocator, []const u8) Error![]RemoteFileEntry,
         readFile: *const fn (*anyopaque, std.mem.Allocator, []const u8, ?FileProgressReporter) Error![]u8,
+        readFileToSink: *const fn (*anyopaque, []const u8, FileChunkSink, ?FileProgressReporter) Error!u64,
         writeFile: *const fn (*anyopaque, []const u8, []const u8, ?FileProgressReporter) Error!void,
+        writeFileFromSource: *const fn (*anyopaque, []const u8, FileChunkSource, ?FileProgressReporter) Error!u64,
+        readLink: *const fn (*anyopaque, std.mem.Allocator, []const u8) Error![]u8,
         remove: *const fn (*anyopaque, []const u8) Error!void,
         removeDir: *const fn (*anyopaque, []const u8) Error!void,
         mkdir: *const fn (*anyopaque, []const u8) Error!void,
@@ -236,12 +267,24 @@ pub const Sftp = struct {
         return self.vtable.readFile(self.context, allocator, path, reporter);
     }
 
+    pub fn readFileToSink(self: Sftp, path: []const u8, sink: FileChunkSink, reporter: FileProgressReporter) Error!u64 {
+        return self.vtable.readFileToSink(self.context, path, sink, reporter);
+    }
+
     pub fn writeFile(self: Sftp, path: []const u8, bytes: []const u8) Error!void {
         return self.vtable.writeFile(self.context, path, bytes, null);
     }
 
     pub fn writeFileWithProgress(self: Sftp, path: []const u8, bytes: []const u8, reporter: FileProgressReporter) Error!void {
         return self.vtable.writeFile(self.context, path, bytes, reporter);
+    }
+
+    pub fn writeFileFromSource(self: Sftp, path: []const u8, source: FileChunkSource, reporter: FileProgressReporter) Error!u64 {
+        return self.vtable.writeFileFromSource(self.context, path, source, reporter);
+    }
+
+    pub fn readLink(self: Sftp, allocator: std.mem.Allocator, path: []const u8) Error![]u8 {
+        return self.vtable.readLink(self.context, allocator, path);
     }
 
     pub fn remove(self: Sftp, path: []const u8) Error!void {

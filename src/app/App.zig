@@ -748,6 +748,7 @@ pub fn retryTransfer(self: *App, transfer_id: u64) void {
     self.transfers.items[idx].finished_ns = null;
     self.transfers.items[idx].last_sample_ns = now;
     self.transfers.items[idx].last_sample_bytes = 0;
+    self.transfers.items[idx].error_len = 0;
     self.transfers.items[idx].attempt += 1;
     self.message = "Transfer retry started";
 }
@@ -886,6 +887,8 @@ fn applyTransferProgress(self: *App, idx: usize, update: transfer.TransferProgre
     task.progress = update.progress;
     task.bytes_done = update.bytes_done;
     task.bytes_total = update.bytes_total;
+    task.error_summary = update.error_summary;
+    task.error_len = update.error_len;
     if (is_terminal) {
         if (task.finished_ns == null) task.finished_ns = now;
         task.last_sample_ns = now;
@@ -929,71 +932,13 @@ fn retryRecordIndex(self: *const App, transfer_id: u64) ?usize {
 }
 
 fn cloneRetryIntent(self: *App, intent: remote_file.FilePanelIntent) !remote_file.FilePanelIntent {
-    return switch (intent) {
-        .upload => |item| .{ .upload = try self.cloneTransferIntent(item) },
-        .download => |item| .{ .download = try self.cloneTransferIntent(item) },
-        .upload_many => |item| .{ .upload_many = try self.cloneBatchTransferIntent(item) },
-        .download_many => |item| .{ .download_many = try self.cloneBatchTransferIntent(item) },
-        else => intent,
-    };
-}
-
-fn cloneTransferIntent(self: *App, item: remote_file.FileTransferIntent) !remote_file.FileTransferIntent {
-    const local_path = try self.allocator.dupe(u8, item.local_path);
-    errdefer self.allocator.free(local_path);
-    const remote_path = try self.allocator.dupe(u8, item.remote_path);
-    errdefer self.allocator.free(remote_path);
-    const name = try self.allocator.dupe(u8, item.name);
-    return .{
-        .local_path = local_path,
-        .remote_path = remote_path,
-        .name = name,
-        .transfer_id = null,
-    };
-}
-
-fn cloneBatchTransferIntent(self: *App, item: remote_file.FileBatchTransferIntent) !remote_file.FileBatchTransferIntent {
-    const local_path = try self.allocator.dupe(u8, item.local_path);
-    errdefer self.allocator.free(local_path);
-    const remote_path = try self.allocator.dupe(u8, item.remote_path);
-    errdefer self.allocator.free(remote_path);
-    const entries = try self.allocator.alloc(remote_file.FileBatchEntry, item.entries.len);
-    errdefer self.allocator.free(entries);
-    for (item.entries, 0..) |entry, idx| {
-        entries[idx] = .{
-            .name = try self.allocator.dupe(u8, entry.name),
-            .kind = entry.kind,
-        };
-    }
-    return .{
-        .local_path = local_path,
-        .remote_path = remote_path,
-        .entries = entries,
-        .transfer_id = null,
-    };
+    var copied = try remote_file.clonePanelIntent(self.allocator, intent);
+    clearTransferIntentId(&copied);
+    return copied;
 }
 
 fn freeRetryIntent(self: *App, intent: remote_file.FilePanelIntent) void {
-    switch (intent) {
-        .upload => |item| self.freeTransferIntent(item),
-        .download => |item| self.freeTransferIntent(item),
-        .upload_many => |item| self.freeBatchTransferIntent(item),
-        .download_many => |item| self.freeBatchTransferIntent(item),
-        else => {},
-    }
-}
-
-fn freeTransferIntent(self: *App, item: remote_file.FileTransferIntent) void {
-    self.allocator.free(item.local_path);
-    self.allocator.free(item.remote_path);
-    self.allocator.free(item.name);
-}
-
-fn freeBatchTransferIntent(self: *App, item: remote_file.FileBatchTransferIntent) void {
-    self.allocator.free(item.local_path);
-    self.allocator.free(item.remote_path);
-    for (item.entries) |entry| self.allocator.free(entry.name);
-    self.allocator.free(item.entries);
+    remote_file.freePanelIntent(self.allocator, intent);
 }
 
 fn setTransferIntentId(intent: *remote_file.FilePanelIntent, id: u64) void {
@@ -1002,6 +947,16 @@ fn setTransferIntentId(intent: *remote_file.FilePanelIntent, id: u64) void {
         .download => |*item| item.transfer_id = id,
         .upload_many => |*item| item.transfer_id = id,
         .download_many => |*item| item.transfer_id = id,
+        else => {},
+    }
+}
+
+fn clearTransferIntentId(intent: *remote_file.FilePanelIntent) void {
+    switch (intent.*) {
+        .upload => |*item| item.transfer_id = null,
+        .download => |*item| item.transfer_id = null,
+        .upload_many => |*item| item.transfer_id = null,
+        .download_many => |*item| item.transfer_id = null,
         else => {},
     }
 }
