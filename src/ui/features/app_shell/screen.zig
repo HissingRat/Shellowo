@@ -98,6 +98,7 @@ fn iconButtonPlaceholder(src: std.builtin.SourceLocation, width: f32, height: f3
 
 pub fn frame(app: *App) !dvui.App.Result {
     app.beginFrame();
+    window_chrome.clearTitlebarFrame();
     const window_rect = dvui.windowRect();
     app.observeWindowSize(window_rect.w, window_rect.h);
     const palette = theme.Palette.forMode(app.theme_mode);
@@ -110,12 +111,14 @@ pub fn frame(app: *App) !dvui.App.Result {
 
     if (app.profilesLocked()) {
         unlock_screen.show(app, palette);
+        drawWindowBorder(palette);
         return .ok;
     }
 
     topBar(app, palette);
     mainArea(app, palette);
     windowClosePrompt(app, palette);
+    drawWindowBorder(palette);
 
     return .ok;
 }
@@ -146,15 +149,25 @@ fn topBar(app: *App, palette: theme.Palette) void {
         spacer(@src(), 8, 91);
     }
 
-    if (theme.textButton(@src(), "Shellowo", .{
+    const title_button_width = @ceil(theme.textFont("Shellowo", 10).textSize("Shellowo").w) + 14;
+    var home_slot = dvui.box(@src(), .{}, .{
         .gravity_y = 0.5,
-        .min_size_content = .height(button_height),
+        .min_size_content = .{ .w = title_button_width, .h = button_height },
+        .max_size_content = .{ .w = title_button_width, .h = button_height },
         .padding = .all(0),
         .margin = .{ .y = 2, .w = 7 },
+        .id_extra = 98,
+    });
+    const home_clicked = theme.textButton(@src(), "Shellowo", .{
+        .expand = .both,
+        .padding = .all(0),
+        .margin = .all(0),
         .id_extra = 1,
     }, palette, .{
         .font_size = 10,
-    })) {
+    });
+    home_slot.deinit();
+    if (home_clicked) {
         app.goHome();
     }
 
@@ -281,17 +294,25 @@ fn connectionTabs(app: *App, state: *TopBarState, height: f32, close_size: f32, 
 
 fn tabOverflowIndicator(state: *TopBarState, height: f32, palette: theme.Palette) void {
     const can_scroll_right = state.tab_scroll.offsetFromMax(.horizontal) > 0.5;
-    if (theme.textButton(@src(), ">>", .{
+    var slot = dvui.box(@src(), .{}, .{
         .gravity_y = 0.6,
         .min_size_content = .{ .w = connection_tabs_overflow_width, .h = height },
         .max_size_content = .{ .w = connection_tabs_overflow_width, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = 107,
+    });
+    const clicked = theme.textButton(@src(), ">>", .{
+        .expand = .both,
         .padding = .all(0),
         .margin = .all(0),
         .color_text = if (can_scroll_right) palette.muted_text else palette.text_subtle.opacity(0.45),
         .id_extra = 106,
     }, palette, .{
         .font_size = 8.5,
-    }) and can_scroll_right) {
+    });
+    slot.deinit();
+    if (clicked and can_scroll_right) {
         state.tab_scroll.scrollByOffset(.horizontal, @max(@as(f32, 120), state.tab_scroll.viewport.w * 0.72));
         dvui.refresh(null, @src(), dvui.parentGet().data().id);
     }
@@ -316,10 +337,23 @@ fn horizontalWheelScroll(scroll: *dvui.ScrollAreaWidget, info: *dvui.ScrollInfo)
 }
 
 fn titlebarDragRegion(height: f32) void {
+    var position_probe = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = 0, .h = height },
+        .max_size_content = .{ .w = 0, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .role = .none,
+        .tab_index = 0,
+        .id_extra = 108,
+    });
+    const drag_start_x = position_probe.data().rect.x;
+    position_probe.deinit();
+
+    const trailing_controls_width: f32 = if (window_chrome.drawsWindowControls()) 159 else 27;
+    const drag_width = @max(@as(f32, 0), dvui.windowRect().w - drag_start_x - trailing_controls_width);
     var drag = dvui.box(@src(), .{}, .{
-        .expand = .horizontal,
-        .min_size_content = .height(height),
-        .max_size_content = .height(height),
+        .min_size_content = .{ .w = drag_width, .h = height },
+        .max_size_content = .{ .w = drag_width, .h = height },
         .padding = .all(0),
         .margin = .all(0),
         .role = .none,
@@ -327,7 +361,7 @@ fn titlebarDragRegion(height: f32) void {
         .id_extra = 93,
     });
     defer drag.deinit();
-    window_chrome.updateDragRect(drag.data().rectScale());
+    window_chrome.addTitlebarDragRect(drag.data().rectScale());
 }
 
 fn titlebarMenuButton(height: f32, palette: theme.Palette) bool {
@@ -370,20 +404,27 @@ fn titlebarMenuButton(height: f32, palette: theme.Palette) bool {
 }
 
 fn windowCaptionButtons(height: f32, palette: theme.Palette) void {
-    if (captionButton("_", height, palette, false, 95)) {
+    if (captionButton(.minimize, height, palette, false, 95)) {
         window_chrome.perform(.minimize);
     }
-    const maximize_glyph = if (window_chrome.isMaximized()) "❐" else "□";
+    const maximize_glyph: CaptionGlyph = if (window_chrome.isMaximized()) .restore else .maximize;
     if (captionButton(maximize_glyph, height, palette, false, 96)) {
         window_chrome.perform(.toggle_maximize);
     }
-    if (captionButton("×", height, palette, true, 97)) {
+    if (captionButton(.close, height, palette, true, 97)) {
         window_chrome.perform(.close);
     }
 }
 
+const CaptionGlyph = enum {
+    minimize,
+    maximize,
+    restore,
+    close,
+};
+
 fn captionButton(
-    glyph: []const u8,
+    glyph: CaptionGlyph,
     height: f32,
     palette: theme.Palette,
     danger: bool,
@@ -411,23 +452,58 @@ fn captionButton(
     bw.drawBackground();
 
     const rs = bw.data().contentRectScale();
-    const font_size: f32 = if (std.mem.eql(u8, glyph, "_")) 15 else 16;
-    const font = theme.textFont(glyph, font_size);
-    const size = font.textSize(glyph).scale(rs.s, dvui.Size.Physical);
-    dvui.renderText(.{
-        .font = font,
-        .text = glyph,
-        .rs = rs,
-        .p = .{
-            .x = rs.r.x + @round((rs.r.w - size.w) / 2),
-            .y = rs.r.y + @round((rs.r.h - size.h) / 2 - (if (std.mem.eql(u8, glyph, "_")) 3 * rs.s else 0)),
-        },
-        .color = palette.text,
-    }) catch {};
+    drawCaptionGlyph(glyph, rs, palette.text);
 
     const clicked = bw.clicked();
     bw.deinit();
     return clicked;
+}
+
+fn drawCaptionGlyph(glyph: CaptionGlyph, rs: dvui.RectScale, color: dvui.Color) void {
+    var center = rs.r.center();
+    if (glyph == .maximize or glyph == .restore) center.y += rs.s;
+    const thickness = @max(@as(f32, 1), rs.s);
+    switch (glyph) {
+        .minimize => {
+            dvui.Path.stroke(.{ .points = &.{
+                .{ .x = center.x - 5 * rs.s, .y = center.y + 1.5 * rs.s },
+                .{ .x = center.x + 5 * rs.s, .y = center.y + 1.5 * rs.s },
+            } }, .{ .thickness = thickness, .color = color, .endcap_style = .square });
+        },
+        .maximize => {
+            const rect: dvui.Rect.Physical = .{
+                .x = center.x - 5.5 * rs.s,
+                .y = center.y - 4 * rs.s,
+                .w = 11 * rs.s,
+                .h = 8 * rs.s,
+            };
+            rect.stroke(.all(0), .{ .thickness = thickness, .color = color });
+        },
+        .restore => {
+            const front: dvui.Rect.Physical = .{
+                .x = center.x - 5.5 * rs.s,
+                .y = center.y - 2.5 * rs.s,
+                .w = 9 * rs.s,
+                .h = 7 * rs.s,
+            };
+            dvui.Path.stroke(.{ .points = &.{
+                .{ .x = center.x - 3.5 * rs.s, .y = center.y - 5 * rs.s },
+                .{ .x = center.x + 5.5 * rs.s, .y = center.y - 5 * rs.s },
+                .{ .x = center.x + 5.5 * rs.s, .y = center.y + 2 * rs.s },
+            } }, .{ .thickness = thickness, .color = color, .endcap_style = .square });
+            front.stroke(.all(0), .{ .thickness = thickness, .color = color });
+        },
+        .close => {
+            dvui.Path.stroke(.{ .points = &.{
+                .{ .x = center.x - 4 * rs.s, .y = center.y - 4 * rs.s },
+                .{ .x = center.x + 4 * rs.s, .y = center.y + 4 * rs.s },
+            } }, .{ .thickness = thickness, .color = color, .endcap_style = .square });
+            dvui.Path.stroke(.{ .points = &.{
+                .{ .x = center.x + 4 * rs.s, .y = center.y - 4 * rs.s },
+                .{ .x = center.x - 4 * rs.s, .y = center.y + 4 * rs.s },
+            } }, .{ .thickness = thickness, .color = color, .endcap_style = .square });
+        },
+    }
 }
 
 fn topBarSettingsButton(bytes: []const u8, name: []const u8, opts: dvui.Options, palette: theme.Palette, id_base: usize) IconButtonInfo {
@@ -509,7 +585,7 @@ fn settingPredictionRow(app: *App, palette: theme.Palette, id_extra: usize) void
 }
 
 fn predictionModeButton(app: *App, label: []const u8, mode: predictive.PredictionMode, width: f32, palette: theme.Palette, id_extra: usize) void {
-    const active = (app.config.terminal_prediction.enabled and app.config.terminal_prediction.mode == mode) or (mode == .off and !app.config.terminal_prediction.enabled);
+    const active = app.config.terminal_prediction.mode == mode;
     if (theme.button(@src(), label, .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = width, .h = 22 },
@@ -1006,6 +1082,16 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, ensure_visible: bool
     }
 
     return .none;
+}
+
+fn drawWindowBorder(palette: theme.Palette) void {
+    if (!window_chrome.drawsWindowControls()) return;
+    const rs = dvui.currentWindow().data().rectScale();
+    rs.r.insetAll(0.5 * rs.s).stroke(.all(0), .{
+        .thickness = rs.s,
+        .color = palette.border,
+        .after = true,
+    });
 }
 
 fn connectionTabWidth(title: []const u8, close_size: f32) f32 {

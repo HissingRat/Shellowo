@@ -34,6 +34,9 @@ platform layer.
 - macOS displays native traffic lights over the Shellowo titlebar.
 - Windows displays Shellowo-drawn minimize, maximize/restore and close buttons.
 - Empty titlebar space drags the window and Windows keeps edge resizing.
+- Titlebar controls and workspace tabs remain interactive while every remaining
+  topbar blank area can drag the window.
+- Windows borderless chrome retains a native DWM shadow and draws a 1px inner border.
 - Workspace tabs scroll horizontally when they exceed the available titlebar width.
 - Activating a hidden workspace tab scrolls it back into view.
 - Windows supports titlebar double-click maximize/restore and right-click system menu.

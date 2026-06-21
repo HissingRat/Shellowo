@@ -1,13 +1,15 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const requested_target = b.standardTargetOptions(.{});
+    const target = desktopTarget(b, requested_target);
     const optimize = b.standardOptimizeOption(.{});
     const stack_size = b.option(u64, "stack-size", "Executable stack size in bytes") orelse 16 * 1024 * 1024;
     const native_deps = addNativeDeps(b, target, optimize);
+    const executable_name = platformExecutableName(b, target);
 
     const exe = b.addExecutable(.{
-        .name = "Shellowo",
+        .name = executable_name,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -190,14 +192,42 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
-fn attachWindowChrome(b: *std.Build, compile: *std.Build.Step.Compile) void {
-    if (compile.root_module.resolved_target.?.result.os.tag != .macos) return;
+fn desktopTarget(b: *std.Build, requested: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (requested.result.os.tag != .linux or requested.query.abi != null) return requested;
 
-    compile.root_module.addCSourceFile(.{
-        .file = b.path("src/platform/macos_window_chrome.m"),
-        .flags = &.{"-fobjc-arc"},
-    });
-    compile.root_module.linkFramework("Cocoa", .{});
+    var query = requested.query;
+    query.abi = .gnu;
+    return b.resolveTargetQuery(query);
+}
+
+fn platformExecutableName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+    const platform = switch (target.result.os.tag) {
+        .windows => "windows",
+        .macos => "macos",
+        .linux => "linux",
+        else => @tagName(target.result.os.tag),
+    };
+    return b.fmt("Shellowo-{s}-{s}", .{ platform, @tagName(target.result.cpu.arch) });
+}
+
+fn attachWindowChrome(b: *std.Build, compile: *std.Build.Step.Compile) void {
+    switch (compile.root_module.resolved_target.?.result.os.tag) {
+        .macos => {
+            compile.root_module.addCSourceFile(.{
+                .file = b.path("src/platform/macos_window_chrome.m"),
+                .flags = &.{"-fobjc-arc"},
+            });
+            compile.root_module.linkFramework("Cocoa", .{});
+        },
+        .windows => {
+            compile.root_module.addCSourceFile(.{
+                .file = b.path("src/platform/windows_window_chrome.c"),
+                .flags = &.{},
+            });
+            compile.root_module.linkSystemLibrary("dwmapi", .{});
+        },
+        else => {},
+    }
 }
 
 const NativeDeps = struct {

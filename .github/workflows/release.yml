@@ -84,14 +84,14 @@ jobs:
           set -euo pipefail
           zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast --prefix zig-out/release-linux
           mkdir -p dist
-          install -m 0755 zig-out/release-linux/bin/Shellowo "dist/Shellowo-${PACKAGE_VERSION}-linux-x86_64"
+          install -m 0755 zig-out/release-linux/bin/Shellowo-linux-x86_64 "dist/Shellowo-${PACKAGE_VERSION}-linux-x86_64"
 
       - name: Build Windows executable
         shell: bash
         run: |
           set -euo pipefail
           zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast --prefix zig-out/release-windows
-          install -m 0755 zig-out/release-windows/bin/Shellowo.exe "dist/Shellowo-${PACKAGE_VERSION}-windows-x86_64.exe"
+          install -m 0755 zig-out/release-windows/bin/Shellowo-windows-x86_64.exe "dist/Shellowo-${PACKAGE_VERSION}-windows-x86_64.exe"
 
       - name: Package macOS app
         shell: bash

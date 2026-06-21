@@ -5,6 +5,10 @@ typedef void (*ShellowoCloseCallback)(void);
 
 static ShellowoCloseCallback shellowo_close_callback = NULL;
 
+static void shellowo_position_traffic_lights(NSWindow *window,
+                                             CGFloat horizontal_offset,
+                                             CGFloat vertical_offset);
+
 @interface ShellowoCloseButtonTarget : NSObject
 - (void)requestClose:(id)sender;
 @end
@@ -45,10 +49,12 @@ static void shellowo_move_window_button(NSButton *button,
     return;
   }
 
-  NSPoint origin = button.frame.origin;
-  origin.x += horizontal_offset;
-  origin.y -= vertical_offset;
-  [button setFrameOrigin:origin];
+  // AppKit owns the standard button frames and rewrites them continuously
+  // during live resize. A layer transform stays outside that layout pass, so
+  // the visual offset remains stable without fighting AppKit every frame.
+  button.wantsLayer = YES;
+  button.layer.affineTransform =
+      CGAffineTransformMakeTranslation(horizontal_offset, -vertical_offset);
 }
 
 static void shellowo_position_traffic_lights(NSWindow *window,
@@ -113,8 +119,6 @@ void shellowo_macos_position_traffic_lights(void *window_pointer,
     return;
   }
 
-  // Showing the SDL window triggers another AppKit titlebar layout pass. Apply
-  // the offset on the next main-loop turn so that pass cannot overwrite it.
   dispatch_async(dispatch_get_main_queue(), ^{
     shellowo_position_traffic_lights(window, (CGFloat)horizontal_offset,
                                      (CGFloat)vertical_offset);

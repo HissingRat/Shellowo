@@ -75,6 +75,7 @@ pub const FilePaneSnapshot = struct {
     entries: []const RemoteFileEntry = &.{},
     selected_name: ?[]const u8 = null,
     error_summary: ?[]const u8 = null,
+    notice_generation: u64 = 0,
     capabilities: FilePaneCapabilities = .{},
 
     pub fn isBusy(self: FilePaneSnapshot) bool {
@@ -127,6 +128,7 @@ pub const FilePanelSnapshot = struct {
     tree: FileTreeSnapshot = .{},
     remote: FilePaneSnapshot = .{ .location = .sftp },
     editor: FileEditorSnapshot = .{},
+    toast_summary: ?[]const u8 = null,
 };
 
 pub const FileEntryTarget = struct {

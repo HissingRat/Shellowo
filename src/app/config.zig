@@ -25,36 +25,13 @@ pub const FileColumnWidths = struct {
 };
 
 pub const TerminalPredictionConfig = struct {
-    enabled: bool = true,
     mode: predictive.PredictionMode = .auto,
-    predict_in_alt_screen: bool = true,
-    predict_printable: bool = true,
-    predict_backspace: bool = true,
-    predict_enter: bool = true,
-    predict_tab: bool = false,
-    predict_arrow_keys: bool = true,
-    rollback_threshold: u32 = predictive.default_full_rollback_threshold,
-    disable_threshold: u32 = predictive.default_disable_threshold,
-    cooldown_ms: u64 = predictive.default_prediction_cooldown_ms,
-    output_pause_ms: u64 = predictive.default_output_pause_ms,
-    output_change_threshold: u32 = predictive.default_output_change_threshold,
 
     pub fn toCore(self: TerminalPredictionConfig) predictive.PredictionConfig {
-        return .{
-            .enabled = self.enabled,
-            .mode = self.mode,
-            .predict_in_alt_screen = self.predict_in_alt_screen,
-            .predict_printable = self.predict_printable,
-            .predict_backspace = self.predict_backspace,
-            .predict_enter = self.predict_enter,
-            .predict_tab = self.predict_tab,
-            .predict_arrow_keys = self.predict_arrow_keys,
-            .rollback_threshold = self.rollback_threshold,
-            .disable_threshold = self.disable_threshold,
-            .cooldown_ms = self.cooldown_ms,
-            .output_pause_ms = self.output_pause_ms,
-            .output_change_threshold = self.output_change_threshold,
-        };
+        var config: predictive.PredictionConfig = .{};
+        config.enabled = self.mode != .off;
+        config.mode = self.mode;
+        return config;
     }
 };
 
@@ -97,15 +74,14 @@ pub const Config = struct {
 
     pub fn save(self: *const Config, io: ?std.Io) !void {
         const active_io = io orelse return;
-        const persisted = PersistedConfig{
+        const persisted = SavedConfig{
             .version = 1,
             .theme = self.theme_mode.label(),
             .window = self.window_size,
             .workspace = self.workspace,
             .file_columns = self.file_columns,
             .terminal_prediction = .{
-                .enabled = self.terminal_prediction.enabled,
-                .mode = predictionModeLabel(canonicalPredictionMode(self.terminal_prediction)),
+                .mode = predictionModeLabel(self.terminal_prediction.mode),
             },
             .download_path = self.download_path,
         };
@@ -127,20 +103,23 @@ const PersistedConfig = struct {
     download_path: ?[]const u8 = null,
 };
 
+const SavedConfig = struct {
+    version: u32,
+    theme: []const u8,
+    window: WindowSize,
+    workspace: WorkspaceLayout,
+    file_columns: FileColumnWidths,
+    terminal_prediction: SavedPredictionConfig,
+    download_path: []const u8,
+};
+
+const SavedPredictionConfig = struct {
+    mode: []const u8,
+};
+
 const PersistedPredictionConfig = struct {
     enabled: ?bool = null,
     mode: ?[]const u8 = null,
-    predict_in_alt_screen: ?bool = null,
-    predict_printable: ?bool = null,
-    predict_backspace: ?bool = null,
-    predict_enter: ?bool = null,
-    predict_tab: ?bool = null,
-    predict_arrow_keys: ?bool = null,
-    rollback_threshold: ?u32 = null,
-    disable_threshold: ?u32 = null,
-    cooldown_ms: ?u64 = null,
-    output_pause_ms: ?u64 = null,
-    output_change_threshold: ?u32 = null,
 };
 
 fn defaults(allocator: std.mem.Allocator, io: ?std.Io) !Config {
@@ -187,8 +166,7 @@ fn applyPersisted(config: *Config, persisted: PersistedConfig) !void {
     if (persisted.terminal_prediction) |prediction| {
         const persisted_mode = if (prediction.mode) |mode_label| predictionModeFromLabel(mode_label) else null;
         const enabled = prediction.enabled orelse (persisted_mode != .off);
-        config.terminal_prediction.enabled = enabled and persisted_mode != .off;
-        config.terminal_prediction.mode = if (config.terminal_prediction.enabled) .auto else .off;
+        config.terminal_prediction.mode = if (enabled and persisted_mode != .off) .auto else .off;
     }
     canonicalizePredictionConfig(&config.terminal_prediction);
 }
@@ -257,16 +235,8 @@ pub fn predictionModeFromLabel(label: []const u8) ?predictive.PredictionMode {
     return null;
 }
 
-fn canonicalPredictionMode(config: TerminalPredictionConfig) predictive.PredictionMode {
-    return if (!config.enabled or config.mode == .off) .off else .auto;
-}
-
 fn canonicalizePredictionConfig(config: *TerminalPredictionConfig) void {
-    const mode = canonicalPredictionMode(config.*);
-    config.* = .{
-        .enabled = mode != .off,
-        .mode = mode,
-    };
+    config.mode = if (config.mode == .off) .off else .auto;
 }
 
 test "theme labels parse case insensitively" {
@@ -283,25 +253,45 @@ test "prediction settings migrate to fixed auto defaults" {
     var config = try defaults(std.testing.allocator, null);
     defer config.deinit();
 
-    try applyPersisted(&config, .{
-        .terminal_prediction = .{
-            .enabled = true,
-            .mode = "aggressive",
-            .predict_in_alt_screen = false,
-            .predict_arrow_keys = false,
-            .rollback_threshold = 32,
-            .cooldown_ms = 2000,
-            .output_pause_ms = 1200,
-            .output_change_threshold = 384,
-        },
+    const legacy_json =
+        \\{
+        \\  "terminal_prediction": {
+        \\    "enabled": true,
+        \\    "mode": "aggressive",
+        \\    "predict_in_alt_screen": false,
+        \\    "predict_arrow_keys": false,
+        \\    "rollback_threshold": 32,
+        \\    "cooldown_ms": 2000,
+        \\    "output_pause_ms": 1200,
+        \\    "output_change_threshold": 384
+        \\  }
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(PersistedConfig, std.testing.allocator, legacy_json, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
     });
+    defer parsed.deinit();
+    try applyPersisted(&config, parsed.value);
 
-    try std.testing.expect(config.terminal_prediction.enabled);
     try std.testing.expectEqual(predictive.PredictionMode.auto, config.terminal_prediction.mode);
-    try std.testing.expect(config.terminal_prediction.predict_in_alt_screen);
-    try std.testing.expect(config.terminal_prediction.predict_arrow_keys);
-    try std.testing.expectEqual(@as(u64, 250), config.terminal_prediction.cooldown_ms);
-    try std.testing.expectEqual(@as(u64, 150), config.terminal_prediction.output_pause_ms);
-    try std.testing.expectEqual(@as(u32, 96), config.terminal_prediction.output_change_threshold);
-    try std.testing.expectEqual(@as(u32, 64), config.terminal_prediction.rollback_threshold);
+    const core = config.terminal_prediction.toCore();
+    try std.testing.expect(core.enabled);
+    try std.testing.expect(core.predict_in_alt_screen);
+    try std.testing.expect(core.predict_arrow_keys);
+    try std.testing.expectEqual(@as(u64, 250), core.cooldown_ms);
+    try std.testing.expectEqual(@as(u64, 150), core.output_pause_ms);
+    try std.testing.expectEqual(@as(u32, 96), core.output_change_threshold);
+    try std.testing.expectEqual(@as(u32, 64), core.rollback_threshold);
+}
+
+test "saved prediction config contains only the user-facing mode" {
+    const saved = SavedPredictionConfig{ .mode = "auto" };
+    const json = try std.json.Stringify.valueAlloc(std.testing.allocator, saved, .{});
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expectEqualStrings("{\"mode\":\"auto\"}", json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "predict_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "threshold") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "cooldown") == null);
 }

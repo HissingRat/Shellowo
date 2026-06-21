@@ -18,7 +18,7 @@ pub fn main(main_init: std.process.Init) !u8 {
     }
 
     const integrated_chrome = window_chrome.integratedTitlebar();
-    var back = try sdl.initWindow(.{
+    var back = sdl.initWindow(.{
         .io = init_opts.io orelse main_init.io,
         .environ_map = main_init.environ_map,
         .size = init_opts.size,
@@ -29,7 +29,10 @@ pub fn main(main_init: std.process.Init) !u8 {
         .icon = init_opts.icon,
         .hidden = init_opts.hidden or integrated_chrome,
         .transparent = init_opts.transparent,
-    });
+    }) catch |err| {
+        logLinuxVideoInitFailure(main_init.environ_map);
+        return err;
+    };
     defer back.deinit();
 
     var chrome: window_chrome.Controller = .{ .window = back.window };
@@ -43,6 +46,11 @@ pub fn main(main_init: std.process.Init) !u8 {
     var win = try dvui.Window.init(@src(), main_init.gpa, back.backend(), init_opts.window_init_options);
     defer win.deinit();
 
+    var live_resize: LiveResizeContext = .{
+        .window = back.window,
+        .win = &win,
+        .frame_fn = app.frameFn,
+    };
     if (init_opts.window_init_options.open_flag != null) {
         dvui.log.warn("`open_flag` option has no effect in Shellowo SDL app. It is managed internally.", .{});
     }
@@ -59,10 +67,17 @@ pub fn main(main_init: std.process.Init) !u8 {
         _ = c.SDL_ShowWindow(back.window);
         chrome.windowShown();
     }
+    if (supportsLiveResizeRendering()) {
+        if (!c.SDL_AddEventWatch(liveResizeEventWatch, &live_resize)) {
+            dvui.log.warn("Could not install live resize event watch", .{});
+        }
+    }
+    defer if (supportsLiveResizeRendering()) c.SDL_RemoveEventWatch(liveResizeEventWatch, &live_resize);
     defer if (app.deinitFn) |deinitFn| deinitFn();
 
     var interrupted = false;
     main_loop: while (window_open) {
+        live_resize.frame_active = true;
         const nstime = win.beginWait(interrupted);
         try win.begin(nstime);
 
@@ -70,6 +85,7 @@ pub fn main(main_init: std.process.Init) !u8 {
 
         const res = try app.frameFn();
         const end_micros = try win.end(.{});
+        live_resize.frame_active = false;
         if (res != .ok) break :main_loop;
         if (chrome.takeCloseRequested()) {
             rootRequestWindowClose();
@@ -84,6 +100,78 @@ pub fn main(main_init: std.process.Init) !u8 {
     }
 
     return 0;
+}
+
+fn logLinuxVideoInitFailure(environ_map: *const std.process.Environ.Map) void {
+    if (builtin.os.tag != .linux) return;
+
+    const session_type = environ_map.get("XDG_SESSION_TYPE") orelse "<unset>";
+    const display = environ_map.get("DISPLAY") orelse "<unset>";
+    const wayland_display = environ_map.get("WAYLAND_DISPLAY") orelse "<unset>";
+    dvui.log.err(
+        "Linux video initialization failed (XDG_SESSION_TYPE={s}, DISPLAY={s}, WAYLAND_DISPLAY={s})",
+        .{ session_type, display, wayland_display },
+    );
+    dvui.log.err(
+        "Shellowo includes both SDL X11 and Wayland drivers; run from an active desktop session and ensure the matching runtime libraries are installed",
+        .{},
+    );
+}
+
+const LiveResizeContext = struct {
+    window: *c.SDL_Window,
+    win: *dvui.Window,
+    frame_fn: *const fn () anyerror!dvui.App.Result,
+    frame_active: bool = false,
+    rendering: bool = false,
+    last_pixel_width: c_int = 0,
+    last_pixel_height: c_int = 0,
+};
+
+fn liveResizeEventWatch(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
+    if (!supportsLiveResizeRendering()) return true;
+    const raw = userdata orelse return true;
+    const ctx: *LiveResizeContext = @ptrCast(@alignCast(raw));
+    if (ctx.frame_active or ctx.rendering) return true;
+    if (c.SDL_GetWindowFromEvent(event) != ctx.window) return true;
+
+    if (!isLiveResizeRenderEvent(event[0].type)) return true;
+
+    var pixel_width: c_int = 0;
+    var pixel_height: c_int = 0;
+    if (!c.SDL_GetCurrentRenderOutputSize(ctx.win.backend.impl.renderer, &pixel_width, &pixel_height)) return true;
+    if (pixel_width <= 0 or pixel_height <= 0) return true;
+    if (pixel_width == ctx.last_pixel_width and pixel_height == ctx.last_pixel_height) return true;
+    ctx.last_pixel_width = pixel_width;
+    ctx.last_pixel_height = pixel_height;
+
+    ctx.rendering = true;
+    defer ctx.rendering = false;
+
+    const nstime = ctx.win.beginWait(true);
+    ctx.win.begin(nstime) catch return true;
+    _ = ctx.frame_fn() catch {
+        _ = ctx.win.end(.{}) catch {};
+        return true;
+    };
+    _ = ctx.win.end(.{}) catch {};
+    return true;
+}
+
+fn supportsLiveResizeRendering() bool {
+    return builtin.os.tag == .macos or builtin.os.tag == .windows;
+}
+
+fn isLiveResizeRenderEvent(event_type: u32) bool {
+    if (builtin.os.tag == .macos) {
+        // SDL's Cocoa backend emits WINDOW_EXPOSED at 60 Hz during live resize.
+        // Rendering the resize and pixel-size events too causes duplicate frames
+        // and makes the native resize loop less responsive.
+        return event_type == c.SDL_EVENT_WINDOW_EXPOSED;
+    }
+    return event_type == c.SDL_EVENT_WINDOW_RESIZED or
+        event_type == c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED or
+        event_type == c.SDL_EVENT_WINDOW_EXPOSED;
 }
 
 fn prepareAppBundleWorkingDirectory(main_init: std.process.Init) !void {

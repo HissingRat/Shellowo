@@ -17,7 +17,8 @@ pub const Action = enum {
 
 pub const Controller = struct {
     window: *c.SDL_Window,
-    drag_rect: dvui.Rect.Natural = .{},
+    drag_rects: [8]dvui.Rect.Natural = undefined,
+    drag_rect_count: usize = 0,
     close_requested: bool = false,
 
     pub fn activate(self: *Controller) !void {
@@ -33,6 +34,10 @@ pub const Controller = struct {
             },
             .windows => {
                 if (!c.SDL_SetWindowBordered(self.window, false)) return error.WindowBorderConfigurationFailed;
+                const properties = c.SDL_GetWindowProperties(self.window);
+                const hwnd = c.SDL_GetPointerProperty(properties, c.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
+                if (hwnd == null) return error.MissingWin32Window;
+                shellowo_windows_configure_chrome(hwnd);
             },
             else => return,
         }
@@ -64,7 +69,7 @@ pub const Controller = struct {
             const mouse = event.button;
             const x: f32 = mouse.x;
             const y: f32 = mouse.y;
-            if (pointInDragRect(self.drag_rect, x, y)) {
+            if (self.isDraggablePoint(x, y)) {
                 if (mouse.button == c.SDL_BUTTON_RIGHT) {
                     _ = c.SDL_ShowWindowSystemMenu(self.window, @intFromFloat(x), @intFromFloat(y));
                     return true;
@@ -79,15 +84,21 @@ pub const Controller = struct {
         if (builtin.os.tag != .macos) return false;
         const event_window = c.SDL_GetWindowFromEvent(event) orelse return false;
         if (event_window != self.window) return false;
-        if (!isMacosChromeResetEvent(event.type)) return false;
-
         const ns_window = cocoaWindow(self.window);
         if (ns_window == null) return false;
-        shellowo_macos_refresh_titlebar(
-            ns_window,
-            macos_traffic_light_horizontal_offset,
-            macos_traffic_light_vertical_offset,
-        );
+        if (isMacosChromeResetEvent(event.type)) {
+            shellowo_macos_refresh_titlebar(
+                ns_window,
+                macos_traffic_light_horizontal_offset,
+                macos_traffic_light_vertical_offset,
+            );
+        } else if (isMacosTrafficLightRelayoutEvent(event.type)) {
+            shellowo_macos_position_traffic_lights(
+                ns_window,
+                macos_traffic_light_horizontal_offset,
+                macos_traffic_light_vertical_offset,
+            );
+        }
         return false;
     }
 
@@ -95,6 +106,13 @@ pub const Controller = struct {
         const requested = self.close_requested;
         self.close_requested = false;
         return requested;
+    }
+
+    fn isDraggablePoint(self: *const Controller, x: f32, y: f32) bool {
+        for (self.drag_rects[0..self.drag_rect_count]) |rect| {
+            if (pointInRect(rect, x, y)) return true;
+        }
+        return false;
     }
 };
 
@@ -120,29 +138,16 @@ pub fn leadingInset() f32 {
     return if (builtin.os.tag == .macos) macos_traffic_light_inset else 0;
 }
 
-pub fn updateDragRect(rect_scale: dvui.RectScale) void {
+pub fn clearTitlebarFrame() void {
     const controller = active_controller orelse return;
-    const scale = if (rect_scale.s > 0) rect_scale.s else 1;
-    var window_width: c_int = 0;
-    var window_height: c_int = 0;
-    const has_window_size = c.SDL_GetWindowSize(controller.window, &window_width, &window_height);
-    const trailing_reserve: f32 = switch (builtin.os.tag) {
-        .macos => 44,
-        .windows => 176,
-        else => 0,
-    };
-    const natural_x = rect_scale.r.x / scale;
-    const natural_width = rect_scale.r.w / scale;
-    const available_width = if (has_window_size)
-        @max(@as(f32, 0), @as(f32, @floatFromInt(window_width)) - trailing_reserve - natural_x)
-    else
-        natural_width;
-    controller.drag_rect = .{
-        .x = natural_x,
-        .y = rect_scale.r.y / scale,
-        .w = @min(natural_width, available_width),
-        .h = rect_scale.r.h / scale,
-    };
+    controller.drag_rect_count = 0;
+}
+
+pub fn addTitlebarDragRect(rect_scale: dvui.RectScale) void {
+    const controller = active_controller orelse return;
+    if (controller.drag_rect_count >= controller.drag_rects.len) return;
+    controller.drag_rects[controller.drag_rect_count] = hitTestRect(rect_scale.r, rect_scale.s);
+    controller.drag_rect_count += 1;
 }
 
 pub fn perform(action: Action) void {
@@ -179,10 +184,9 @@ fn hitTest(
         if (resizeHitTest(controller.window, point)) |result| return result;
     }
 
-    const rect = controller.drag_rect;
     const x: f32 = @floatFromInt(point.x);
     const y: f32 = @floatFromInt(point.y);
-    if (x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h) {
+    if (controller.isDraggablePoint(x, y)) {
         return @intCast(c.SDL_HITTEST_DRAGGABLE);
     }
     return @intCast(c.SDL_HITTEST_NORMAL);
@@ -214,8 +218,26 @@ fn isMaximizedWindow(window: *c.SDL_Window) bool {
     return (c.SDL_GetWindowFlags(window) & c.SDL_WINDOW_MAXIMIZED) != 0;
 }
 
-fn pointInDragRect(rect: dvui.Rect.Natural, x: f32, y: f32) bool {
+fn pointInRect(rect: dvui.Rect.Natural, x: f32, y: f32) bool {
     return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h;
+}
+
+fn hitTestRect(rect: dvui.Rect.Physical, scale_value: f32) dvui.Rect.Natural {
+    if (builtin.os.tag == .windows) {
+        return .{
+            .x = rect.x,
+            .y = rect.y,
+            .w = rect.w,
+            .h = rect.h,
+        };
+    }
+    const scale = if (scale_value > 0) scale_value else 1;
+    return .{
+        .x = rect.x / scale,
+        .y = rect.y / scale,
+        .w = rect.w / scale,
+        .h = rect.h / scale,
+    };
 }
 
 fn cocoaWindow(window: *c.SDL_Window) ?*anyopaque {
@@ -230,6 +252,11 @@ fn isMacosChromeResetEvent(event_type: u32) bool {
         event_type == c.SDL_EVENT_WINDOW_LEAVE_FULLSCREEN;
 }
 
+fn isMacosTrafficLightRelayoutEvent(event_type: u32) bool {
+    return event_type == c.SDL_EVENT_WINDOW_RESIZED or
+        event_type == c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
+}
+
 extern fn shellowo_macos_configure_titlebar(ns_window: ?*anyopaque) void;
 extern fn shellowo_macos_set_close_callback(callback: ?*const fn () callconv(.c) void) void;
 extern fn shellowo_macos_position_traffic_lights(
@@ -242,3 +269,4 @@ extern fn shellowo_macos_refresh_titlebar(
     horizontal_offset: f64,
     vertical_offset: f64,
 ) void;
+extern fn shellowo_windows_configure_chrome(window_pointer: ?*anyopaque) void;

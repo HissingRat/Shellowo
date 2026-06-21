@@ -101,42 +101,62 @@ fn popup(app: *App, palette: theme.Palette, state: *State, id_extra: usize) void
         .id_extra = id_extra + 1,
     });
 
-    var scroll = dvui.scrollArea(@src(), .{
-        .vertical = .auto,
-        .horizontal = .none,
-    }, .{
-        .expand = .horizontal,
-        .min_size_content = .{ .w = width - popup_pad_x * 2, .h = @min(popup_max_height - 28, popupContentHeight(tasks, width)) },
-        .max_size_content = .{ .w = width - popup_pad_x * 2, .h = popup_max_height - 28 },
-        .padding = .all(0),
-        .background = true,
-        .color_fill = palette.popup_bg,
-        .color_border = palette.border_subtle,
-        .id_extra = id_extra + 2,
-    });
-    defer scroll.deinit();
+    var pending_action: ?RowAction = null;
+    {
+        var scroll = dvui.scrollArea(@src(), .{
+            .vertical = .auto,
+            .horizontal = .none,
+        }, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .w = width - popup_pad_x * 2, .h = @min(popup_max_height - 28, popupContentHeight(tasks, width)) },
+            .max_size_content = .{ .w = width - popup_pad_x * 2, .h = popup_max_height - 28 },
+            .padding = .all(0),
+            .background = true,
+            .color_fill = palette.popup_bg,
+            .color_border = palette.border_subtle,
+            .id_extra = id_extra + 2,
+        });
+        defer scroll.deinit();
 
-    if (tasks.len == 0) {
-        emptyRow(palette, id_extra + 3);
-    } else {
-        for (tasks, 0..) |task, idx| {
-            if (taskRow(task, width, palette, id_extra + 10 + idx * 20)) |action| {
-                switch (action) {
-                    .cancel_or_dismiss => |transfer_id| if (task.status == .pending or task.status == .running) {
-                        app.cancelTransfer(transfer_id);
-                    } else {
-                        app.dismissTransfer(transfer_id);
-                    },
-                    .retry => |transfer_id| app.retryTransfer(transfer_id),
+        if (tasks.len == 0) {
+            emptyRow(palette, id_extra + 3);
+        } else {
+            for (tasks, 0..) |task, idx| {
+                if (taskRow(task, width, palette, id_extra + 10 + idx * 20)) |action| {
+                    pending_action = action;
                 }
             }
         }
     }
 
+    if (pending_action) |action| applyRowAction(app, action);
+
     if (outsidePopupClick(win.data().rectScale().r)) {
         state.popup_open = false;
         win.close();
     }
+}
+
+fn applyRowAction(app: *App, action: RowAction) void {
+    switch (action) {
+        .cancel_or_dismiss => |transfer_id| {
+            const idx = transferIndex(app.transfers.items, transfer_id) orelse return;
+            const status = app.transfers.items[idx].status;
+            if (status == .pending or status == .running) {
+                app.cancelTransfer(transfer_id);
+            } else {
+                app.dismissTransfer(transfer_id);
+            }
+        },
+        .retry => |transfer_id| app.retryTransfer(transfer_id),
+    }
+}
+
+fn transferIndex(tasks: []const transfer.TransferTask, transfer_id: u64) ?usize {
+    for (tasks, 0..) |task, idx| {
+        if (task.id == transfer_id) return idx;
+    }
+    return null;
 }
 
 fn popupRect(anchor: dvui.Rect.Natural, tasks: []const transfer.TransferTask) dvui.Rect {

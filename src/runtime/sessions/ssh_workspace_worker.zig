@@ -159,6 +159,7 @@ pub const SshWorkspaceWorker = struct {
     file_dir_caches: std.ArrayList(FileDirectoryCache) = .empty,
     file_error: [max_file_error]u8 = undefined,
     file_error_len: usize = 0,
+    file_notice_generation: u64 = 0,
     editor_state: remote_file.FileEditorState = .closed,
     editor_path: []u8 = &.{},
     editor_name: []u8 = &.{},
@@ -420,6 +421,7 @@ pub const SshWorkspaceWorker = struct {
             .entries = buffer[0..count],
             .selected_name = self.fileSelectedNameLocked(),
             .error_summary = self.fileErrorLocked(),
+            .notice_generation = self.file_notice_generation,
             .capabilities = self.fileCapabilitiesLocked(),
         };
     }
@@ -1941,6 +1943,7 @@ pub const SshWorkspaceWorker = struct {
         const len = @min(self.file_error.len, message.len);
         if (len > 0) @memcpy(self.file_error[0..len], message[0..len]);
         self.file_error_len = len;
+        self.file_notice_generation +%= 1;
     }
 
     fn storeFileNotice(self: *SshWorkspaceWorker, message: []const u8) void {
@@ -1953,6 +1956,7 @@ pub const SshWorkspaceWorker = struct {
         const len = @min(self.file_error.len, message.len);
         if (len > 0) @memcpy(self.file_error[0..len], message[0..len]);
         self.file_error_len = len;
+        self.file_notice_generation +%= 1;
     }
 
     fn clearEditorLocked(self: *SshWorkspaceWorker) void {

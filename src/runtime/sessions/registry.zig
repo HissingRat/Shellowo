@@ -13,6 +13,7 @@ const ssh_workspace_worker = @import("ssh_workspace_worker.zig");
 const SshWorkspaceRuntimeSlot = struct {
     tab_id: u64,
     worker: *ssh_workspace_worker.SshWorkspaceWorker,
+    presented_file_notice_generation: u64 = 0,
 };
 
 const ActiveTerminalSlot = struct {
@@ -152,11 +153,19 @@ pub const SessionRegistry = struct {
 
     pub fn filePanelSnapshot(self: *SessionRegistry, tab_id: u64, tree_buffer: []remote_file.RemoteFileEntry, remote_buffer: []remote_file.RemoteFileEntry) remote_file.FilePanelSnapshot {
         _ = self.tabById(tab_id) orelse return .{};
-        const worker = self.sshWorkspace(tab_id) orelse return .{};
+        const idx = self.sshWorkspaceIndex(tab_id) orelse return .{};
+        const slot = &self.ssh_workspaces.items[idx];
+        const remote = slot.worker.filePanelSnapshot(remote_buffer);
+        const toast_summary = consumeFileNotice(
+            &slot.presented_file_notice_generation,
+            remote.notice_generation,
+            remote.error_summary,
+        );
         return .{
-            .tree = worker.fileTreeSnapshot(tree_buffer),
-            .remote = worker.filePanelSnapshot(remote_buffer),
-            .editor = worker.fileEditorSnapshot(),
+            .tree = slot.worker.fileTreeSnapshot(tree_buffer),
+            .remote = remote,
+            .editor = slot.worker.fileEditorSnapshot(),
+            .toast_summary = toast_summary,
         };
     }
 
@@ -357,3 +366,16 @@ pub const SessionRegistry = struct {
         }
     }
 };
+
+fn consumeFileNotice(presented_generation: *u64, generation: u64, summary: ?[]const u8) ?[]const u8 {
+    if (generation == 0 or generation == presented_generation.* or summary == null) return null;
+    presented_generation.* = generation;
+    return summary;
+}
+
+test "file notices are presented once per generation" {
+    var presented: u64 = 0;
+    try std.testing.expectEqualStrings("Failed", consumeFileNotice(&presented, 1, "Failed").?);
+    try std.testing.expect(consumeFileNotice(&presented, 1, "Failed") == null);
+    try std.testing.expectEqualStrings("Failed", consumeFileNotice(&presented, 2, "Failed").?);
+}

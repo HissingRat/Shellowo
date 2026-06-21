@@ -33,7 +33,6 @@ pub fn setDownloadPath(app: anytype, path: []const u8) void {
 
 pub fn setTerminalPredictionMode(app: anytype, mode: predictive.PredictionMode) void {
     app.config.terminal_prediction.mode = if (mode == .off) .off else .auto;
-    app.config.terminal_prediction.enabled = app.config.terminal_prediction.mode != .off;
     applyTerminalPredictionConfig(app);
 }
 

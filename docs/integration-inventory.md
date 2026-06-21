@@ -19,10 +19,19 @@
 
 当前 SDL3 由 DVUI 依赖链引入。
 
+- `sdl_linux_deps` 也在根 `build.zig.zon` 显式登记，用于确保交叉编译
+  Linux 时 SDL3 一定编入 X11 与 Wayland 视频驱动。桌面协议库仍由 SDL
+  在运行时动态加载，同一个 Linux ELF 可用于两种会话。
+- 未指定 ABI 的 Linux target（例如 `-Dtarget=x86_64-linux`）会在
+  `build.zig` 中归一化为 GNU ABI。SDL 的 X11/Wayland backend 需要
+  `dlopen` 桌面运行库，不能发布默认静态 libc 形态的 Linux ELF。
+
 维护原则：
 
 - 不绕过 DVUI 直接操作 SDL3 窗口，除非是 DVUI backend 无法覆盖的底层能力。
 - 如果接入平台剪贴板、拖拽、文件对话框等系统能力，先判断 DVUI 是否已有抽象。
+- Linux 发布产物必须同时保留 SDL3 的 X11 与 Wayland 驱动；不能只以
+  “交叉编译成功”作为 GUI 可启动的证明。
 - `src/platform/window_chrome.zig` 是自定义窗口标题栏的集中边界。macOS
   通过 `src/platform/macos_window_chrome.m` 调整 SDL 创建的原生
   `NSWindow`，保留系统交通灯和 fullscreen 行为；平台 handle 不进入产品 UI。
@@ -130,6 +139,9 @@
 当前实现：
 
 - `scripts/package-macos-app.sh` 在 macOS 原生环境构建 `Shellowo.app`，生成 `Info.plist`、`.icns` 图标并输出 zip。
+- `zig build` 的主程序产物统一包含平台和架构，例如
+  `Shellowo-macos-aarch64`、`Shellowo-windows-x86_64.exe` 和
+  `Shellowo-linux-x86_64`。
 - `.github/workflows/release.yml` 在单个 GitHub-hosted macOS runner 上执行原生测试，交叉编译 Windows/Linux，并原生构建 macOS `.app`。
 - 推送 `main` 时通过 GitHub CLI 替换 `nightly` prerelease，推送 `v*` tag 时创建或更新正式 Release；Windows 上传 `.exe`，Linux 上传 ELF，macOS 上传用于保持 bundle 目录结构的 `.app.zip`。
 - workflow 从 ziglang.org 官方下载索引安装仓库要求的 Zig 0.16.0 并校验 SHA-256；没有引入产品运行时依赖。

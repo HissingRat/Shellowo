@@ -106,6 +106,7 @@ pub fn show(palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent 
         .app = opts.app,
         .tab_id = opts.tab_id,
         .snapshot = opts.snapshot.remote,
+        .toast_summary = opts.snapshot.toast_summary,
         .editor = opts.snapshot.editor,
         .width = null,
         .columns = opts.columns,
@@ -267,6 +268,7 @@ const PaneOptions = struct {
     tab_id: u64,
     tree: remote_file.FileTreeSnapshot = .{},
     snapshot: remote_file.FilePaneSnapshot,
+    toast_summary: ?[]const u8 = null,
     editor: remote_file.FileEditorSnapshot = .{},
     width: ?f32,
     columns: *ColumnWidths,
@@ -301,7 +303,7 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
         treeRows(opts.tree, palette, opts.id_extra + 20, intent);
         return;
     }
-    layout.observeToast(opts.snapshot.error_summary);
+    layout.observeToast(opts.toast_summary);
     layout.details.syncFromSnapshot(opts.snapshot);
     failureTooltip(layout, palette, opts.id_extra + 6);
     const path_busy = opts.app.transferBusyInRemotePath(opts.snapshot.path);

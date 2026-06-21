@@ -14,6 +14,12 @@ dist_dir="${2:-dist}"
 min_macos="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 build_version="${BUILD_VERSION:-${GITHUB_RUN_NUMBER:-1}}"
 arch="$(uname -m)"
+case "$arch" in
+    arm64) zig_arch="aarch64" ;;
+    x86_64) zig_arch="x86_64" ;;
+    *) zig_arch="$arch" ;;
+esac
+binary_name="Shellowo-macos-${zig_arch}"
 
 bundle_version="${version#v}"
 bundle_version="$(printf '%s' "$bundle_version" | sed -E 's/[^0-9.].*$//; s/^\.*//; s/\.*$//')"
@@ -36,7 +42,7 @@ rm -rf "$work_dir"
 mkdir -p "$install_dir" "$macos_dir" "$resources_dir" "$dist_dir"
 
 zig build -Doptimize=ReleaseFast --prefix "$install_dir"
-install -m 0755 "$install_dir/bin/Shellowo" "$macos_dir/Shellowo"
+install -m 0755 "$install_dir/bin/$binary_name" "$macos_dir/Shellowo"
 
 sed \
     -e "s/@VERSION@/$bundle_version/g" \
