@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 
 const sdl = dvui.backend;
 const c = sdl.c;
+const window_chrome = @import("window_chrome.zig");
 
 pub fn main(main_init: std.process.Init) !u8 {
     dvui.App.main_init = main_init;
@@ -16,6 +17,7 @@ pub fn main(main_init: std.process.Init) !u8 {
         _ = c.SDL_SetAppMetadata("Shellowo", "0.1", "app.shellowo.desktop");
     }
 
+    const integrated_chrome = window_chrome.integratedTitlebar();
     var back = try sdl.initWindow(.{
         .io = init_opts.io orelse main_init.io,
         .environ_map = main_init.environ_map,
@@ -25,10 +27,14 @@ pub fn main(main_init: std.process.Init) !u8 {
         .vsync = init_opts.vsync,
         .title = init_opts.title,
         .icon = init_opts.icon,
-        .hidden = init_opts.hidden,
+        .hidden = init_opts.hidden or integrated_chrome,
         .transparent = init_opts.transparent,
     });
     defer back.deinit();
+
+    var chrome: window_chrome.Controller = .{ .window = back.window };
+    try chrome.activate();
+    defer chrome.deactivate();
 
     if (@hasDecl(c, "SDL_EnableScreenSaver")) {
         _ = c.SDL_EnableScreenSaver();
@@ -49,6 +55,10 @@ pub fn main(main_init: std.process.Init) !u8 {
         _ = try win.end(.{});
     }
     applyConfiguredWindowSize(&back);
+    if (!init_opts.hidden and integrated_chrome) {
+        _ = c.SDL_ShowWindow(back.window);
+        chrome.windowShown();
+    }
     defer if (app.deinitFn) |deinitFn| deinitFn();
 
     var interrupted = false;
@@ -56,11 +66,15 @@ pub fn main(main_init: std.process.Init) !u8 {
         const nstime = win.beginWait(interrupted);
         try win.begin(nstime);
 
-        try pumpEvents(&back, &win);
+        try pumpEvents(&back, &win, &chrome);
 
         const res = try app.frameFn();
         const end_micros = try win.end(.{});
         if (res != .ok) break :main_loop;
+        if (chrome.takeCloseRequested()) {
+            window_open = false;
+            break :main_loop;
+        }
 
         const wait_event_micros = win.waitTime(end_micros);
         interrupted = try back.waitEventTimeout(wait_event_micros);
@@ -95,9 +109,10 @@ test "mac app executable path detection" {
     try std.testing.expect(!isMacAppExecutablePath("/tmp/zig-out/bin/Shellowo"));
 }
 
-fn pumpEvents(back: *sdl.SDLBackend, win: *dvui.Window) !void {
+fn pumpEvents(back: *sdl.SDLBackend, win: *dvui.Window, chrome: *window_chrome.Controller) !void {
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event)) {
+        chrome.handleEvent(&event);
         if (event.type == c.SDL_EVENT_USER) continue;
         if (event.type == c.SDL_EVENT_DROP_BEGIN) {
             rootBeginFileDrag();

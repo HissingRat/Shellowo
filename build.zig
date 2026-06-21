@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .windows) {
         exe.subsystem = .windows;
     }
+    attachWindowChrome(b, exe);
     exe.root_module.addWin32ResourceFile(.{
         .file = b.path("assets/shellowo.rc"),
         .include_paths = &.{b.path("assets")},
@@ -146,6 +147,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     attachNativeDeps(b, tests, native_deps);
+    attachWindowChrome(b, tests);
     tests.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     tests.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
@@ -186,6 +188,16 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+}
+
+fn attachWindowChrome(b: *std.Build, compile: *std.Build.Step.Compile) void {
+    if (compile.root_module.resolved_target.?.result.os.tag != .macos) return;
+
+    compile.root_module.addCSourceFile(.{
+        .file = b.path("src/platform/macos_window_chrome.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    compile.root_module.linkFramework("Cocoa", .{});
 }
 
 const NativeDeps = struct {

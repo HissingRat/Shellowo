@@ -71,6 +71,10 @@ pub fn buttonNoHoverAndPress(src: std.builtin.SourceLocation, label: []const u8,
     return button_widget.showStatic(src, label, opts, palette, style);
 }
 
+pub fn textButton(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options, palette: Palette, style: ButtonStyle) bool {
+    return button_widget.showTextOnly(src, label, opts, palette, style);
+}
+
 pub fn textEntry(
     src: std.builtin.SourceLocation,
     entry: *TextEntry,

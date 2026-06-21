@@ -1,6 +1,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const App = @import("../../../app/App.zig");
+const window_chrome = @import("../../../platform/window_chrome.zig");
 const predictive = @import("../../../core/terminal/predictive.zig");
 const profile = @import("../../../core/profile.zig");
 const workspace = @import("../../../core/workspace.zig");
@@ -107,36 +108,50 @@ pub fn frame(app: *App) !dvui.App.Result {
 }
 
 fn topBar(app: *App, palette: theme.Palette) void {
-    const bar_height: f32 = 32;
+    const bar_height = window_chrome.titlebar_height;
     const button_height: f32 = 26;
     const close_size: f32 = 18;
-    const settings_button_size: f32 = 28;
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, theme.topbar(.{
         .expand = .horizontal,
         .min_size_content = .height(bar_height),
         .max_size_content = .height(bar_height),
-        .padding = .{ .x = 12, .y = 0, .w = 12, .h = 0 },
+        .padding = .all(0),
+        .border = .{ .h = 1 },
+        .color_border = palette.border_subtle,
     }, palette));
     defer bar.deinit();
     const state = dvui.dataGetPtrDefault(null, bar.data().id, "top-bar-state", TopBarState, .{});
 
-    topBarTitle(app.currentTitle(), bar_height, palette);
+    const leading_inset = window_chrome.leadingInset();
+    if (leading_inset > 0) spacer(@src(), leading_inset, 90);
 
-    separator(palette);
+    if (window_chrome.drawsWindowControls()) {
+        if (titlebarMenuButton(bar_height, palette)) {
+            window_chrome.perform(.show_system_menu);
+        }
+    } else {
+        spacer(@src(), 8, 91);
+    }
 
-    if (theme.button(@src(), "Home", .{
+    if (theme.textButton(@src(), "Shellowo", .{
         .gravity_y = 0.5,
-        .min_size_content = .{ .w = 50, .h = button_height },
-        .padding = .{ .x = 6, .y = 0, .w = 6, .h = 0 },
-        .corner_radius = .all(5),
+        .min_size_content = .height(button_height),
+        .padding = .all(0),
+        .margin = .{ .y = 2.5, .w = 7 },
         .id_extra = 1,
-    }, palette, .{ .variant = .tab, .font_size = 12 })) {
+    }, palette, .{
+        .font_size = 10,
+    })) {
         app.goHome();
+    }
+
+    if (app.sessions.tabs.items.len > 0) {
+        workspaceTabSeparator(palette);
     }
 
     for (app.sessions.tabs.items) |tab| {
         const active = app.sessions.active_tab_id == tab.id;
-        switch (connectionTab(tab, active, button_height - 2, close_size - 2, palette)) {
+        switch (connectionTab(tab, active, button_height - 5, close_size - 5, palette)) {
             .none => {},
             .activate => app.sessions.activate(tab.id),
             .close => {
@@ -146,13 +161,15 @@ fn topBar(app: *App, palette: theme.Palette) void {
         }
     }
 
+    titlebarDragRegion(bar_height);
+
     const settings_button = topBarSettingsButton(settings_icon_bytes, "settings.png", .{
-        .gravity_x = 1,
         .gravity_y = 0.5,
-        .min_size_content = .{ .w = settings_button_size, .h = button_height },
-        .max_size_content = .{ .w = settings_button_size, .h = button_height },
-        .padding = .{ .x = 4, .y = 3, .w = 4, .h = 3 },
-        .corner_radius = .all(5),
+        .min_size_content = .{ .w = 16, .h = 16 },
+        .max_size_content = .{ .w = 16, .h = 16 },
+        .padding = .all(0),
+        .margin = .{ .w = 5 },
+        .corner_radius = .all(4),
         .id_extra = 2,
     }, palette, 302);
     state.settings_button_rect = settings_button.rect;
@@ -168,6 +185,127 @@ fn topBar(app: *App, palette: theme.Palette) void {
     if (state.settings_open) {
         settingsPopup(app, state, palette, 900);
     }
+
+    if (window_chrome.drawsWindowControls()) {
+        windowCaptionButtons(bar_height, palette);
+    } else {
+        spacer(@src(), 6, 92);
+    }
+}
+
+fn titlebarDragRegion(height: f32) void {
+    var drag = dvui.box(@src(), .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .height(height),
+        .max_size_content = .height(height),
+        .padding = .all(0),
+        .margin = .all(0),
+        .role = .none,
+        .tab_index = 0,
+        .id_extra = 93,
+    });
+    defer drag.deinit();
+    window_chrome.updateDragRect(drag.data().rectScale());
+}
+
+fn titlebarMenuButton(height: f32, palette: theme.Palette) bool {
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
+        .min_size_content = .{ .w = 40, .h = height },
+        .max_size_content = .{ .w = 40, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .corner_radius = .all(0),
+        .id_extra = 94,
+    }, palette, .{ .variant = .ghost }, .{
+        .interactive = false,
+        .override = .{
+            .color_fill = dvui.Color.transparent,
+            .color_fill_hover = palette.surface_hover,
+            .color_fill_press = palette.surface_active,
+        },
+    });
+    bw.processEvents();
+    bw.drawBackground();
+
+    const rs = bw.data().contentRectScale();
+    const line_w = 13 * rs.s;
+    const line_h = @max(@as(f32, 1), rs.s);
+    const left = rs.r.x + @round((rs.r.w - line_w) / 2);
+    const top = rs.r.y + @round((rs.r.h - 9 * rs.s) / 2);
+    for (0..3) |index| {
+        const line: dvui.Rect.Physical = .{
+            .x = left,
+            .y = top + @as(f32, @floatFromInt(index)) * 4 * rs.s,
+            .w = line_w,
+            .h = line_h,
+        };
+        line.fill(.all(0), .{ .color = palette.muted_text, .fade = 1 });
+    }
+    const clicked = bw.clicked();
+    bw.deinit();
+    return clicked;
+}
+
+fn windowCaptionButtons(height: f32, palette: theme.Palette) void {
+    if (captionButton("_", height, palette, false, 95)) {
+        window_chrome.perform(.minimize);
+    }
+    const maximize_glyph = if (window_chrome.isMaximized()) "❐" else "□";
+    if (captionButton(maximize_glyph, height, palette, false, 96)) {
+        window_chrome.perform(.toggle_maximize);
+    }
+    if (captionButton("×", height, palette, true, 97)) {
+        window_chrome.perform(.close);
+    }
+}
+
+fn captionButton(
+    glyph: []const u8,
+    height: f32,
+    palette: theme.Palette,
+    danger: bool,
+    id_extra: usize,
+) bool {
+    const hover_fill = if (danger) theme.c(0xd7, 0x35, 0x35) else palette.surface_hover;
+    const press_fill = if (danger) theme.c(0xb9, 0x25, 0x25) else palette.surface_active;
+    var bw: theme.ButtonWidget = undefined;
+    bw.init(@src(), .{
+        .min_size_content = .{ .w = 46, .h = height },
+        .max_size_content = .{ .w = 46, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .corner_radius = .all(0),
+        .id_extra = id_extra,
+    }, palette, .{ .variant = .ghost }, .{
+        .interactive = false,
+        .override = .{
+            .color_fill = dvui.Color.transparent,
+            .color_fill_hover = hover_fill,
+            .color_fill_press = press_fill,
+        },
+    });
+    bw.processEvents();
+    bw.drawBackground();
+
+    const rs = bw.data().contentRectScale();
+    const font_size: f32 = if (std.mem.eql(u8, glyph, "_")) 15 else 16;
+    const font = theme.textFont(glyph, font_size);
+    const size = font.textSize(glyph).scale(rs.s, dvui.Size.Physical);
+    dvui.renderText(.{
+        .font = font,
+        .text = glyph,
+        .rs = rs,
+        .p = .{
+            .x = rs.r.x + @round((rs.r.w - size.w) / 2),
+            .y = rs.r.y + @round((rs.r.h - size.h) / 2 - (if (std.mem.eql(u8, glyph, "_")) 3 * rs.s else 0)),
+        },
+        .color = palette.text,
+    }) catch {};
+
+    const clicked = bw.clicked();
+    bw.deinit();
+    return clicked;
 }
 
 fn topBarSettingsButton(bytes: []const u8, name: []const u8, opts: dvui.Options, palette: theme.Palette, id_base: usize) IconButtonInfo {
@@ -185,9 +323,10 @@ fn settingsPopup(app: *App, state: *TopBarState, palette: theme.Palette, id_extr
     const window_rect = dvui.windowRect();
     const popup_w: f32 = 430;
     const popup_h: f32 = 138;
+    const right_inset: f32 = if (window_chrome.drawsWindowControls()) 146 else 12;
     const rect: dvui.Rect.Natural = .{
-        .x = @max(12, window_rect.w - popup_w - 12),
-        .y = 40,
+        .x = @max(12, window_rect.w - popup_w - right_inset),
+        .y = window_chrome.titlebar_height + 8,
         .w = popup_w,
         .h = popup_h,
     };
@@ -637,108 +776,144 @@ fn foldedPathForWidth(path: []const u8, buf: []u8, width: f32, font: dvui.Font) 
     return std.fmt.bufPrint(buf, ".../{s}", .{tail[tail.len - min_tail_len ..]}) catch path;
 }
 
-fn topBarTitle(title: []const u8, bar_height: f32, palette: theme.Palette) void {
-    const font = theme.textFont(title, 13);
-    var slot = dvui.box(@src(), .{}, .{
-        .gravity_y = 0.5,
-        .min_size_content = .{ .w = 130, .h = bar_height },
-        .max_size_content = .{ .w = 130, .h = bar_height },
-        .padding = .all(0),
-        .id_extra = 101,
-    });
-    defer slot.deinit();
-
-    const crs = slot.data().contentRectScale();
-    const text_size = font.textSize(title);
-    const text_height = text_size.h * crs.s;
-    const y = crs.r.y + @round((crs.r.h - text_height) / 2 + theme.topBarTextOffset(title) * crs.s);
-
-    dvui.renderText(.{
-        .font = font,
-        .text = title,
-        .rs = crs,
-        .p = .{ .x = crs.r.x, .y = y },
-        .color = palette.text,
-    }) catch {};
-}
-
 fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_size: f32, palette: theme.Palette) TabAction {
-    const style: theme.ButtonStyle = .{
-        .state = if (active) .selected else .normal,
-        .variant = .tab,
-        .font_size = theme.font_sizes.tab,
-    };
-    const title_width = tabTitleWidth(tab.title);
-    var bg: theme.ButtonWidget = undefined;
-    bg.init(@src(), .{
-        .gravity_y = 0.5,
-        .min_size_content = .height(height),
-        .max_size_content = .height(height),
-        .padding = .{ .x = 0, .y = 0, .w = 2, .h = 0 },
-        .margin = .{ .x = 4 },
-        .corner_radius = .all(5),
-        .id_extra = tab.id,
-    }, palette, style, .{ .interactive = false });
-    bg.drawBackground();
-    defer bg.deinit();
+    const tab_font_size: f32 = 9.5;
+    const horizontal_padding: f32 = 6;
+    const status_size: f32 = 6;
+    const status_gap: f32 = 7;
+    const close_gap: f32 = 8;
+    const max_title_width: f32 = 148;
+    const title_width = @min(tabTitleWidth(tab.title, tab_font_size), max_title_width);
+    const tab_width = horizontal_padding * 2 + status_size + status_gap + title_width + close_gap + close_size;
 
-    var content = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .both,
+    var button: theme.ButtonWidget = undefined;
+    button.init(@src(), .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = tab_width, .h = height },
+        .max_size_content = .{ .w = tab_width, .h = height },
         .padding = .all(0),
-        .margin = .all(0),
-        .id_extra = tab.id + 1_000,
-    });
-    defer content.deinit();
-
-    if (theme.buttonNoHoverAndPress(@src(), tab.title, .{
-        .gravity_y = 0.5,
-        .min_size_content = .{ .w = title_width, .h = height },
-        .max_size_content = .{ .w = title_width, .h = height },
-        .padding = .{ .x = 5, .y = 2, .w = 5, .h = 0 },
-        .margin = .all(0),
-        .corner_radius = .all(0),
-        .id_extra = tab.id + 10_000,
+        .margin = .{ .x = 2, .y = 1 },
+        .corner_radius = .all(4),
+        .id_extra = tab.id,
     }, palette, .{
         .variant = .ghost,
-        .font_size = style.font_size,
-    })) {
-        return .activate;
+        .font_size = tab_font_size,
+    }, .{
+        .interactive = false,
+        .override = .{
+            .background = false,
+            .color_fill = dvui.Color.transparent,
+            .color_fill_hover = dvui.Color.transparent,
+            .color_fill_press = dvui.Color.transparent,
+            .color_border = dvui.Color.transparent,
+        },
+    });
+    button.processEvents();
+    defer button.deinit();
+
+    const rs = button.data().contentRectScale();
+    const hovered = button.hovered();
+    if (active) {
+        rs.r.fill(
+            dvui.Rect.Physical.all(4 * rs.s),
+            .{ .color = palette.surface_active.opacity(0.42), .fade = 1 },
+        );
+        const underline: dvui.Rect.Physical = .{
+            .x = rs.r.x,
+            .y = rs.r.y + rs.r.h - 2 * rs.s,
+            .w = rs.r.w,
+            .h = 2 * rs.s,
+        };
+        underline.fill(.all(1 * rs.s), .{ .color = palette.accent.opacity(0.78), .fade = 1 });
     }
 
-    if (theme.button(@src(), "x", .{
-        .gravity_y = 0.5,
-        .min_size_content = .{ .w = close_size, .h = close_size },
-        .padding = .{ .x = 0.5, .y = 2, .w = 0, .h = 2 },
-        .margin = .all(0),
-        .corner_radius = .all(5),
-        .id_extra = tab.id + 20_000,
-    }, palette, .{
-        .state = style.state,
-        .variant = .ghost,
-        .font_size = theme.font_sizes.close,
-    })) {
-        return .close;
+    const status_diameter = status_size * rs.s;
+    const status_rect: dvui.Rect.Physical = .{
+        .x = rs.r.x + horizontal_padding * rs.s,
+        .y = rs.r.y + @round((rs.r.h - status_diameter) / 2),
+        .w = status_diameter,
+        .h = status_diameter,
+    };
+    status_rect.fill(
+        dvui.Rect.Physical.all(status_diameter / 2),
+        .{ .color = tabStatusColor(tab.status, palette), .fade = 1 },
+    );
+
+    const title_font = theme.textFont(tab.title, tab_font_size);
+    const title_rect: dvui.Rect.Physical = .{
+        .x = status_rect.x + status_rect.w + status_gap * rs.s,
+        .y = rs.r.y,
+        .w = title_width * rs.s,
+        .h = rs.r.h,
+    };
+    const title_size = title_font.textSize(tab.title).scale(rs.s, dvui.Size.Physical);
+    const old_clip = dvui.clip(title_rect);
+    dvui.renderText(.{
+        .font = title_font,
+        .text = tab.title,
+        .rs = rs,
+        .p = .{
+            .x = title_rect.x,
+            .y = title_rect.y + @round((title_rect.h - title_size.h) / 2 + (theme.topBarTextOffset(tab.title) - 1.5) * rs.s),
+        },
+        .color = if (active or hovered) palette.text else palette.muted_text,
+    }) catch {};
+    dvui.clipSet(old_clip);
+
+    const close_rect: dvui.Rect.Physical = .{
+        .x = rs.r.x + rs.r.w - (horizontal_padding + close_size) * rs.s,
+        .y = rs.r.y + @round((rs.r.h - close_size * rs.s) / 2),
+        .w = close_size * rs.s,
+        .h = close_size * rs.s,
+    };
+    const close_visible = active or hovered;
+    if (close_visible) {
+        const close_hovered = close_rect.contains(dvui.currentWindow().mouse_pt);
+        const close_font = theme.textFont("×", theme.font_sizes.close - 1);
+        const close_text_size = close_font.textSize("×").scale(rs.s, dvui.Size.Physical);
+        dvui.renderText(.{
+            .font = close_font,
+            .text = "×",
+            .rs = rs,
+            .p = .{
+                .x = close_rect.x + @round((close_rect.w - close_text_size.w) / 2),
+                .y = close_rect.y + @round((close_rect.h - close_text_size.h) / 2),
+            },
+            .color = if (close_hovered) palette.danger else palette.muted_text,
+        }) catch {};
+    }
+
+    if (button.clicked()) {
+        if (close_visible and close_rect.contains(dvui.currentWindow().mouse_pt)) return .close;
+        return .activate;
     }
 
     return .none;
 }
 
-fn tabTitleWidth(title: []const u8) f32 {
-    const font = dvui.Font.theme(.body).withSize(theme.font_sizes.tab);
+fn tabTitleWidth(title: []const u8, font_size: f32) f32 {
+    const font = theme.textFont(title, font_size);
     return @ceil(font.textSize(title).w);
 }
 
-fn separator(palette: theme.Palette) void {
-    var sep = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .background = true,
-        .color_fill = palette.border_subtle,
-        .min_size_content = .{ .w = 1, .h = 22 },
-        .max_size_content = .{ .w = 1, .h = 22 },
-        .margin = .{ .x = 10, .w = 10 },
+fn workspaceTabSeparator(palette: theme.Palette) void {
+    dvui.label(@src(), "›", .{}, .{
+        .font = theme.textFont("›", 10),
+        .color_text = palette.text_subtle,
         .gravity_y = 0.5,
-        .id_extra = 300,
+        .padding = .all(0),
+        .margin = .{ .x = 1, .w = 4 },
+        .id_extra = 102,
     });
-    defer sep.deinit();
+}
+
+fn tabStatusColor(status: workspace.TabStatus, palette: theme.Palette) dvui.Color {
+    return switch (status) {
+        .connected => palette.network_rx,
+        .resolving, .connecting, .verifying_host_key, .authenticating, .opening_shell => palette.warning,
+        .failed => palette.danger,
+        .idle, .closed => palette.text_subtle,
+    };
 }
 
 fn mainArea(app: *App, palette: theme.Palette) void {

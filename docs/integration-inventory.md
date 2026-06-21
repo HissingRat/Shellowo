@@ -23,6 +23,9 @@
 
 - 不绕过 DVUI 直接操作 SDL3 窗口，除非是 DVUI backend 无法覆盖的底层能力。
 - 如果接入平台剪贴板、拖拽、文件对话框等系统能力，先判断 DVUI 是否已有抽象。
+- `src/platform/window_chrome.zig` 是自定义窗口标题栏的集中边界。macOS
+  通过 `src/platform/macos_window_chrome.m` 调整 SDL 创建的原生
+  `NSWindow`，保留系统交通灯和 fullscreen 行为；平台 handle 不进入产品 UI。
 
 ## 3. SSH / SFTP
 

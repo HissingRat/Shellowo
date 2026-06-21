@@ -154,6 +154,47 @@ pub fn showStatic(src: std.builtin.SourceLocation, label: []const u8, opts: dvui
     });
 }
 
+pub fn showTextOnly(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options, palette: palette_module.Palette, style: Style) bool {
+    const transparent_options = options(opts, palette, style).override(.{
+        .background = false,
+        .color_fill = dvui.Color.transparent,
+        .color_fill_hover = dvui.Color.transparent,
+        .color_fill_press = dvui.Color.transparent,
+        .color_border = dvui.Color.transparent,
+        .font = typography.textFont(label, style.font_size orelse opts.fontGet().size),
+    });
+
+    var widget: Widget = undefined;
+    widget.init(src, transparent_options, palette, style, .{
+        .interactive = false,
+        .override = transparent_options,
+    });
+    widget.processEvents();
+
+    const text_color = if (dvui.captured(widget.data().id))
+        palette.border_selected
+    else if (widget.hovered())
+        palette.accent
+    else
+        palette.text;
+    const label_options = opts.strip().override(widget.style()).override(.{
+        .expand = .both,
+        .gravity_x = 0,
+        .gravity_y = 0.5,
+        .color_text = text_color,
+        .color_text_hover = text_color,
+        .color_text_press = text_color,
+    });
+    dvui.labelNoFmt(@src(), label, .{
+        .align_x = style.text_align_x orelse 0.5,
+        .align_y = 0.5,
+    }, label_options);
+
+    const clicked = widget.clicked();
+    widget.deinit();
+    return clicked;
+}
+
 const LabelWidgetOptions = struct {
     fill_hover: ?dvui.Color = null,
     fill_press: ?dvui.Color = null,
