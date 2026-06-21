@@ -196,7 +196,8 @@ SSH PTY channel
 ### 10. Title 与断线状态
 
 - [x] 支持 OSC title 更新。
-- [ ] 将远端 title 或 cwd 作为 tab/status panel 可选信息。
+- [x] 将远端 OSC title 用作 terminal slot 标题。
+- [ ] 将远端 cwd 作为 tab/status panel 可选信息。
 - [x] 断线后保留最后 screen 和 scrollback。
 
 验收：
@@ -206,11 +207,14 @@ SSH PTY channel
 
 ### 11. 性能与内存
 
-- [ ] 限制 scrollback 内存占用。
-- [ ] dirty rows / dirty regions。
-- [ ] 合并同样式 text runs。
-- [ ] 避免每帧整屏逐字符重绘。
-- [ ] 对高频输出保持 UI 可响应。
+- [x] 限制 scrollback 内存占用，当前上限为 10k 行。
+- [x] dirty rows / dirty regions。
+- [x] 合并同样式 text runs。
+- [x] 通过 dirty-aware 行缓存和约 60 FPS snapshot present gate 避免空闲帧重复处理整屏。
+- [x] worker pump 与 UI snapshot present 解耦，保持高频输出时 UI 可响应。
+
+说明：DVUI 仍是 immediate-mode frame 提交；当前优化位于 terminal snapshot、
+dirty metadata、行缓存和 present 调度层，不代表底层窗口像素级 partial present。
 
 验收：
 
@@ -223,7 +227,7 @@ SSH PTY channel
 - [x] 覆盖 ANSI colors。
 - [x] 覆盖 resize。
 - [x] 覆盖 scrollback。
-- [ ] 覆盖 cursor。
+- [x] 覆盖 cursor visible、shape 和 blink 状态。
 - [x] 覆盖 alternate screen。
 - [x] 覆盖 bracketed paste state。
 - [x] 覆盖 SGR mouse reporting。

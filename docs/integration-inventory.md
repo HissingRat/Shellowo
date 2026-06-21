@@ -116,13 +116,14 @@
 - profile 元数据使用本地文件。
 - 用户选择持久化的敏感信息可以进入 profile 存储，但必须通过 profile repository/security 层处理，不在 UI、日志或普通业务对象里明文散落。
 - `src/security/profile_vault.zig` 提供可选 Master Password profile vault：Argon2id KDF、XChaCha20-Poly1305 AEAD、随机 salt/nonce 写入 vault JSON；`src/runtime/profiles/profile_repository.zig` 负责兼容明文 profile array 与 encrypted vault。
-- settings、layout、recent sessions 使用 JSON/Zig 结构化序列化。
+- 未启用 Master Password 时，`src/security/secret_file.zig` 当前只做字节透传，profile array 中保存的密码/passphrase 没有静态加密保护；它是兼容边界，不是安全存储实现。
+- settings、window/workspace layout 和 terminal prediction 配置使用 JSON/Zig 结构化序列化；最近连接尚未实现。
 
 后续评估：
 
 - SQLite
 - 平台安全存储
-- 加密文件存储
+- 无 Master Password 模式的发布级凭据策略
 
 ## 6. 新依赖准入规则
 

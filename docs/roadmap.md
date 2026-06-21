@@ -92,7 +92,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 目标：从“能用”提升到“顺手”。
 
-状态：进行中。
+状态：进行中。全局任务面板、进度/速度、取消、重试、覆盖确认、基础 busy/disabled 状态、主题/布局记忆和系统信息面板已实现。
 
 交付：
 
@@ -104,6 +104,14 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 - 窗口与布局记忆
 - 系统信息面板雏形
 
+剩余：
+
+- 最近连接与连接使用历史
+- 传输历史持久化、批量清理/控制和并发队列策略
+- 更细的路径占用解释与复杂批量冲突策略
+- 可配置 terminal 字体；主题设置已实现
+- profile/editor/workspace 的 UI polish 与回归说明
+
 验收标准：
 
 - 多任务传输稳定
@@ -114,7 +122,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 目标：形成可分发的桌面版本。
 
-状态：已建立三平台 CI 构建与基础自动发布流程；正式签名、公证和安装器仍待完成。
+状态：已建立三平台 CI 构建、nightly/tag Release 和 macOS `.app` 基础打包；正式签名、公证、安装器及 Windows/Linux 原生运行回归仍待完成。
 
 交付：
 
@@ -124,9 +132,16 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 - 崩溃日志和诊断信息
 - 基础用户文档
 
+剩余：
+
+- Windows/macOS 正式签名、macOS notarization 与安装器
+- Windows 11、Ubuntu LTS 和受支持 macOS 的原生 GUI/SSH/SFTP 回归
+- 崩溃日志、诊断信息与可交付诊断包策略
+- 面向首次使用者的安装、凭据安全和常见故障文档
+
 验收标准：
 
-- 双平台可以安装或直接运行
+- Windows、macOS 和 Linux 可以安装或直接运行
 - 关键功能回归通过
 - 文档足够支持首次体验
 
@@ -136,13 +151,13 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 - 命令片段与收藏
 - 双远端面板
 - 本地文件面板
-- 远程文件编辑器
-- 系统信息与进程管理
-- 密钥代理
+- 远程文件编辑器高级能力
+- 系统信息与进程管理交互
+- SSH agent 管理与 agent forwarding
 - 配置导入导出
 - 同步与备份
 
-## 推荐开发顺序
+## 已完成的基础开发顺序
 
 1. 先拆 `src/main.zig`，立 app shell。
 2. 先做布局和连接配置。
@@ -153,8 +168,8 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 ## 近期待办
 
-1. 收敛 terminal 性能、cursor/cell metrics 和自动回归 fixture。
-2. 完善传输中心的批量冲突、重试和 busy/disabled 状态。
-3. 打磨 profile editor、工作台空态和 Phase 1 UI polish。
+1. 收敛 terminal cursor/cell metrics 和自动回归 fixture；dirty region、text run、60 FPS snapshot gate 与 scrollback 上限已实现。
+2. 完善传输中心的历史、批量控制、队列策略和复杂冲突说明；重试、覆盖确认和基础 busy/disabled 已实现。
+3. 打磨 selected connection 状态、profile editor 和 Phase 1 UI polish，并补 profile CRUD UI 回归。
 4. 完善安全凭据策略和发布前安全检查。
-5. 建立 Windows/macOS 打包、签名与发布回归流程。
+5. 在现有自动打包基础上补 Windows/macOS 正式签名、notarization/安装器与三平台运行回归。

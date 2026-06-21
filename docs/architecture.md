@@ -21,20 +21,23 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - SDL3 backend
 - 原生工作台布局
 - SSH 连接配置 CRUD
-- 非敏感 profile JSON 持久化
+- profile JSON 持久化与可选 Master Password vault
 - SSH workspace tab 与 libssh2-backed SSH runtime
 - PTY shell channel、libvterm terminal rendering、resize/input/selection 基础路径
 - terminal runtime 在异常断线后保留最后 screen/scrollback snapshot；主动关闭仍释放 runtime
 - SFTP 文件面板：远端目录树、右侧文件表、基础 mutation、上传/下载任务
-- 全局 transfer task 摘要、进度、取消和文件面板内任务弹窗
+- 全局 transfer task 摘要、进度、速度、取消、重试、覆盖确认和 busy 状态
+- 远程文件编辑器基础能力：加载、保存、查找/替换和未保存关闭确认
+- 系统信息面板雏形与进程/网络快照
 - 设置与主题系统基础：`owoConfig.json`、Light/Dark、窗口/布局尺寸和下载路径持久化
+- 三平台 CI 构建、nightly/tag Release、macOS `.app` 基础打包
 
 尚未具备：
 
 - 平台系统凭据库集成与发布级 profile secret 策略；当前已有可选 Master Password 加密 vault
-- 完整传输中心体验，例如重试、覆盖冲突处理和更细的 busy/disabled 状态
+- 完整传输中心体验，例如持久化历史、批量控制、并发/排队策略和更清晰的占用说明
 - 远程编辑器的大文件、编码检测和冲突处理等高级编辑体验
-- 发布打包流程
+- 正式发布签名、公证、安装器和三平台运行回归
 
 ## 3. 技术路线
 
@@ -197,7 +200,7 @@ pub const ConnectionProfile = struct {
 };
 ```
 
-敏感字段可以在用户选择持久化时进入 profile 存储，但必须通过 Shellow-owned profile repository/security 边界。密码、私钥 passphrase、临时凭据不能在 UI、日志或普通业务对象里明文散落。
+敏感字段可以在用户选择持久化时进入 profile 存储，但必须通过 Shellow-owned profile repository/security 边界。临时 UI draft/session request 可以短暂持有明文凭据；日志和无关业务对象不得复制或输出 secret。
 
 ### 6.2 Workspace Tab
 
@@ -284,20 +287,25 @@ SSH/SFTP 工作区：
 
 ## 11. 存储设计
 
-第一阶段本地持久化对象：
+当前本地持久化对象：
 
 - 连接配置
 - 分组
-- 最近连接
 - UI 设置
 - 终端设置
 
-敏感信息策略需要单独决策：
+尚未持久化：
+
+- 最近连接与连接使用历史
+- 传输历史
+
+敏感信息策略仍需在发布前收口：
 
 - profile 可以保存用户选择持久化的 secret。
-- 密码、passphrase、私钥内容必须通过 profile repository/security 层定义的存储格式处理，不直接明文写入 JSON。
+- 密码、passphrase、私钥内容必须通过 profile repository/security 层定义的存储格式处理。
 - 当前实现支持可选 Master Password：启用后 `data/profiles.json` 存为 Shellowo profile vault object，使用 Argon2id 从用户密码和随机 salt 派生密钥，并用 XChaCha20-Poly1305 加密 profile JSON array。
-- 未启用 Master Password 时仍兼容旧的明文 profile array。
+- 未启用 Master Password 时仍兼容旧的 profile JSON array；`src/security/secret_file.zig` 当前只是透传兼容层，因此其中保存的密码/passphrase 不具备静态加密保护。
+- 正式发布前需要明确平台系统凭据库、临时凭据和无 Master Password 模式的产品策略。
 
 ## 12. 实施原则
 

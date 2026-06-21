@@ -5,19 +5,20 @@ Shellow 会处理远程服务器凭据和文件。安全能力必须单独设计
 ## 当前规则
 
 - profile 可以保存用户选择持久化的 secret，但必须通过 Shellow-owned profile repository/security 边界。
-- 密码、私钥 passphrase、临时 token 不散落到 UI/app state 或日志中；持久化只能经过 profile repository/security 边界。
+- 密码、私钥 passphrase、临时 token 只允许短暂存在于 credential UI draft/session request；不得进入日志或无关业务状态，持久化只能经过 profile repository/security 边界。
 - 日志不打印密码、passphrase、私钥内容或完整连接 URI。
 - 错误提示可以展示 host、port、username，但不展示 secret。
 - 启用 Master Password 后，`data/profiles.json` 写入 Shellowo profile vault object；profile JSON array 先经 Argon2id 派生密钥，再由 XChaCha20-Poly1305 认证加密。
 - profile vault 的 salt 和 nonce 每次加密随机生成并存入 vault JSON；算法和默认 KDF 参数固定在 `src/security/profile_vault.zig`，不硬编码用户密钥。
-- 未启用 Master Password 时，profile repository 使用明文 profile array；这是当前明确接受的兼容模式，UI 需要让用户知道该选择不提供静态加密。
+- 未启用 Master Password 时，profile repository 使用 profile JSON array；`src/security/secret_file.zig` 当前只是透传兼容层，因此保存的密码/passphrase 实际没有静态加密保护。UI 需要明确告知用户，正式发布前仍需决定是否保留此模式。
 
 ## 后续评估
 
 - 每次连接临时输入密码
-- SSH agent
+- SSH agent 可用性、agent 转发与失败提示
 - 私钥文件权限检查
 - Master Password 修改
+- 平台系统凭据库集成
 
 ## 需要安全设计的功能
 

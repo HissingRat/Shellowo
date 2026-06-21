@@ -737,10 +737,10 @@ Local PTY on server
 
 等 Shellow 普通 SSH 终端稳定后，再作为高级模式开发。
 
-当前进展：
+当前状态：明确暂缓，不属于当前版本未完成验收项。
 
-- [ ] 未实现远端安装、协议、agent 传输或状态同步运行时。
-- [ ] 在真正启动该阶段前不预留 production capability stub。
+- 未实现远端安装、协议、agent 传输或状态同步运行时。
+- 在真正启动该阶段前不预留 production capability stub。
 
 ---
 

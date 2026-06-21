@@ -1,5 +1,13 @@
 # Native Window Chrome
 
+## Status
+
+Implementation is complete in the current codebase. The platform boundary,
+macOS traffic-light integration, Windows caption controls, drag regions,
+tab overflow scrolling and application close safety check are present.
+This plan remains active only for native Windows/macOS/Linux manual runtime
+verification before release.
+
 ## Goal
 
 Give Shellowo a compact Zed-style application titlebar that can host workspace

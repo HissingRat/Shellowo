@@ -26,10 +26,10 @@ Use this skill to keep Shellow on the native Zig + DVUI route while building a F
 
 Production code must call Shellow abstractions, not third-party APIs directly:
 
-- Use `src/protocols/ssh.zig` or a same-layer Shellow facade for SSH/SFTP.
-- Keep raw `libssh2` handles inside `src/protocols/libssh2_backend.zig` or a same-layer backend/shim file.
-- Use `src/terminal/` or `src/protocols/terminal/` Shellow abstractions for terminal emulation.
-- Keep raw `libvterm` handles inside a dedicated `libvterm_backend.zig`/shim file.
+- Use `src/contracts/ssh.zig` for SSH/SFTP capabilities.
+- Keep raw `libssh2` handles inside `src/backends/ssh/libssh2.zig` or a same-layer backend/shim file.
+- Use `src/contracts/terminal_emulator.zig` for terminal emulation.
+- Keep raw `libvterm` handles inside `src/backends/terminal/libvterm.zig` and its dedicated C shim.
 
 ## Architecture Rules
 
@@ -54,10 +54,11 @@ For a new feature:
 
 Current priority order:
 
-1. SSH connect/auth/host-key verification through `libssh2_backend`.
-2. PTY shell channel, read/write, close, and resize synchronization.
-3. Terminal emulator binding and terminal viewport/render state.
-4. SFTP list/upload/download wired into transfer queue.
+1. Release-grade credential strategy and security checks.
+2. Transfer history, batch controls, queue policy, and conflict UX.
+3. Terminal fixtures, cursor/cell metrics, and high-output regression.
+4. Remote editor large-file, encoding, and remote-conflict behavior.
+5. Signing, notarization/installers, and native three-platform release validation.
 
 ## Session Modeling
 
