@@ -46,6 +46,20 @@ const TransferRetryRecord = struct {
     intent: remote_file.FilePanelIntent,
 };
 
+const DirtyEditorRecord = struct {
+    tab_id: u64,
+};
+
+pub const CloseBlockers = struct {
+    active_transfers: usize = 0,
+    dirty_editors: usize = 0,
+    active_sessions: usize = 0,
+
+    pub fn any(self: CloseBlockers) bool {
+        return self.active_transfers > 0 or self.dirty_editors > 0 or self.active_sessions > 0;
+    }
+};
+
 const TerminalSnapshotCache = terminal_state.SnapshotCache;
 const TerminalPredictiveState = terminal_state.PredictiveState;
 
@@ -59,6 +73,7 @@ ssh_connector: ssh.Connector,
 terminal_factory: ssh_session.TerminalFactory,
 transfers: std.ArrayList(transfer.TransferTask) = .empty,
 transfer_retries: std.ArrayList(TransferRetryRecord) = .empty,
+dirty_editors: std.ArrayList(DirtyEditorRecord) = .empty,
 native_events: std.ArrayList(native_event.NativeEvent) = .empty,
 terminal_snapshot_cache: TerminalSnapshotCache = .{},
 terminal_predictive_states: std.ArrayList(TerminalPredictiveState) = .empty,
@@ -84,6 +99,8 @@ master_password_session: [128]u8 = std.mem.zeroes([128]u8),
 master_password_new: [128]u8 = std.mem.zeroes([128]u8),
 master_password_confirm: [128]u8 = std.mem.zeroes([128]u8),
 master_password_disable: [128]u8 = std.mem.zeroes([128]u8),
+window_close_pending: bool = false,
+window_close_approved: bool = false,
 
 const profiles_path = "data/profiles.json";
 const known_hosts_path = "data/known_hosts.json";
@@ -161,6 +178,7 @@ pub fn deinit(self: *App) void {
         self.freeRetryIntent(record.intent);
     }
     self.transfer_retries.deinit(self.allocator);
+    self.dirty_editors.deinit(self.allocator);
     self.clearNativeEvents();
     self.native_events.deinit(self.allocator);
     self.config.deinit();
@@ -519,7 +537,61 @@ pub fn currentTitle(self: *App) []const u8 {
 pub fn closeTab(self: *App, tab_id: u64) void {
     self.terminal_snapshot_cache.clear();
     self.removeTerminalPredictiveStatesForTab(tab_id);
+    self.reportRemoteEditorDirty(tab_id, false);
     self.sessions.closeTab(tab_id);
+}
+
+pub fn reportRemoteEditorDirty(self: *App, tab_id: u64, dirty: bool) void {
+    for (self.dirty_editors.items, 0..) |record, idx| {
+        if (record.tab_id != tab_id) continue;
+        if (!dirty) _ = self.dirty_editors.orderedRemove(idx);
+        return;
+    }
+    if (dirty) self.dirty_editors.append(self.allocator, .{ .tab_id = tab_id }) catch {};
+}
+
+pub fn closeBlockers(self: *const App) CloseBlockers {
+    var blockers: CloseBlockers = .{
+        .dirty_editors = self.dirty_editors.items.len,
+    };
+    for (self.transfers.items) |task| {
+        if (task.status == .pending or task.status == .running) blockers.active_transfers += 1;
+    }
+    for (self.sessions.tabs.items) |tab| {
+        switch (tab.status) {
+            .failed, .closed => {},
+            else => blockers.active_sessions += 1,
+        }
+    }
+    return blockers;
+}
+
+pub fn requestWindowClose(self: *App) void {
+    if (self.window_close_approved) return;
+    if (self.closeBlockers().any()) {
+        self.window_close_pending = true;
+    } else {
+        self.window_close_approved = true;
+    }
+}
+
+pub fn cancelWindowClose(self: *App) void {
+    self.window_close_pending = false;
+}
+
+pub fn confirmWindowClose(self: *App) void {
+    self.window_close_pending = false;
+    self.window_close_approved = true;
+}
+
+pub fn windowClosePending(self: *const App) bool {
+    return self.window_close_pending;
+}
+
+pub fn takeWindowCloseApproved(self: *App) bool {
+    const approved = self.window_close_approved;
+    self.window_close_approved = false;
+    return approved;
 }
 
 pub fn sendTerminalBytes(self: *App, tab_id: u64, bytes: []const u8) void {
@@ -1146,6 +1218,48 @@ test "terminal predictive state is isolated per workspace slot" {
     app.removeTerminalPredictiveState(10, 1);
     try std.testing.expect(app.terminalPredictiveState(10, 1) == null);
     try std.testing.expect(app.terminalPredictiveState(10, 2) != null);
+}
+
+test "window close is immediate without blockers" {
+    var app = try App.initMemory(std.testing.allocator, testingDependencies());
+    defer app.deinit();
+
+    app.requestWindowClose();
+    try std.testing.expect(!app.windowClosePending());
+    try std.testing.expect(app.takeWindowCloseApproved());
+    try std.testing.expect(!app.takeWindowCloseApproved());
+}
+
+test "window close requires confirmation for dirty editors and transfers" {
+    var app = try App.initMemory(std.testing.allocator, testingDependencies());
+    defer app.deinit();
+
+    app.reportRemoteEditorDirty(42, true);
+    const title = try app.allocator.dupe(u8, "Upload file");
+    try app.transfers.append(app.allocator, .{
+        .id = 1,
+        .tab_id = 42,
+        .title = title,
+        .direction = .upload,
+        .status = .running,
+        .progress = 0.5,
+    });
+
+    const blockers = app.closeBlockers();
+    try std.testing.expectEqual(@as(usize, 1), blockers.dirty_editors);
+    try std.testing.expectEqual(@as(usize, 1), blockers.active_transfers);
+
+    app.requestWindowClose();
+    try std.testing.expect(app.windowClosePending());
+    try std.testing.expect(!app.takeWindowCloseApproved());
+
+    app.cancelWindowClose();
+    try std.testing.expect(!app.windowClosePending());
+
+    app.requestWindowClose();
+    app.confirmWindowClose();
+    try std.testing.expect(app.takeWindowCloseApproved());
+    try std.testing.expect(!app.takeWindowCloseApproved());
 }
 
 fn testingDependencies() Dependencies {

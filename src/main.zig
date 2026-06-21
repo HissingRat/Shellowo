@@ -90,6 +90,15 @@ pub fn shellowoEndFileDrag() void {
     }
 }
 
+pub fn shellowoRequestWindowClose() void {
+    if (app_state) |*app| app.requestWindowClose();
+}
+
+pub fn shellowoTakeWindowCloseApproved() bool {
+    if (app_state) |*app| return app.takeWindowCloseApproved();
+    return true;
+}
+
 pub fn shellowoInitialWindowSize() ?dvui.Size {
     if (app_state) |*app| {
         return .{

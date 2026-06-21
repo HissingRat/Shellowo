@@ -1,4 +1,42 @@
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
+
+typedef void (*ShellowoCloseCallback)(void);
+
+static ShellowoCloseCallback shellowo_close_callback = NULL;
+
+@interface ShellowoCloseButtonTarget : NSObject
+- (void)requestClose:(id)sender;
+@end
+
+@implementation ShellowoCloseButtonTarget
+- (void)requestClose:(id)sender {
+  (void)sender;
+  if (shellowo_close_callback != NULL) {
+    shellowo_close_callback();
+  }
+}
+@end
+
+static char shellowo_close_button_target_key;
+
+static void shellowo_configure_close_button(NSWindow *window,
+                                             NSButton *close_button) {
+  if (close_button == nil) {
+    return;
+  }
+
+  ShellowoCloseButtonTarget *target =
+      objc_getAssociatedObject(window, &shellowo_close_button_target_key);
+  if (target == nil) {
+    target = [[ShellowoCloseButtonTarget alloc] init];
+    objc_setAssociatedObject(window, &shellowo_close_button_target_key, target,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+
+  close_button.target = target;
+  close_button.action = @selector(requestClose:);
+}
 
 static void shellowo_move_window_button(NSButton *button,
                                         CGFloat horizontal_offset,
@@ -51,6 +89,7 @@ static void shellowo_configure_titlebar(NSWindow *window) {
   close_button.hidden = NO;
   minimize_button.hidden = NO;
   zoom_button.hidden = NO;
+  shellowo_configure_close_button(window, close_button);
 }
 
 void shellowo_macos_configure_titlebar(void *window_pointer) {
@@ -60,6 +99,10 @@ void shellowo_macos_configure_titlebar(void *window_pointer) {
   }
 
   shellowo_configure_titlebar(window);
+}
+
+void shellowo_macos_set_close_callback(ShellowoCloseCallback callback) {
+  shellowo_close_callback = callback;
 }
 
 void shellowo_macos_position_traffic_lights(void *window_pointer,

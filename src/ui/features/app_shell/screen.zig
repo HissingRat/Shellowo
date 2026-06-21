@@ -39,6 +39,8 @@ const TopBarState = struct {
     settings_open: bool = false,
     settings_opened_frame: u64 = 0,
     settings_button_rect: dvui.Rect.Physical = .{},
+    tab_scroll: dvui.ScrollInfo = .{ .vertical = .none, .horizontal = .auto },
+    last_active_tab_id: ?u64 = null,
     master_password_popup: master_password_popup.Mode = .none,
     master_switch_animating: bool = false,
     master_switch_from_enabled: bool = false,
@@ -51,6 +53,16 @@ const TopBarState = struct {
 };
 
 const theme_switch_anim_ns: i128 = 180 * std.time.ns_per_ms;
+const connection_tab_font_size: f32 = 9.5;
+const connection_tab_horizontal_padding: f32 = 6;
+const connection_tab_status_size: f32 = 6;
+const connection_tab_status_gap: f32 = 7;
+const connection_tab_close_gap: f32 = 8;
+const connection_tab_close_size: f32 = 13;
+const connection_tab_max_title_width: f32 = 148;
+const connection_tab_margin_width: f32 = 4;
+const connection_tabs_drag_reserve: f32 = 28;
+const connection_tabs_overflow_width: f32 = 24;
 
 fn renderPng(bytes: []const u8, name: []const u8, rs: dvui.RectScale, color: dvui.Color) void {
     theme.renderPng(bytes, name, rs, color);
@@ -103,6 +115,7 @@ pub fn frame(app: *App) !dvui.App.Result {
 
     topBar(app, palette);
     mainArea(app, palette);
+    windowClosePrompt(app, palette);
 
     return .ok;
 }
@@ -137,7 +150,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
         .gravity_y = 0.5,
         .min_size_content = .height(button_height),
         .padding = .all(0),
-        .margin = .{ .y = 2.5, .w = 7 },
+        .margin = .{ .y = 2, .w = 7 },
         .id_extra = 1,
     }, palette, .{
         .font_size = 10,
@@ -149,17 +162,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
         workspaceTabSeparator(palette);
     }
 
-    for (app.sessions.tabs.items) |tab| {
-        const active = app.sessions.active_tab_id == tab.id;
-        switch (connectionTab(tab, active, button_height - 5, close_size - 5, palette)) {
-            .none => {},
-            .activate => app.sessions.activate(tab.id),
-            .close => {
-                app.closeTab(tab.id);
-                break;
-            },
-        }
-    }
+    connectionTabs(app, state, button_height - 5, close_size - 5, palette);
 
     titlebarDragRegion(bar_height);
 
@@ -190,6 +193,125 @@ fn topBar(app: *App, palette: theme.Palette) void {
         windowCaptionButtons(bar_height, palette);
     } else {
         spacer(@src(), 6, 92);
+    }
+}
+
+fn connectionTabs(app: *App, state: *TopBarState, height: f32, close_size: f32, palette: theme.Palette) void {
+    const tabs = app.sessions.tabs.items;
+    if (tabs.len == 0) {
+        state.last_active_tab_id = null;
+        state.tab_scroll.scrollToOffset(.horizontal, 0);
+        return;
+    }
+
+    var content_width: f32 = 0;
+    for (tabs) |tab| content_width += connectionTabWidth(tab.title, close_size) + connection_tab_margin_width;
+
+    var position_probe = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = 0, .h = height },
+        .max_size_content = .{ .w = 0, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .role = .none,
+        .tab_index = 0,
+        .id_extra = 105,
+    });
+    const tabs_start_x = position_probe.data().rect.x;
+    position_probe.deinit();
+
+    const trailing_controls_width: f32 = if (window_chrome.drawsWindowControls()) 159 else 27;
+    const available_width = @max(
+        @as(f32, 96),
+        dvui.windowRect().w - tabs_start_x - trailing_controls_width - connection_tabs_drag_reserve,
+    );
+    const overflowing = content_width > available_width;
+    const viewport_width = @min(
+        content_width,
+        available_width - (if (overflowing) connection_tabs_overflow_width else 0),
+    );
+    const active_changed = state.last_active_tab_id != app.sessions.active_tab_id;
+
+    var scroll = dvui.scrollArea(@src(), .{
+        .scroll_info = &state.tab_scroll,
+        .vertical = .none,
+        .vertical_bar = .hide,
+        .horizontal_bar = .hide,
+    }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = viewport_width, .h = height },
+        .max_size_content = .{ .w = viewport_width, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .background = false,
+        .color_fill = dvui.Color.transparent,
+        .color_border = dvui.Color.transparent,
+        .corner_radius = .all(0),
+        .id_extra = 103,
+    });
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .min_size_content = .{ .w = content_width, .h = height },
+        .max_size_content = .height(height),
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = 104,
+    });
+
+    for (tabs) |tab| {
+        const active = app.sessions.active_tab_id == tab.id;
+        switch (connectionTab(tab, active, active and active_changed, height, close_size, palette)) {
+            .none => {},
+            .activate => app.sessions.activate(tab.id),
+            .close => {
+                app.closeTab(tab.id);
+                break;
+            },
+        }
+    }
+
+    row.deinit();
+    horizontalWheelScroll(scroll, &state.tab_scroll);
+    scroll.deinit();
+
+    if (overflowing) {
+        tabOverflowIndicator(state, height, palette);
+    }
+    state.last_active_tab_id = app.sessions.active_tab_id;
+}
+
+fn tabOverflowIndicator(state: *TopBarState, height: f32, palette: theme.Palette) void {
+    const can_scroll_right = state.tab_scroll.offsetFromMax(.horizontal) > 0.5;
+    if (theme.textButton(@src(), ">>", .{
+        .gravity_y = 0.6,
+        .min_size_content = .{ .w = connection_tabs_overflow_width, .h = height },
+        .max_size_content = .{ .w = connection_tabs_overflow_width, .h = height },
+        .padding = .all(0),
+        .margin = .all(0),
+        .color_text = if (can_scroll_right) palette.muted_text else palette.text_subtle.opacity(0.45),
+        .id_extra = 106,
+    }, palette, .{
+        .font_size = 8.5,
+    }) and can_scroll_right) {
+        state.tab_scroll.scrollByOffset(.horizontal, @max(@as(f32, 120), state.tab_scroll.viewport.w * 0.72));
+        dvui.refresh(null, @src(), dvui.parentGet().data().id);
+    }
+}
+
+fn horizontalWheelScroll(scroll: *dvui.ScrollAreaWidget, info: *dvui.ScrollInfo) void {
+    if (info.scrollMax(.horizontal) <= 0) return;
+    const rect = scroll.data().borderRectScale().r;
+    for (dvui.events()) |*event| {
+        if (event.handled or event.evt != .mouse) continue;
+        const mouse = event.evt.mouse;
+        if (!rect.contains(mouse.p)) continue;
+        switch (mouse.action) {
+            .wheel_y => |ticks| {
+                info.scrollByOffset(.horizontal, -ticks);
+                event.handle(@src(), scroll.data());
+                dvui.refresh(null, @src(), scroll.data().id);
+            },
+            else => {},
+        }
     }
 }
 
@@ -776,15 +898,9 @@ fn foldedPathForWidth(path: []const u8, buf: []u8, width: f32, font: dvui.Font) 
     return std.fmt.bufPrint(buf, ".../{s}", .{tail[tail.len - min_tail_len ..]}) catch path;
 }
 
-fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_size: f32, palette: theme.Palette) TabAction {
-    const tab_font_size: f32 = 9.5;
-    const horizontal_padding: f32 = 6;
-    const status_size: f32 = 6;
-    const status_gap: f32 = 7;
-    const close_gap: f32 = 8;
-    const max_title_width: f32 = 148;
-    const title_width = @min(tabTitleWidth(tab.title, tab_font_size), max_title_width);
-    const tab_width = horizontal_padding * 2 + status_size + status_gap + title_width + close_gap + close_size;
+fn connectionTab(tab: workspace.WorkspaceTab, active: bool, ensure_visible: bool, height: f32, close_size: f32, palette: theme.Palette) TabAction {
+    const title_width = @min(tabTitleWidth(tab.title, connection_tab_font_size), connection_tab_max_title_width);
+    const tab_width = connectionTabWidth(tab.title, close_size);
 
     var button: theme.ButtonWidget = undefined;
     button.init(@src(), .{
@@ -797,7 +913,7 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
         .id_extra = tab.id,
     }, palette, .{
         .variant = .ghost,
-        .font_size = tab_font_size,
+        .font_size = connection_tab_font_size,
     }, .{
         .interactive = false,
         .override = .{
@@ -812,6 +928,7 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
     defer button.deinit();
 
     const rs = button.data().contentRectScale();
+    if (ensure_visible) dvui.scrollTo(.{ .screen_rect = rs.r });
     const hovered = button.hovered();
     if (active) {
         rs.r.fill(
@@ -827,9 +944,9 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
         underline.fill(.all(1 * rs.s), .{ .color = palette.accent.opacity(0.78), .fade = 1 });
     }
 
-    const status_diameter = status_size * rs.s;
+    const status_diameter = connection_tab_status_size * rs.s;
     const status_rect: dvui.Rect.Physical = .{
-        .x = rs.r.x + horizontal_padding * rs.s,
+        .x = rs.r.x + connection_tab_horizontal_padding * rs.s,
         .y = rs.r.y + @round((rs.r.h - status_diameter) / 2),
         .w = status_diameter,
         .h = status_diameter,
@@ -839,9 +956,9 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
         .{ .color = tabStatusColor(tab.status, palette), .fade = 1 },
     );
 
-    const title_font = theme.textFont(tab.title, tab_font_size);
+    const title_font = theme.textFont(tab.title, connection_tab_font_size);
     const title_rect: dvui.Rect.Physical = .{
-        .x = status_rect.x + status_rect.w + status_gap * rs.s,
+        .x = status_rect.x + status_rect.w + connection_tab_status_gap * rs.s,
         .y = rs.r.y,
         .w = title_width * rs.s,
         .h = rs.r.h,
@@ -861,7 +978,7 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
     dvui.clipSet(old_clip);
 
     const close_rect: dvui.Rect.Physical = .{
-        .x = rs.r.x + rs.r.w - (horizontal_padding + close_size) * rs.s,
+        .x = rs.r.x + rs.r.w - (connection_tab_horizontal_padding + close_size) * rs.s,
         .y = rs.r.y + @round((rs.r.h - close_size * rs.s) / 2),
         .w = close_size * rs.s,
         .h = close_size * rs.s,
@@ -889,6 +1006,16 @@ fn connectionTab(tab: workspace.WorkspaceTab, active: bool, height: f32, close_s
     }
 
     return .none;
+}
+
+fn connectionTabWidth(title: []const u8, close_size: f32) f32 {
+    const title_width = @min(tabTitleWidth(title, connection_tab_font_size), connection_tab_max_title_width);
+    return connection_tab_horizontal_padding * 2 +
+        connection_tab_status_size +
+        connection_tab_status_gap +
+        title_width +
+        connection_tab_close_gap +
+        close_size;
 }
 
 fn tabTitleWidth(title: []const u8, font_size: f32) f32 {
@@ -933,6 +1060,191 @@ fn mainArea(app: *App, palette: theme.Palette) void {
         config_panel.show(app, palette);
     }
     hostKeyPrompt(app, palette);
+}
+
+fn windowClosePrompt(app: *App, palette: theme.Palette) void {
+    if (!app.windowClosePending()) return;
+
+    const blockers = app.closeBlockers();
+    const window_rect = dvui.windowRect();
+    const blocker_count: usize =
+        @intFromBool(blockers.active_sessions > 0) +
+        @intFromBool(blockers.active_transfers > 0) +
+        @intFromBool(blockers.dirty_editors > 0);
+    const popup_w: f32 = 290;
+    const popup_h: f32 = 100 + @as(f32, @floatFromInt(blocker_count)) * 21;
+    const rect: dvui.Rect.Natural = .{
+        .x = @max(12, @round((window_rect.w - popup_w) / 2)),
+        .y = @max(window_chrome.titlebar_height + 12, @round((window_rect.h - popup_h) / 2)),
+        .w = @min(popup_w, window_rect.w - 24),
+        .h = popup_h,
+    };
+
+    var backdrop: dvui.FloatingWidget = undefined;
+    backdrop.init(@src(), .{}, .{
+        .rect = .cast(window_rect),
+        .min_size_content = .{ .w = window_rect.w, .h = window_rect.h },
+        .max_size_content = .{ .w = window_rect.w, .h = window_rect.h },
+        .background = true,
+        .color_fill = palette.app_bg.opacity(0.72),
+        .padding = .all(0),
+        .margin = .all(0),
+        .border = .all(0),
+        .role = .none,
+        .tab_index = 0,
+        .id_extra = 929_999,
+    });
+    backdrop.deinit();
+
+    var panel: dvui.FloatingWidget = undefined;
+    panel.init(@src(), .{}, theme.popup(.{
+        .rect = .cast(rect),
+        .min_size_content = .{ .w = rect.w, .h = rect.h },
+        .max_size_content = .{ .w = rect.w, .h = rect.h },
+        .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
+        .border = .all(1),
+        .corner_radius = .all(7),
+        .id_extra = 930_000,
+    }, palette));
+    defer panel.deinit();
+    dvui.focusSubwindow(panel.data().id, null);
+    handleWindowClosePromptKeys(app, panel.data());
+
+    var content = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = 930_001,
+    });
+    defer content.deinit();
+
+    var heading = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .height(24),
+        .max_size_content = .height(24),
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = 930_002,
+    });
+
+    var warning_mark = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = 20, .h = 20 },
+        .max_size_content = .{ .w = 20, .h = 20 },
+        .gravity_y = 0.5,
+        .background = true,
+        .color_fill = palette.danger.opacity(0.14),
+        .corner_radius = .all(5),
+        .padding = .all(0),
+        .margin = .{ .w = 9 },
+        .id_extra = 930_003,
+    });
+    dvui.label(@src(), "!", .{}, .{
+        .expand = .both,
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+        .font = theme.textFont("!", 10),
+        .color_text = palette.danger,
+        .padding = .{ .x = 6, .y = 2.5 },
+        .margin = .all(0),
+        .id_extra = 930_004,
+    });
+    warning_mark.deinit();
+
+    dvui.label(@src(), "Quit Shellowo?", .{}, .{
+        .gravity_y = 0.5,
+        .font = theme.textFont("Quit Shellowo?", 12),
+        .color_text = palette.text,
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = 930_005,
+    });
+    heading.deinit();
+
+    dvui.label(@src(), "Active work will be interrupted.", .{}, .{
+        .font = theme.textFont("Active work will be interrupted.", 9),
+        .color_text = palette.muted_text,
+        .margin = .{ .y = 7, .h = 8 },
+        .padding = .all(0),
+        .id_extra = 930_006,
+    });
+
+    var actions = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .gravity_x = 0,
+        .margin = .{ .y = 10 },
+        .id_extra = 930_050,
+    });
+    defer actions.deinit();
+
+    if (theme.button(@src(), "Cancel", .{
+        .min_size_content = .{ .w = 56, .h = 18 },
+        .max_size_content = .height(22),
+        .margin = .{ .x = 3 },
+        .id_extra = 930_051,
+    }, palette, .{ .variant = .ghost, .font_size = 9.5 })) {
+        app.cancelWindowClose();
+    }
+    if (theme.button(@src(), "Quit", .{
+        .min_size_content = .{ .w = 56, .h = 18 },
+        .max_size_content = .height(22),
+        .margin = .{ .x = 3 },
+        .id_extra = 930_052,
+    }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 9.5 })) {
+        app.confirmWindowClose();
+    }
+}
+
+fn closeBlockerRow(label: []const u8, count: usize, palette: theme.Palette, id_extra: usize) void {
+    if (count == 0) return;
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .height(21),
+        .max_size_content = .height(21),
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = id_extra,
+    });
+    defer row.deinit();
+
+    dvui.label(@src(), "•", .{}, .{
+        .min_size_content = .width(14),
+        .max_size_content = .width(14),
+        .gravity_y = 0.5,
+        .font = theme.textFont("•", 9),
+        .color_text = palette.warning,
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = id_extra + 1,
+    });
+    dvui.label(@src(), "{s}", .{label}, .{
+        .gravity_y = 0.5,
+        .font = theme.textFont(label, 9.5),
+        .color_text = palette.muted_text,
+        .expand = .horizontal,
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = id_extra + 2,
+    });
+    dvui.label(@src(), "{d}", .{count}, .{
+        .gravity_y = 0.5,
+        .font = theme.textFont("0", 9.5),
+        .color_text = palette.text,
+        .padding = .all(0),
+        .margin = .all(0),
+        .id_extra = id_extra + 3,
+    });
+}
+
+fn handleWindowClosePromptKeys(app: *App, data: *dvui.WidgetData) void {
+    for (dvui.events()) |*event| {
+        if (event.handled or event.evt != .key) continue;
+        const key = event.evt.key;
+        if (key.action != .down or key.code != .escape) continue;
+        app.cancelWindowClose();
+        event.handle(@src(), data);
+        dvui.refresh(null, @src(), data.id);
+        return;
+    }
 }
 
 fn hostKeyPrompt(app: *App, palette: theme.Palette) void {

@@ -27,6 +27,7 @@ const file_icon_bytes = @embedFile("shellowo-file-icon");
 
 pub const Options = struct {
     app: *App,
+    tab_id: u64,
     snapshot: remote_file.FilePanelSnapshot,
     height: ?f32,
     local_width: *f32,
@@ -86,6 +87,7 @@ pub fn show(palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent 
 
     filePane(.tree, palette, .{
         .app = opts.app,
+        .tab_id = opts.tab_id,
         .tree = opts.snapshot.tree,
         .snapshot = .{ .location = .sftp },
         .editor = opts.snapshot.editor,
@@ -102,6 +104,7 @@ pub fn show(palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent 
     });
     filePane(.remote, palette, .{
         .app = opts.app,
+        .tab_id = opts.tab_id,
         .snapshot = opts.snapshot.remote,
         .editor = opts.snapshot.editor,
         .width = null,
@@ -261,6 +264,7 @@ fn drawPathTextEntry(te: *dvui.TextEntryWidget) void {
 
 const PaneOptions = struct {
     app: *App,
+    tab_id: u64,
     tree: remote_file.FileTreeSnapshot = .{},
     snapshot: remote_file.FilePaneSnapshot,
     editor: remote_file.FileEditorSnapshot = .{},
@@ -320,6 +324,7 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     if (remote_editor.show(&layout.editor, opts.editor, palette, opts.id_extra + 5600)) |editor_intent| {
         intent.* = editor_intent;
     }
+    opts.app.reportRemoteEditorDirty(opts.tab_id, opts.editor.isOpen() and layout.editor.dirty);
     switch (transfer_confirm.show(&layout.transfer_confirm, palette, opts.id_extra + 5800)) {
         .none => {},
         .cancel => layout.transfer_confirm.clear(),

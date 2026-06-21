@@ -102,6 +102,7 @@ fn terminalFileWorkspace(app: *App, tab: workspace.WorkspaceTab, palette: theme.
     var remote_entries: [max_file_panel_rows]remote_file.RemoteFileEntry = undefined;
     if (file_panel.show(palette, .{
         .app = app,
+        .tab_id = tab.id,
         .snapshot = app.filePanelSnapshot(tab.id, &tree_entries, &remote_entries),
         .height = layout.file_panel_height,
         .local_width = &layout.local_file_width,

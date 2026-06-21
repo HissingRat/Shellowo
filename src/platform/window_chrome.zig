@@ -28,6 +28,7 @@ pub const Controller = struct {
                 const properties = c.SDL_GetWindowProperties(self.window);
                 const ns_window = c.SDL_GetPointerProperty(properties, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
                 if (ns_window == null) return error.MissingCocoaWindow;
+                shellowo_macos_set_close_callback(shellowo_macos_request_close);
                 shellowo_macos_configure_titlebar(ns_window);
             },
             .windows => {
@@ -43,6 +44,7 @@ pub const Controller = struct {
 
     pub fn deactivate(self: *Controller) void {
         if (active_controller == self) active_controller = null;
+        if (builtin.os.tag == .macos) shellowo_macos_set_close_callback(null);
         _ = c.SDL_SetWindowHitTest(self.window, null, null);
     }
 
@@ -57,19 +59,36 @@ pub const Controller = struct {
         );
     }
 
-    pub fn handleEvent(self: *Controller, event: *const c.SDL_Event) void {
-        if (builtin.os.tag != .macos) return;
-        const event_window = c.SDL_GetWindowFromEvent(event) orelse return;
-        if (event_window != self.window) return;
-        if (!isMacosChromeResetEvent(event.type)) return;
+    pub fn handleEvent(self: *Controller, event: *const c.SDL_Event) bool {
+        if (builtin.os.tag == .windows and event.type == c.SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            const mouse = event.button;
+            const x: f32 = mouse.x;
+            const y: f32 = mouse.y;
+            if (pointInDragRect(self.drag_rect, x, y)) {
+                if (mouse.button == c.SDL_BUTTON_RIGHT) {
+                    _ = c.SDL_ShowWindowSystemMenu(self.window, @intFromFloat(x), @intFromFloat(y));
+                    return true;
+                }
+                if (mouse.button == c.SDL_BUTTON_LEFT and mouse.clicks >= 2) {
+                    perform(.toggle_maximize);
+                    return true;
+                }
+            }
+        }
+
+        if (builtin.os.tag != .macos) return false;
+        const event_window = c.SDL_GetWindowFromEvent(event) orelse return false;
+        if (event_window != self.window) return false;
+        if (!isMacosChromeResetEvent(event.type)) return false;
 
         const ns_window = cocoaWindow(self.window);
-        if (ns_window == null) return;
+        if (ns_window == null) return false;
         shellowo_macos_refresh_titlebar(
             ns_window,
             macos_traffic_light_horizontal_offset,
             macos_traffic_light_vertical_offset,
         );
+        return false;
     }
 
     pub fn takeCloseRequested(self: *Controller) bool {
@@ -80,6 +99,11 @@ pub const Controller = struct {
 };
 
 var active_controller: ?*Controller = null;
+
+fn shellowo_macos_request_close() callconv(.c) void {
+    const controller = active_controller orelse return;
+    controller.close_requested = true;
+}
 
 pub fn integratedTitlebar() bool {
     return switch (builtin.os.tag) {
@@ -190,6 +214,10 @@ fn isMaximizedWindow(window: *c.SDL_Window) bool {
     return (c.SDL_GetWindowFlags(window) & c.SDL_WINDOW_MAXIMIZED) != 0;
 }
 
+fn pointInDragRect(rect: dvui.Rect.Natural, x: f32, y: f32) bool {
+    return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h;
+}
+
 fn cocoaWindow(window: *c.SDL_Window) ?*anyopaque {
     const properties = c.SDL_GetWindowProperties(window);
     return c.SDL_GetPointerProperty(properties, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
@@ -203,6 +231,7 @@ fn isMacosChromeResetEvent(event_type: u32) bool {
 }
 
 extern fn shellowo_macos_configure_titlebar(ns_window: ?*anyopaque) void;
+extern fn shellowo_macos_set_close_callback(callback: ?*const fn () callconv(.c) void) void;
 extern fn shellowo_macos_position_traffic_lights(
     ns_window: ?*anyopaque,
     horizontal_offset: f64,

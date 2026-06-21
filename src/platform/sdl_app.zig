@@ -72,6 +72,9 @@ pub fn main(main_init: std.process.Init) !u8 {
         const end_micros = try win.end(.{});
         if (res != .ok) break :main_loop;
         if (chrome.takeCloseRequested()) {
+            rootRequestWindowClose();
+        }
+        if (rootTakeWindowCloseApproved()) {
             window_open = false;
             break :main_loop;
         }
@@ -112,7 +115,18 @@ test "mac app executable path detection" {
 fn pumpEvents(back: *sdl.SDLBackend, win: *dvui.Window, chrome: *window_chrome.Controller) !void {
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event)) {
-        chrome.handleEvent(&event);
+        if (event.type == c.SDL_EVENT_QUIT) {
+            rootRequestWindowClose();
+            continue;
+        }
+        if (event.type == c.SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+            const target_window = c.SDL_GetWindowFromEvent(&event);
+            if (target_window == back.window) {
+                rootRequestWindowClose();
+                continue;
+            }
+        }
+        if (chrome.handleEvent(&event)) continue;
         if (event.type == c.SDL_EVENT_USER) continue;
         if (event.type == c.SDL_EVENT_DROP_BEGIN) {
             rootBeginFileDrag();
@@ -200,6 +214,21 @@ fn rootEndFileDrag() void {
     if (@hasDecl(root, "shellowoEndFileDrag")) {
         root.shellowoEndFileDrag();
     }
+}
+
+fn rootRequestWindowClose() void {
+    const root = @import("root");
+    if (@hasDecl(root, "shellowoRequestWindowClose")) {
+        root.shellowoRequestWindowClose();
+    }
+}
+
+fn rootTakeWindowCloseApproved() bool {
+    const root = @import("root");
+    if (@hasDecl(root, "shellowoTakeWindowCloseApproved")) {
+        return root.shellowoTakeWindowCloseApproved();
+    }
+    return true;
 }
 
 fn applyConfiguredWindowSize(back: *sdl.SDLBackend) void {
