@@ -20,6 +20,11 @@ case "$arch" in
     *) zig_arch="$arch" ;;
 esac
 binary_name="Shellowo-macos-${zig_arch}"
+sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+system_include_path="$sdk_path/usr/include"
+system_framework_path="$sdk_path/System/Library/Frameworks"
+library_path="$sdk_path/usr/lib"
+zig_target="${zig_arch}-macos.${min_macos}"
 
 bundle_version="${version#v}"
 bundle_version="$(printf '%s' "$bundle_version" | sed -E 's/[^0-9.].*$//; s/^\.*//; s/\.*$//')"
@@ -41,7 +46,13 @@ resources_dir="$contents_dir/Resources"
 rm -rf "$work_dir"
 mkdir -p "$install_dir" "$macos_dir" "$resources_dir" "$dist_dir"
 
-zig build -Doptimize=ReleaseFast --prefix "$install_dir"
+zig build \
+    -Dtarget="$zig_target" \
+    -Doptimize=ReleaseFast \
+    -Dsystem_include_path="$system_include_path" \
+    -Dsystem_framework_path="$system_framework_path" \
+    -Dlibrary_path="$library_path" \
+    --prefix "$install_dir"
 install -m 0755 "$install_dir/bin/$binary_name" "$macos_dir/Shellowo"
 
 sed \
@@ -62,6 +73,12 @@ fi
 
 plutil -lint "$contents_dir/Info.plist"
 codesign --verify --deep --strict "$app_dir"
+
+binary_minos="$(vtool -show-build "$macos_dir/Shellowo" | awk '/minos/{print $2; exit}')"
+if [[ "$binary_minos" != "$min_macos" ]]; then
+    echo "Mach-O minimum macOS version mismatch: expected $min_macos, got ${binary_minos:-unknown}" >&2
+    exit 1
+fi
 
 archive_name="Shellowo-${version}-macos-${arch}.zip"
 rm -f "$dist_dir/$archive_name"

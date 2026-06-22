@@ -5,6 +5,9 @@ pub fn build(b: *std.Build) void {
     const target = desktopTarget(b, requested_target);
     const optimize = b.standardOptimizeOption(.{});
     const stack_size = b.option(u64, "stack-size", "Executable stack size in bytes") orelse 16 * 1024 * 1024;
+    const system_include_path = b.option(std.Build.LazyPath, "system_include_path", "System header search path for cross-compiling");
+    const system_framework_path = b.option(std.Build.LazyPath, "system_framework_path", "System framework search path for cross-compiling");
+    const library_path = b.option(std.Build.LazyPath, "library_path", "System library search path for cross-compiling");
     const native_deps = addNativeDeps(b, target, optimize);
     const executable_name = platformExecutableName(b, target);
 
@@ -17,6 +20,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.stack_size = stack_size;
+    if (system_include_path) |path| exe.root_module.addSystemIncludePath(path);
+    if (system_framework_path) |path| exe.root_module.addSystemFrameworkPath(path);
+    if (library_path) |path| exe.root_module.addLibraryPath(path);
     if (target.result.os.tag == .windows) {
         exe.subsystem = .windows;
     }
@@ -31,6 +37,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .backend = .sdl3,
+        .system_include_path = system_include_path,
+        .system_framework_path = system_framework_path,
+        .library_path = library_path,
     });
     exe.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     exe.root_module.addAnonymousImport("shellowo-zed-font", .{

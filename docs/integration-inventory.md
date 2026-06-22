@@ -140,6 +140,7 @@
 当前实现：
 
 - `scripts/package-macos-app.sh` 在 macOS 原生环境构建 `Shellowo.app`，生成 `Info.plist`、`.icns` 图标并输出 zip。
+- macOS 打包通过显式 Zig target 和 Xcode SDK include/framework/library 路径设置 deployment target；脚本会校验最终 Mach-O `minos` 与 `Info.plist` 目标一致。
 - `zig build` 的主程序产物统一包含平台和架构，例如
   `Shellowo-macos-aarch64`、`Shellowo-windows-x86_64.exe` 和
   `Shellowo-linux-x86_64`。

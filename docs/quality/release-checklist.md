@@ -10,6 +10,7 @@ Shellowo 的发布包由 `.github/workflows/release.yml` 在单个 macOS runner 
 - Windows 产物为带资源图标的单文件 `.exe`。
 - Linux 产物为单文件 ELF executable。
 - macOS artifact 和 GitHub Release 均上传保持 bundle 结构的 `.app.zip`，解压后是带 `Info.plist` 和 `.icns` 图标的原始 `.app`。
+- macOS 打包脚本将 `MACOSX_DEPLOYMENT_TARGET` 同时传给 Zig target 和 `Info.plist`，并使用 `vtool` 校验 Mach-O `minos`；两者不得只改其一。
 - Actions 页面分别提供 Windows、Linux 和 macOS 三个直接下载的 artifact，不再把三种产物包进一个额外的 artifact zip。
 - macOS 未配置 `SIGNING_IDENTITY` 时使用 ad-hoc 签名；这不等同于 Developer ID 签名或 Apple notarization。
 - macOS `.app` 的配置、profile 和 known-hosts 数据写入 `~/Library/Application Support/Shellowo/`，不得写入只读的 app bundle。
