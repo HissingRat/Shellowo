@@ -31,6 +31,9 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - 远程文件编辑器：加载、查找/替换、UTF-8/BOM/ASCII 与换行识别、远端冲突检查、临时文件原子替换和未保存关闭确认
 - 系统信息面板雏形与进程/网络快照
 - 设置与主题系统基础：`owoConfig.json`、Light/Dark、窗口/布局尺寸和下载路径持久化
+- SDL3_ttf + FreeType + HarfBuzz shaped-text backend；DVUI 测量、绘制、
+  TextLayout hit testing、caret/selection 与 TextEntry cluster 边界共享同一
+  layout source，Zed Mono + Noto CJK fallback chain 已接入
 - 三平台 CI 构建、nightly/tag Release、macOS `.app` 基础打包
 
 尚未具备：
@@ -141,6 +144,8 @@ Shellow/
     backends/
       ssh/
         libssh2.zig
+      text/
+        sdl_ttf.zig
       terminal/
         libvterm.zig
         libvterm_shim.c
@@ -161,6 +166,7 @@ Shellow/
       transfers/
         progress_store.zig
     ui/
+      fonts.zig
       foundation/
       widgets/
       layouts/

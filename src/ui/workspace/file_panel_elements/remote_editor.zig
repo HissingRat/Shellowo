@@ -865,6 +865,9 @@ fn visualYOfOffset(te: *dvui.TextEntryWidget, offset: usize) f32 {
     const font = te.textLayout.data().options.fontGet();
     const line_h = editorLineHeight(te);
     const content_w = @max(te.textLayout.data().contentRect().w, font.sizeM(1, 1).w);
+    if (dvui.currentWindow().text_engine) |engine| {
+        return engine.caretPoint(font, te.textGet(), @min(offset, te.len), content_w).y;
+    }
     const break_width = content_w + 0.001;
     const m_width = font.sizeM(1, 1).w;
 

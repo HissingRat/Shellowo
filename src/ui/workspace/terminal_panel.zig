@@ -484,7 +484,7 @@ fn renderTerminalSnapshotRow(snapshot: terminal.Snapshot, crs: dvui.RectScale, v
             continue;
         }
 
-        if (isSingleWidthAscii(cell)) {
+        if (isSingleWidthAscii(cell) and dvui.currentWindow().text_engine == null) {
             const run = asciiRun(snapshot, absolute_row, visible_row, col, cell.style, &run_buf);
             renderTerminalRun(run, crs, palette);
             col = run.end_col;

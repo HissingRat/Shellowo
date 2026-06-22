@@ -47,6 +47,7 @@ fn appInit(window: *dvui.Window) !void {
 }
 
 fn appDeinit() void {
+    ui_fonts.deinit();
     if (app_state) |*app| {
         app.deinit();
     }

@@ -1,12 +1,15 @@
 const std = @import("std");
 const dvui = @import("dvui");
 
+const sdl_ttf = @import("../backends/text/sdl_ttf.zig");
 const theme = @import("theme.zig");
 
 const zed_font_bytes = @embedFile("shellowo-zed-font");
 const zed_font_italic_bytes = @embedFile("shellowo-zed-italic-font");
 const zed_font_bold_bytes = @embedFile("shellowo-zed-bold-font");
 const cjk_font_bytes = @embedFile("shellowo-cjk-font");
+
+var system: ?sdl_ttf.System = null;
 
 pub fn loadEmbedded(window: *dvui.Window) void {
     var zed_loaded = true;
@@ -24,6 +27,19 @@ pub fn loadEmbedded(window: *dvui.Window) void {
     current_theme.font_title = current_theme.font_title.withFamily(primary_family).withWeight(.normal).withSize(theme.font_sizes.title);
     current_theme.font_mono = current_theme.font_mono.withFamily(primary_family).withSize(theme.font_sizes.body);
     window.themeSet(current_theme);
+
+    system = sdl_ttf.System.init(window.gpa, window.backend.impl.renderer, .{
+        .regular = zed_font_bytes,
+        .bold = zed_font_bold_bytes,
+        .italic = zed_font_italic_bytes,
+        .cjk = cjk_font_bytes,
+    }) catch return;
+    _ = dvui.textEngineSet(system.?.dvuiEngine());
+}
+
+pub fn deinit() void {
+    if (system) |*value| value.deinit();
+    system = null;
 }
 
 fn addFontSource(

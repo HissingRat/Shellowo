@@ -9,6 +9,11 @@
 | `dvui` | 原生 UI、窗口 app lifecycle、widgets | `build.zig`, `src/main.zig` | Shellow 主界面走 DVUI，不用 Electron/WebView 替代主 UI。 |
 | `dvui_sdl3` | SDL3 backend | `build.zig` | 通过 `b.dependency("dvui", .{ .backend = .sdl3 })` 导入。 |
 
+当前 DVUI 使用 `HissingRat/dvui` fork 的固定 commit。fork 基于原 Shellowo
+pin 的 DVUI commit，增加了可选 `TextEngine` 契约，使字体测量、绘制、
+TextLayout 命中和 TextEntry cluster 边界可以由同一 shaped-text backend
+提供。未安装 text engine 时仍保留 DVUI 原始字体路径。
+
 维护原则：
 
 - 新 UI 优先使用 DVUI widget 和布局能力。
@@ -36,7 +41,34 @@
   通过 `src/platform/macos_window_chrome.m` 调整 SDL 创建的原生
   `NSWindow`，保留系统交通灯和 fullscreen 行为；平台 handle 不进入产品 UI。
 
-## 3. SSH / SFTP
+## 3. Text Shaping: SDL3_ttf / FreeType / HarfBuzz
+
+当前实现：
+
+- SDL3_ttf 3.2.2 源码随 Shellowo 的 DVUI fork 固定，构建时启用 HarfBuzz。
+- SDL3_ttf 使用 DVUI 同一份 SDL3 3.4.4 renderer/backend。
+- FreeType 使用 DVUI 已有的固定依赖，HarfBuzz 源码随 fork 固定。
+- `src/backends/text/sdl_ttf.zig` 是 Shellowo-owned backend，负责
+  `TTF_TextEngine`、字体、fallback 和 shaped layout cache 生命周期。
+- Zed Mono Extended 的 regular/bold/italic 是主字体，Noto Sans CJK SC
+  通过 SDL3_ttf fallback chain 提供中文 glyph。
+- DVUI 的测量、绘制、鼠标命中、caret、selection 和 TextEntry
+  cluster movement 使用同一个 text engine。
+- terminal 继续由 libvterm cell grid 决定列宽、选择和 cursor；启用 shaped
+  backend 时终端 glyph 按 cell 绘制，避免 ligature 改变占用列数。
+
+维护原则：
+
+- Raw `TTF_Font`、`TTF_Text` 和 `TTF_TextEngine` 只允许出现在
+  `src/backends/text/`。
+- 不允许重新引入“绘制走 SDL3_ttf、测量走 DVUI”的双几何路径。
+- 新增字体 fallback 时必须保持主字体和 fallback 的 size/style 一致。
+- 更新 SDL3_ttf、FreeType、HarfBuzz 或 DVUI fork 后必须执行
+  `zig build test` 和 `zig build`，并复测编辑器、IME、terminal cell 对齐。
+- SDL3_ttf renderer text engine 是 window/renderer scoped；必须在 SDL
+  renderer 销毁之前释放。
+
+## 4. SSH / SFTP
 
 当前实现：
 
@@ -75,7 +107,7 @@
 | `third_party/libssh2-1.11.1` | vendored libssh2 1.11.1 source。 |
 | `third_party/mbedtls-3.6.6` | vendored mbedTLS 3.6.6 source for libssh2 crypto backend。 |
 
-## 4. Terminal Emulator
+## 5. Terminal Emulator
 
 当前实现：
 
@@ -109,7 +141,7 @@
 | `src/backends/terminal/libvterm_shim.c` | C shim，负责把 libvterm bitfield cell/color 数据转成 Zig 可直接消费的 plain struct。 |
 | `third_party/libvterm-0.3.3` | vendored libvterm 0.3.3 source。 |
 
-## 5. 本地存储
+## 6. 本地存储
 
 当前实现：
 
@@ -125,7 +157,7 @@
 - 平台安全存储
 - 无 Master Password 模式的发布级凭据策略
 
-## 6. 新依赖准入规则
+## 7. 新依赖准入规则
 
 新增或替换第三方项目时，至少补齐：
 
@@ -135,7 +167,7 @@
 4. 如果改变分层边界，同步更新 `docs/architecture.md` 或 `docs/decisions/`。
 5. 跑 `zig build`。
 
-## 7. 打包与发布
+## 8. 打包与发布
 
 当前实现：
 

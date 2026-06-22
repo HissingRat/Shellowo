@@ -15,8 +15,8 @@ pub const FontSizes = struct {
 pub const font_sizes: FontSizes = .{};
 
 pub fn textFont(text: []const u8, size: f32) dvui.Font {
-    const family = if (needsCjkFont(text)) cjk_font_family else zed_font_family;
-    return dvui.Font.theme(.body).withFamily(family).withSize(size);
+    _ = text;
+    return dvui.Font.theme(.body).withFamily(zed_font_family).withSize(size);
 }
 
 pub fn cjkFont(size: f32) dvui.Font {

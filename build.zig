@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .backend = .sdl3,
+        .sdl3_ttf = true,
         .system_include_path = system_include_path,
         .system_framework_path = system_framework_path,
         .library_path = library_path,
