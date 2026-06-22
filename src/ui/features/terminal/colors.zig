@@ -1,14 +1,14 @@
 const dvui = @import("dvui");
 const std = @import("std");
 const terminal = @import("../../../contracts/terminal_emulator.zig");
+const metrics = @import("metrics.zig");
 const theme = @import("../../theme.zig");
 
-const terminal_font_size: f32 = 10;
 const selection_background_mix: f32 = 0.42;
 const selection_background_darken: f32 = 0.72;
 
 pub fn font(text: []const u8, style: terminal.Style) dvui.Font {
-    var result = theme.textFont(text, terminal_font_size);
+    var result = theme.textFont(text, metrics.font_size);
     if (style.bold) result = result.withWeight(.bold);
     if (style.italic) result = result.withStyle(.italic);
     if (style.underline) result = result.withUnderline(.{});

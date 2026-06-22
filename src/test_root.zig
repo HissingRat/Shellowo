@@ -22,6 +22,7 @@ comptime {
     _ = @import("runtime/terminal/pty_slot.zig");
     _ = @import("runtime/monitor/ssh_monitor.zig");
     _ = @import("runtime/transfers/progress_store.zig");
+    _ = @import("runtime/transfers/scheduler.zig");
     _ = @import("backends/terminal/libvterm.zig");
     _ = @import("core/terminal/predictive.zig");
     _ = @import("contracts/terminal_emulator.zig");
@@ -45,5 +46,7 @@ comptime {
     _ = @import("ui/features/terminal/viewport_state.zig");
     _ = @import("ui/features/terminal/search.zig");
     _ = @import("ui/features/terminal/input_encoding.zig");
+    _ = @import("ui/features/terminal/metrics.zig");
+    _ = @import("backends/terminal/fixture_tests.zig");
     _ = @import("ui/features/files/panel_state.zig");
 }

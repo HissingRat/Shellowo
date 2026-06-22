@@ -25,7 +25,6 @@ const treePathIsDescendant = remote_paths.isDescendant;
 const fileEntryLessThan = entry_order.lessThan;
 const entriesContainParent = entry_order.containsParent;
 const directoryEntryExists = entry_order.directoryExists;
-
 pub const State = workspace_state.State;
 
 const max_file_entries = 256;
@@ -155,6 +154,7 @@ pub const SshWorkspaceWorker = struct {
     file_path: [max_file_path]u8 = undefined,
     file_path_len: usize = 1,
     file_entries: std.ArrayList(remote_file.RemoteFileEntry) = .empty,
+    retired_file_entries: std.ArrayList(remote_file.RemoteFileEntry) = .empty,
     file_tree_nodes: std.ArrayList(FileTreeNode) = .empty,
     file_dir_caches: std.ArrayList(FileDirectoryCache) = .empty,
     file_error: [max_file_error]u8 = undefined,
@@ -169,12 +169,19 @@ pub const SshWorkspaceWorker = struct {
     editor_progress_done: u64 = 0,
     editor_progress_total: ?u64 = null,
     editor_version: u64 = 0,
+    editor_encoding: remote_file.TextEncoding = .utf8,
+    editor_line_ending: remote_file.LineEnding = .none,
+    editor_large_file: bool = false,
+    editor_save_conflict: bool = false,
+    editor_raw_hash: u64 = 0,
+    editor_metadata: remote_file.RemoteFileMetadata = .{},
     file_selected_name: [max_file_selection]u8 = undefined,
     file_selected_name_len: usize = 0,
     file_tree_load_path: [max_file_path]u8 = undefined,
     file_tree_load_path_len: usize = 0,
     file_tree_load_requested: std.atomic.Value(bool) = .init(false),
     file_refresh_requested: std.atomic.Value(bool) = .init(true),
+    file_refreshing: bool = false,
     pending_file_intents: std.ArrayList(remote_file.FilePanelIntent) = .empty,
     transfer_progress: transfer_progress_store.Store = .{},
     last_error: ?ssh_session.Error = null,
@@ -213,6 +220,8 @@ pub const SshWorkspaceWorker = struct {
         self.lockFile();
         self.clearFileEntriesLocked();
         self.file_entries.deinit(self.allocator);
+        self.clearEntryListLocked(&self.retired_file_entries);
+        self.retired_file_entries.deinit(self.allocator);
         self.clearFileTreeLocked();
         self.file_tree_nodes.deinit(self.allocator);
         self.clearFileDirCachesLocked();
@@ -452,6 +461,10 @@ pub const SshWorkspaceWorker = struct {
             .progress_done = self.editor_progress_done,
             .progress_total = self.editor_progress_total,
             .version = self.editor_version,
+            .encoding = self.editor_encoding,
+            .line_ending = self.editor_line_ending,
+            .large_file = self.editor_large_file,
+            .save_conflict = self.editor_save_conflict,
         };
     }
 
@@ -762,22 +775,23 @@ pub const SshWorkspaceWorker = struct {
         self.pumpTreeLoad(sftp);
         if (!self.file_refresh_requested.swap(false, .acq_rel)) return;
 
-        const path = blk: {
-            self.lockFile();
-            defer self.unlockFile();
-            self.file_state = .loading;
-            break :blk self.allocator.dupe(u8, self.filePathLocked()) catch {
-                self.storeFileError("OutOfMemory");
-                return;
-            };
-        };
-        defer self.allocator.free(path);
-
-        const entries = sftp.list(self.allocator, path) catch |err| {
-            self.storeFileError(@errorName(err));
+        self.lockFile();
+        const show_loading = self.file_state != .ready;
+        const path = self.allocator.dupe(u8, self.filePathLocked()) catch null;
+        self.file_refreshing = path != null;
+        self.unlockFile();
+        const owned_path = path orelse {
+            self.finishFileRefreshFailure(show_loading, "OutOfMemory");
             return;
         };
-        self.storeFileEntries(entries);
+        defer self.allocator.free(owned_path);
+
+        const entries = sftp.list(self.allocator, owned_path) catch |err| {
+            self.finishFileRefreshFailure(show_loading, @errorName(err));
+            return;
+        };
+        std.mem.sort(remote_file.RemoteFileEntry, entries, {}, fileEntryLessThan);
+        self.storeFileEntries(owned_path, entries);
     }
 
     fn pumpTreeLoad(self: *SshWorkspaceWorker, sftp: ssh.Sftp) void {
@@ -845,9 +859,10 @@ pub const SshWorkspaceWorker = struct {
                     self.setFilePathLocked(target.path);
                     self.clearFileSelectionLocked();
                     if (!self.applyCachedFileEntriesLocked(target.path)) {
+                        self.file_state = .loading;
                         self.file_tree_load_requested.store(false, .release);
-                        self.file_refresh_requested.store(true, .release);
                     }
+                    self.file_refresh_requested.store(true, .release);
                 },
                 .go_parent => |pane| if (pane == .remote) {
                     self.lockFile();
@@ -856,19 +871,19 @@ pub const SshWorkspaceWorker = struct {
                     self.setFilePathLocked(parent);
                     self.clearFileSelectionLocked();
                     if (!self.applyCachedFileEntriesLocked(parent)) {
-                        self.file_refresh_requested.store(true, .release);
+                        self.file_state = .loading;
                     }
+                    self.file_refresh_requested.store(true, .release);
                 },
                 .go_path => |target| if (target.pane == .remote) {
-                    const entries = sftp.list(self.allocator, target.path) catch {
-                        self.storeFileNotice("Folder is unavailable");
-                        continue;
-                    };
                     self.lockFile();
                     self.setFilePathLocked(target.path);
                     self.clearFileSelectionLocked();
+                    if (!self.applyCachedFileEntriesLocked(target.path)) {
+                        self.file_state = .loading;
+                    }
                     self.unlockFile();
-                    self.storeFileEntries(entries);
+                    self.file_refresh_requested.store(true, .release);
                     self.queueTerminalCd(target.terminal_slot_id, target.path);
                 },
                 .open => |target| if (target.pane == .remote) {
@@ -883,8 +898,9 @@ pub const SshWorkspaceWorker = struct {
                         self.setFilePathLocked(path);
                         self.clearFileSelectionLocked();
                         if (!self.applyCachedFileEntriesLocked(path)) {
-                            self.file_refresh_requested.store(true, .release);
+                            self.file_state = .loading;
                         }
+                        self.file_refresh_requested.store(true, .release);
                     }
                 },
                 .create_file => |create_intent| if (create_intent.pane == .remote) {
@@ -903,7 +919,10 @@ pub const SshWorkspaceWorker = struct {
                     self.openRemoteEditor(sftp, edit.path, edit.name, edit.size);
                 },
                 .save_edit => |edit| if (edit.pane == .remote) {
-                    self.saveRemoteEditor(sftp, edit.path, edit.content);
+                    self.saveRemoteEditor(sftp, edit.path, edit.content, edit.force);
+                },
+                .reload_edit => |pane| if (pane == .remote) {
+                    self.reloadRemoteEditor(sftp);
                 },
                 .close_edit => |pane| if (pane == .remote) {
                     self.lockFile();
@@ -914,25 +933,25 @@ pub const SshWorkspaceWorker = struct {
                     self.deleteRemoteEntry(sftp, target.path, target.name, target.kind orelse .file);
                 },
                 .download => |transfer| {
-                    self.spawnDownloadIntent(intent) catch {
+                    self.spawnTransferIntent(intent) catch {
                         self.markTransferFinished(transfer.transfer_id, .failed);
                         self.storeFileNotice("Download failed");
                     };
                 },
                 .download_many => |transfer| {
-                    self.spawnDownloadIntent(intent) catch {
+                    self.spawnTransferIntent(intent) catch {
                         self.markTransferFinished(transfer.transfer_id, .failed);
                         self.storeFileNotice("Download failed");
                     };
                 },
                 .upload => |transfer| {
-                    self.spawnDownloadIntent(intent) catch {
+                    self.spawnTransferIntent(intent) catch {
                         self.markTransferFinished(transfer.transfer_id, .failed);
                         self.storeFileNotice("Upload failed");
                     };
                 },
                 .upload_many => |transfer| {
-                    self.spawnDownloadIntent(intent) catch {
+                    self.spawnTransferIntent(intent) catch {
                         self.markTransferFinished(transfer.transfer_id, .failed);
                         self.storeFileNotice("Upload failed");
                     };
@@ -941,7 +960,7 @@ pub const SshWorkspaceWorker = struct {
         }
     }
 
-    fn spawnDownloadIntent(self: *SshWorkspaceWorker, intent: remote_file.FilePanelIntent) !void {
+    fn spawnTransferIntent(self: *SshWorkspaceWorker, intent: remote_file.FilePanelIntent) !void {
         const owned = try remote_file.clonePanelIntent(self.allocator, intent);
         errdefer remote_file.freePanelIntent(self.allocator, owned);
         const done = try self.allocator.create(std.atomic.Value(bool));
@@ -1161,8 +1180,12 @@ pub const SshWorkspaceWorker = struct {
             }
         }
         self.storeEditorLoading(full_path, name, size);
+        const metadata = sftp.stat(full_path) catch {
+            self.storeEditorOpenError(full_path, name, "Could not read remote file metadata");
+            return;
+        };
 
-        var progress = EditorByteProgress{ .worker = self, .total = size };
+        var progress = EditorByteProgress{ .worker = self, .total = metadata.size orelse size };
         progress.report(0);
         const bytes = sftp.readFileWithProgress(self.allocator, full_path, progress.reporter()) catch {
             self.storeEditorOpenError(full_path, name, "Editor open failed");
@@ -1178,23 +1201,127 @@ pub const SshWorkspaceWorker = struct {
             self.storeEditorOpenError(full_path, name, "Binary file cannot be edited");
             return;
         }
-        self.storeEditorContent(full_path, name, bytes, null);
+        var decoded = remote_file.decodeEditorText(self.allocator, bytes) catch {
+            self.storeEditorOpenError(full_path, name, "Unsupported text encoding. Use UTF-8, UTF-8 BOM, or ASCII.");
+            return;
+        };
+        defer decoded.deinit(self.allocator);
+        self.storeEditorContent(full_path, name, decoded.content, decoded.encoding, decoded.line_ending, decoded.raw_hash, metadata, null);
     }
 
-    fn saveRemoteEditor(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, content: []const u8) void {
+    fn saveRemoteEditor(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, content: []const u8, force: bool) void {
         if (content.len > remote_file.max_editor_bytes) {
             self.storeEditorInlineError("File is too large to save");
             return;
         }
-        sftp.writeFile(path, content) catch {
-            self.storeEditorInlineError("Save failed");
+        const baseline = self.editorBaseline();
+        const saved_encoding = remote_file.encodingForEditedContent(baseline.encoding, content);
+        const encoded = remote_file.encodeEditorText(
+            self.allocator,
+            content,
+            saved_encoding,
+            baseline.line_ending,
+        ) catch {
+            self.storeEditorInlineError("Editor content is not valid UTF-8");
             return;
         };
+        defer self.allocator.free(encoded);
+
+        if (!force and self.remoteEditorChanged(sftp, path, baseline)) {
+            self.storeEditorConflict();
+            return;
+        }
+
+        const temp_path = std.fmt.allocPrint(
+            self.allocator,
+            "{s}.shellowo-{d}.tmp",
+            .{ path, self.editor_version },
+        ) catch {
+            self.storeEditorInlineError("Could not allocate temporary file path");
+            return;
+        };
+        defer self.allocator.free(temp_path);
+
+        var replaced = false;
+        defer if (!replaced) sftp.remove(temp_path) catch {};
+        sftp.writeFile(temp_path, encoded) catch {
+            self.storeEditorInlineError("Temporary save failed; original file was not changed");
+            return;
+        };
+        if (baseline.metadata.permissions) |permissions| {
+            sftp.chmod(temp_path, permissions) catch {
+                self.storeEditorInlineError("Could not preserve remote file permissions");
+                return;
+            };
+        }
+        sftp.replace(temp_path, path) catch {
+            self.storeEditorInlineError("Atomic replace failed; original file was not changed");
+            return;
+        };
+        replaced = true;
+        const metadata = sftp.stat(path) catch remote_file.RemoteFileMetadata{
+            .size = encoded.len,
+            .permissions = baseline.metadata.permissions,
+        };
         const name = baseName(path);
-        self.storeEditorContent(path, name, content, "Saved");
+        self.storeEditorContent(
+            path,
+            name,
+            content,
+            saved_encoding,
+            baseline.line_ending,
+            remote_file.contentHash(encoded),
+            metadata,
+            "Saved",
+        );
         const parent = parentPath(path);
         self.invalidatePathCaches(parent);
         self.file_refresh_requested.store(true, .release);
+    }
+
+    fn remoteEditorChanged(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, baseline: EditorBaseline) bool {
+        const metadata = sftp.stat(path) catch return true;
+        if (!metadataMatches(metadata, baseline.metadata)) return true;
+        const bytes = sftp.readFile(self.allocator, path) catch return true;
+        defer self.allocator.free(bytes);
+        return remote_file.contentHash(bytes) != baseline.raw_hash;
+    }
+
+    fn reloadRemoteEditor(self: *SshWorkspaceWorker, sftp: ssh.Sftp) void {
+        self.lockFile();
+        const path = self.allocator.dupe(u8, self.editor_path) catch {
+            self.unlockFile();
+            self.storeEditorInlineError("Could not reload remote file");
+            return;
+        };
+        const name = self.allocator.dupe(u8, self.editor_name) catch {
+            self.allocator.free(path);
+            self.unlockFile();
+            self.storeEditorInlineError("Could not reload remote file");
+            return;
+        };
+        self.unlockFile();
+        defer self.allocator.free(path);
+        defer self.allocator.free(name);
+        self.openRemoteEditor(sftp, parentPath(path), name, null);
+    }
+
+    const EditorBaseline = struct {
+        encoding: remote_file.TextEncoding,
+        line_ending: remote_file.LineEnding,
+        raw_hash: u64,
+        metadata: remote_file.RemoteFileMetadata,
+    };
+
+    fn editorBaseline(self: *SshWorkspaceWorker) EditorBaseline {
+        self.lockFile();
+        defer self.unlockFile();
+        return .{
+            .encoding = self.editor_encoding,
+            .line_ending = self.editor_line_ending,
+            .raw_hash = self.editor_raw_hash,
+            .metadata = self.editor_metadata,
+        };
     }
 
     fn deleteRemotePath(self: *SshWorkspaceWorker, sftp: ssh.Sftp, path: []const u8, kind: remote_file.RemoteFileKind) ssh.Error!void {
@@ -1488,10 +1615,20 @@ pub const SshWorkspaceWorker = struct {
         self.freeRemoteEntries(entries);
     }
 
-    fn storeFileEntries(self: *SshWorkspaceWorker, entries: []remote_file.RemoteFileEntry) void {
+    fn storeFileEntries(self: *SshWorkspaceWorker, expected_path: []const u8, entries: []remote_file.RemoteFileEntry) void {
         self.lockFile();
         defer self.unlockFile();
-        self.clearFileEntriesLocked();
+        self.file_refreshing = false;
+        if (!std.mem.eql(u8, self.filePathLocked(), expected_path)) {
+            self.freeRemoteEntries(entries);
+            return;
+        }
+        if (self.canKeepCurrentFileEntriesLocked(entries)) {
+            self.freeRemoteEntries(entries);
+            self.file_error_len = 0;
+            return;
+        }
+        self.beginFileEntriesReplacementLocked();
         if (!std.mem.eql(u8, self.filePathLocked(), "/")) {
             self.appendFileEntryLocked(.{ .name = "..", .kind = .directory }) catch {
                 self.freeRemoteEntries(entries);
@@ -1524,6 +1661,21 @@ pub const SshWorkspaceWorker = struct {
         self.file_state = .ready;
         self.file_error_len = 0;
         if (!self.selectionStillExistsLocked()) self.clearFileSelectionLocked();
+    }
+
+    fn remoteEntriesMatchCurrentLocked(self: *const SshWorkspaceWorker, entries: []const remote_file.RemoteFileEntry) bool {
+        const current = self.file_entries.items;
+        const offset: usize = if (current.len > 0 and std.mem.eql(u8, current[0].name, "..")) 1 else 0;
+        const visible_entries = entries[0..@min(entries.len, max_file_entries)];
+        if (current.len - offset != visible_entries.len) return false;
+        for (current[offset..], visible_entries) |existing, incoming| {
+            if (!remoteEntryEqual(existing, incoming)) return false;
+        }
+        return true;
+    }
+
+    fn canKeepCurrentFileEntriesLocked(self: *const SshWorkspaceWorker, entries: []const remote_file.RemoteFileEntry) bool {
+        return self.file_state == .ready and self.remoteEntriesMatchCurrentLocked(entries);
     }
 
     fn appendFileEntryLocked(self: *SshWorkspaceWorker, entry: remote_file.RemoteFileEntry) !void {
@@ -1571,7 +1723,7 @@ pub const SshWorkspaceWorker = struct {
 
     fn applyCachedFileEntriesLocked(self: *SshWorkspaceWorker, path: []const u8) bool {
         const idx = self.findFileDirCacheIndexLocked(path) orelse return false;
-        self.clearFileEntriesLocked();
+        self.beginFileEntriesReplacementLocked();
         for (self.file_dir_caches.items[idx].entries.items) |entry| {
             self.appendFileEntryLocked(entry) catch {
                 self.clearFileEntriesLocked();
@@ -1805,6 +1957,17 @@ pub const SshWorkspaceWorker = struct {
         self.file_refresh_requested.store(true, .release);
     }
 
+    fn finishFileRefreshFailure(self: *SshWorkspaceWorker, show_loading: bool, message: []const u8) void {
+        self.lockFile();
+        defer self.unlockFile();
+        self.file_refreshing = false;
+        if (show_loading) {
+            self.storeFileErrorLocked(message);
+        } else {
+            self.storeFileNoticeLocked("Refresh failed");
+        }
+    }
+
     fn slotById(self: *SshWorkspaceWorker, slot_id: terminal_slot.TerminalSlotId) ?*PtySlot {
         self.lockSlots();
         defer self.unlockSlots();
@@ -1892,8 +2055,9 @@ pub const SshWorkspaceWorker = struct {
 
     fn fileCapabilitiesLocked(self: *const SshWorkspaceWorker) remote_file.FilePaneCapabilities {
         const ready_or_loading = self.file_state == .ready or self.file_state == .loading;
+        const refresh_pending = self.file_refresh_requested.load(.acquire);
         return .{
-            .can_refresh = ready_or_loading or self.file_state == .failed,
+            .can_refresh = !self.file_refreshing and !refresh_pending and (ready_or_loading or self.file_state == .failed),
             .can_go_parent = ready_or_loading and !std.mem.eql(u8, self.filePathLocked(), "/"),
             .can_create_directory = self.file_state == .ready,
             .can_rename = self.file_state == .ready,
@@ -1938,7 +2102,7 @@ pub const SshWorkspaceWorker = struct {
 
     fn storeFileErrorLocked(self: *SshWorkspaceWorker, message: []const u8) void {
         self.file_state = .failed;
-        self.clearFileEntriesLocked();
+        self.beginFileEntriesReplacementLocked();
         self.clearFileSelectionLocked();
         const len = @min(self.file_error.len, message.len);
         if (len > 0) @memcpy(self.file_error[0..len], message[0..len]);
@@ -1968,6 +2132,12 @@ pub const SshWorkspaceWorker = struct {
         self.editor_content = &.{};
         self.editor_error_len = 0;
         self.editor_state = .closed;
+        self.editor_encoding = .utf8;
+        self.editor_line_ending = .none;
+        self.editor_large_file = false;
+        self.editor_save_conflict = false;
+        self.editor_raw_hash = 0;
+        self.editor_metadata = .{};
         self.editor_version += 1;
     }
 
@@ -2018,7 +2188,17 @@ pub const SshWorkspaceWorker = struct {
         self.editor_version += 1;
     }
 
-    fn storeEditorContent(self: *SshWorkspaceWorker, path: []const u8, name: []const u8, content: []const u8, notice: ?[]const u8) void {
+    fn storeEditorContent(
+        self: *SshWorkspaceWorker,
+        path: []const u8,
+        name: []const u8,
+        content: []const u8,
+        encoding: remote_file.TextEncoding,
+        line_ending: remote_file.LineEnding,
+        raw_hash: u64,
+        metadata: remote_file.RemoteFileMetadata,
+        notice: ?[]const u8,
+    ) void {
         const owned_path = self.allocator.dupe(u8, path) catch {
             self.storeEditorInlineError("OutOfMemory");
             return;
@@ -2046,6 +2226,12 @@ pub const SshWorkspaceWorker = struct {
         self.editor_state = .ready;
         self.editor_progress_done = @intCast(content.len);
         self.editor_progress_total = @intCast(content.len);
+        self.editor_encoding = encoding;
+        self.editor_line_ending = line_ending;
+        self.editor_large_file = content.len >= remote_file.large_editor_warning_bytes;
+        self.editor_save_conflict = false;
+        self.editor_raw_hash = raw_hash;
+        self.editor_metadata = metadata;
         if (notice) |message| {
             self.setEditorErrorLocked(message);
         } else {
@@ -2059,6 +2245,13 @@ pub const SshWorkspaceWorker = struct {
         defer self.unlockFile();
         self.setEditorErrorLocked(message);
         if (self.editor_state == .closed) self.editor_state = .failed;
+    }
+
+    fn storeEditorConflict(self: *SshWorkspaceWorker) void {
+        self.lockFile();
+        defer self.unlockFile();
+        self.editor_save_conflict = true;
+        self.setEditorErrorLocked("Remote file changed since it was opened");
     }
 
     fn setEditorErrorLocked(self: *SshWorkspaceWorker, message: []const u8) void {
@@ -2112,6 +2305,12 @@ pub const SshWorkspaceWorker = struct {
 
     fn clearFileEntriesLocked(self: *SshWorkspaceWorker) void {
         self.clearEntryListLocked(&self.file_entries);
+    }
+
+    fn beginFileEntriesReplacementLocked(self: *SshWorkspaceWorker) void {
+        self.clearEntryListLocked(&self.retired_file_entries);
+        std.mem.swap(std.ArrayList(remote_file.RemoteFileEntry), &self.file_entries, &self.retired_file_entries);
+        self.file_entries.clearRetainingCapacity();
     }
 
     fn clearEntryListLocked(self: *SshWorkspaceWorker, list: *std.ArrayList(remote_file.RemoteFileEntry)) void {
@@ -2237,6 +2436,23 @@ fn caseInsensitiveNameConflict(entries: []const remote_file.RemoteFileEntry) ?Na
     return null;
 }
 
+fn metadataMatches(a: remote_file.RemoteFileMetadata, b: remote_file.RemoteFileMetadata) bool {
+    return a.size == b.size and
+        a.modified_unix == b.modified_unix and
+        a.permissions == b.permissions;
+}
+
+fn remoteEntryEqual(a: remote_file.RemoteFileEntry, b: remote_file.RemoteFileEntry) bool {
+    return std.mem.eql(u8, a.name, b.name) and
+        a.kind == b.kind and
+        a.size == b.size and
+        a.permissions == b.permissions and
+        a.modified_unix == b.modified_unix and
+        a.uid == b.uid and
+        a.gid == b.gid and
+        std.mem.eql(u8, a.full_path, b.full_path);
+}
+
 fn replaceLocalFile(io: Io, temporary_path: []const u8, final_path: []const u8) !void {
     if (std.fs.path.isAbsolute(temporary_path) and std.fs.path.isAbsolute(final_path)) {
         return Io.Dir.renameAbsolute(temporary_path, final_path, io);
@@ -2296,6 +2512,22 @@ test "set file path accepts overlapping parent path slice" {
     worker.setFilePathLocked("/home/andy");
     worker.setFilePathLocked(parentPath(worker.filePathLocked()));
     try std.testing.expectEqualStrings("/home", worker.filePathLocked());
+}
+
+test "uncached directory never reuses entries from the previous path" {
+    var worker = SshWorkspaceWorker{
+        .allocator = std.testing.allocator,
+        .connection = undefined,
+        .options = undefined,
+    };
+    defer worker.file_entries.deinit(std.testing.allocator);
+    try worker.file_entries.append(std.testing.allocator, .{ .name = "same.txt", .kind = .file, .size = 4 });
+    const incoming = [_]remote_file.RemoteFileEntry{.{ .name = "same.txt", .kind = .file, .size = 4 }};
+
+    worker.file_state = .loading;
+    try std.testing.expect(!worker.canKeepCurrentFileEntriesLocked(&incoming));
+    worker.file_state = .ready;
+    try std.testing.expect(worker.canKeepCurrentFileEntriesLocked(&incoming));
 }
 
 test "tree root cannot be collapsed" {

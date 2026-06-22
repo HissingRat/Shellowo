@@ -17,6 +17,7 @@ pub const Options = struct {
     gap: f32 = 8,
     left_padding: f32 = 10,
     right_padding: f32 = 10,
+    enabled: bool = true,
 };
 
 pub fn show(
@@ -60,7 +61,7 @@ fn showWithLabel(
         styled = styled.override(.{ .font = typography.textFont(text, style.font_size orelse layout.fontGet().size) });
     }
     widget.init(src, styled, palette, style, .{ .override = styled });
-    widget.processEvents();
+    if (opts.enabled) widget.processEvents();
     widget.drawBackground();
 
     const crs = widget.data().contentRectScale();
@@ -72,7 +73,8 @@ fn showWithLabel(
         .w = icon_size,
         .h = icon_size,
     };
-    renderPng(bytes, name, .{ .r = icon_rect, .s = crs.s }, widget.style().color(.text));
+    const icon_color = if (opts.enabled) widget.style().color(.text) else palette.text_subtle.opacity(0.42);
+    renderPng(bytes, name, .{ .r = icon_rect, .s = crs.s }, icon_color);
 
     if (label != null) {
         const font = typography.textFont(text, style.font_size orelse layout.fontGet().size);
@@ -96,8 +98,8 @@ fn showWithLabel(
     }
 
     const result: Result = .{
-        .clicked = widget.clicked(),
-        .hovered = widget.hovered(),
+        .clicked = opts.enabled and widget.clicked(),
+        .hovered = opts.enabled and widget.hovered(),
         .rect = widget.data().rectScale().r,
     };
     widget.deinit();

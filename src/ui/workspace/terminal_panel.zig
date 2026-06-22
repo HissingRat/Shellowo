@@ -13,6 +13,7 @@ const terminal_colors = @import("../features/terminal/colors.zig");
 const viewport_state = @import("../features/terminal/viewport_state.zig");
 const terminal_search = @import("../features/terminal/search.zig");
 const input_encoding = @import("../features/terminal/input_encoding.zig");
+const terminal_metrics = @import("../features/terminal/metrics.zig");
 
 const terminalFont = terminal_colors.font;
 const terminalForegroundColor = terminal_colors.foreground;
@@ -33,13 +34,9 @@ const clampSearchActiveIndex = terminal_search.clampActiveIndex;
 const isTerminalControlBytes = input_encoding.isControlBytes;
 const terminalControlByte = input_encoding.controlByteForEvent;
 
-const terminal_font_size: f32 = 10;
-const terminal_line_height: f32 = 18;
-const terminal_cjk_baseline_lift: f32 = 2;
+const terminal_font_size: f32 = terminal_metrics.font_size;
 const cursor_blink_period_ns: i128 = 1_000_000_000;
 const cursor_blink_timer_us: i32 = 250_000;
-const cursor_underline_height: f32 = 2;
-const cursor_underline_lift: f32 = 2;
 const min_terminal_cols: u16 = 20;
 const min_terminal_rows: u16 = 5;
 const scroll_rows_per_wheel_tick: f32 = 1.25;
@@ -75,6 +72,10 @@ pub const Options = struct {
     failure: ?ssh_session.Error = null,
     active_slot_id: ?terminal_slot.TerminalSlotId = null,
 };
+
+fn terminalMetrics() terminal_metrics.Metrics {
+    return terminal_metrics.Metrics.current();
+}
 
 pub fn show(app: *App, tab: workspace.WorkspaceTab, palette: theme.Palette, opts: Options) void {
     var panel = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
@@ -528,20 +529,6 @@ fn canReuseRowRenderCache(snapshot: terminal.Snapshot, cached: TerminalRowRender
     if (cached.generation == snapshot.generation) return true;
 
     if (absolute_row < snapshot.scrollback_rows) return !snapshot.scrollback_dirty;
-    if (snapshot.scrollback_dirty) return false;
-
-    const screen_row = absolute_row - snapshot.scrollback_rows;
-    if (screen_row >= snapshot.size.rows) return false;
-    if (!snapshot.dirty_rects.empty()) return !rowTouchesDirtyRects(snapshot.dirty_rects, @intCast(screen_row));
-    if (snapshot.dirty_rows.empty()) return true;
-    return screen_row < snapshot.dirty_rows.start or screen_row >= snapshot.dirty_rows.end;
-}
-
-fn rowTouchesDirtyRects(rects: terminal.DirtyRects, screen_row: u16) bool {
-    if (rects.overflow) return true;
-    for (rects.items[0..rects.len]) |rect| {
-        if (screen_row >= rect.start_row and screen_row < rect.end_row) return true;
-    }
     return false;
 }
 
@@ -624,7 +611,7 @@ fn renderTerminalRun(run: TerminalRun, crs: dvui.RectScale, palette: theme.Palet
     if (run.text.len == 0) return;
 
     const text_rect = terminalTextRect(crs, run.row);
-    const cell_width = terminalCellWidth() * crs.s;
+    const cell_width = terminalMetrics().cell_width * crs.s;
     dvui.renderText(.{
         .font = terminalFont(run.text, run.style),
         .text = run.text,
@@ -656,7 +643,7 @@ fn renderImeComposition(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_
 }
 
 fn terminalTextBaselineLift(text: []const u8) f32 {
-    return if (theme.needsCjkFont(text)) terminal_cjk_baseline_lift else 0;
+    return if (theme.needsCjkFont(text)) terminalMetrics().cjk_baseline_lift else 0;
 }
 
 fn selectionIntersectsCell(viewport: *TerminalViewport, absolute_row: usize, col: u16, width: u16, cols: u16) bool {
@@ -674,23 +661,11 @@ fn selectionIntersectsCell(viewport: *TerminalViewport, absolute_row: usize, col
 }
 
 fn terminalCellRect(crs: dvui.RectScale, row: f32, col: u16, width: u16) dvui.Rect.Physical {
-    const cell_width = terminalCellWidth() * crs.s;
-    const text_rect = terminalTextRect(crs, row);
-    return .{
-        .x = text_rect.x + @as(f32, @floatFromInt(col)) * cell_width,
-        .y = text_rect.y,
-        .w = @as(f32, @floatFromInt(width)) * cell_width,
-        .h = text_rect.h,
-    };
+    return terminalMetrics().cellRect(crs, row, col, width);
 }
 
 fn terminalTextRect(crs: dvui.RectScale, row: f32) dvui.Rect.Physical {
-    return .{
-        .x = crs.r.x,
-        .y = crs.r.y + row * terminal_line_height * crs.s,
-        .w = crs.r.w,
-        .h = terminal_line_height * crs.s,
-    };
+    return terminalMetrics().textRect(crs, row);
 }
 
 fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usize, rows: usize, viewport: *TerminalViewport, palette: theme.Palette, id: dvui.Id) void {
@@ -706,16 +681,7 @@ fn renderCursor(snapshot: terminal.Snapshot, crs: dvui.RectScale, start_row: usi
     if (@mod(@divFloor(frame_time, cursor_blink_period_ns / 2), 2) != 0) return;
 
     const visible_row = cursor_row - start_row;
-    const cell_width = terminalCellWidth() * crs.s;
-    const x = crs.r.x + @as(f32, @floatFromInt(snapshot.cursor.col)) * cell_width;
-    const line_top = crs.r.y + @as(f32, @floatFromInt(visible_row)) * terminal_line_height * crs.s;
-    const glyph_height = theme.textFont("M", terminal_font_size).textSize("M").h * crs.s;
-    const cursor_rect = dvui.Rect.Physical{
-        .x = x,
-        .y = line_top + glyph_height - (cursor_underline_height + cursor_underline_lift) * crs.s,
-        .w = @max(1, cell_width * 0.8),
-        .h = @max(1, cursor_underline_height * crs.s),
-    };
+    const cursor_rect = terminalMetrics().cursorRect(crs, visible_row, snapshot.cursor.col);
     cursor_rect.fill(.{}, .{ .color = palette.terminal_text, .fade = 0 });
 }
 
@@ -981,7 +947,7 @@ fn autoScrollSelection(data: *dvui.WidgetData, viewport: *TerminalViewport, crs:
 }
 
 fn selectionAutoScrollRows(viewport: *TerminalViewport, distance: f32, scale: f32) usize {
-    const row_height = terminal_line_height * scale;
+    const row_height = terminalMetrics().line_height * scale;
     if (row_height <= 0) return 1;
     const distance_rows = distance / row_height;
     const eased = @min(@as(f32, @floatFromInt(selection_auto_scroll_max_rows_per_frame)), selection_auto_scroll_min_rows_per_frame + distance_rows * 0.75) / 10;
@@ -1071,11 +1037,10 @@ fn reportTerminalMouseMove(
 fn terminalPointFromMouse(mouse: dvui.Point.Physical, crs: dvui.RectScale, snapshot: terminal.Snapshot, start_row: usize, visible_rows: usize, total_rows: usize) TerminalPoint {
     const rel_x = std.math.clamp(mouse.x - crs.r.x, 0, @max(0, crs.r.w));
     const rel_y = std.math.clamp(mouse.y - crs.r.y, 0, @max(0, crs.r.h));
-    const row_delta: usize = @intFromFloat(@min(@floor(rel_y / (terminal_line_height * crs.s)), @as(f32, @floatFromInt(visible_rows -| 1))));
+    const cell_point = terminalMetrics().pointToCell(rel_x, rel_y, crs.s, visible_rows, snapshot.size.cols);
+    const row_delta = cell_point.row;
     const absolute_row = @min(total_rows -| 1, start_row + row_delta);
-    const col_float = @floor(rel_x / (terminalCellWidth() * crs.s));
-    const col: u16 = @intFromFloat(@min(col_float, @as(f32, @floatFromInt(snapshot.size.cols))));
-    return .{ .row = absolute_row, .col = col };
+    return .{ .row = absolute_row, .col = cell_point.col };
 }
 
 fn terminalScreenPointFromMouse(mouse: dvui.Point.Physical, crs: dvui.RectScale, snapshot: terminal.Snapshot, start_row: usize, visible_rows: usize, total_rows: usize) TerminalPoint {
@@ -1209,21 +1174,7 @@ fn terminalGridSize(crs: dvui.RectScale) ?terminal.Size {
     const height = crs.r.h / crs.s;
     if (width <= 0 or height <= 0) return null;
 
-    return .{
-        .cols = dimensionToCells(width / terminalCellWidth(), min_terminal_cols),
-        .rows = dimensionToCells(height / terminal_line_height, min_terminal_rows),
-    };
-}
-
-fn terminalCellWidth() f32 {
-    return @max(theme.textFont("M", terminal_font_size).textSize("M").w, terminal_font_size * 0.6);
-}
-
-fn dimensionToCells(value: f32, min: u16) u16 {
-    if (value <= @as(f32, @floatFromInt(min))) return min;
-    const floored = @floor(value);
-    const max_u16_float = @as(f32, @floatFromInt(std.math.maxInt(u16)));
-    return @intFromFloat(@min(floored, max_u16_float));
+    return terminalMetrics().gridSize(width, height, min_terminal_cols, min_terminal_rows);
 }
 
 fn sameTerminalSize(a: ?terminal.Size, b: terminal.Size) bool {
@@ -1234,7 +1185,7 @@ fn sameTerminalSize(a: ?terminal.Size, b: terminal.Size) bool {
 fn visibleRows(crs: dvui.RectScale, max_rows: usize) usize {
     if (max_rows == 0 or crs.r.h <= 0 or crs.s <= 0) return 0;
 
-    const row_height = terminal_line_height * crs.s;
+    const row_height = terminalMetrics().line_height * crs.s;
     if (row_height <= 0) return 0;
 
     const capacity_float = @floor(crs.r.h / row_height);
@@ -1656,6 +1607,46 @@ fn cellDisplayWidth(cell: terminal.Cell) u16 {
 
 fn sameStyle(a: terminal.Style, b: terminal.Style) bool {
     return std.meta.eql(a, b);
+}
+
+test "screen row background cache is invalidated on every new snapshot generation" {
+    const cells = try std.testing.allocator.alloc(terminal.Cell, 8);
+    defer std.testing.allocator.free(cells);
+    @memset(cells, .{});
+
+    const snapshot = terminal.Snapshot{
+        .allocator = std.testing.allocator,
+        .generation = 2,
+        .size = .{ .cols = 8, .rows = 1 },
+        .cells = cells,
+        .cursor = .{},
+    };
+    const cached = TerminalRowRenderCacheEntry{
+        .generation = 1,
+        .absolute_row = 0,
+        .scrollback_rows = 0,
+        .cols = 8,
+        .has_backgrounds = false,
+    };
+
+    try std.testing.expect(!canReuseRowRenderCache(snapshot, cached, 0));
+}
+
+test "reverse video cells require a rendered background" {
+    const cells = try std.testing.allocator.alloc(terminal.Cell, 1);
+    defer std.testing.allocator.free(cells);
+    cells[0] = .{
+        .codepoint = 'x',
+        .style = .{ .reverse = true },
+    };
+
+    const snapshot = terminal.Snapshot{
+        .allocator = std.testing.allocator,
+        .size = .{ .cols = 1, .rows = 1 },
+        .cells = cells,
+        .cursor = .{},
+    };
+    try std.testing.expect(computeRowHasBackgrounds(snapshot, 0, theme.dark));
 }
 
 fn handleTerminalBytes(app: *App, tab: workspace.WorkspaceTab, bytes: []const u8) void {

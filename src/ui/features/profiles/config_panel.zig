@@ -251,6 +251,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .margin = .{ .x = 3 },
         .id_extra = 50_092,
         .gravity_y = 0.5,
+        .padding = .{ .y = 1, .h = 0 },
     }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = control_font_size })) {
         app.deleteSelectedProfile();
     }
@@ -259,6 +260,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .margin = .{ .x = 3 },
         .id_extra = 50_093,
         .gravity_y = 0.5,
+        .padding = .{ .y = 1, .h = 0 },
     }, palette, .{ .intent = .primary, .variant = .ghost, .font_size = control_font_size })) {
         app.saveDraft();
     }
@@ -267,6 +269,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .margin = .{ .x = 3 },
         .id_extra = 50_094,
         .gravity_y = 0.5,
+        .padding = .{ .y = 1, .h = 0 },
     }, palette, .{ .variant = .ghost, .font_size = control_font_size })) {
         app.cancelConfig();
     }

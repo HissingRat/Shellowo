@@ -242,6 +242,7 @@ pub const Sftp = struct {
 
     pub const VTable = struct {
         list: *const fn (*anyopaque, std.mem.Allocator, []const u8) Error![]RemoteFileEntry,
+        stat: *const fn (*anyopaque, []const u8) Error!remote_file.RemoteFileMetadata,
         readFile: *const fn (*anyopaque, std.mem.Allocator, []const u8, ?FileProgressReporter) Error![]u8,
         readFileToSink: *const fn (*anyopaque, []const u8, FileChunkSink, ?FileProgressReporter) Error!u64,
         writeFile: *const fn (*anyopaque, []const u8, []const u8, ?FileProgressReporter) Error!void,
@@ -251,12 +252,17 @@ pub const Sftp = struct {
         removeDir: *const fn (*anyopaque, []const u8) Error!void,
         mkdir: *const fn (*anyopaque, []const u8) Error!void,
         rename: *const fn (*anyopaque, []const u8, []const u8) Error!void,
+        replace: *const fn (*anyopaque, []const u8, []const u8) Error!void,
         chmod: *const fn (*anyopaque, []const u8, u32) Error!void,
         close: *const fn (*anyopaque) void,
     };
 
     pub fn list(self: Sftp, allocator: std.mem.Allocator, path: []const u8) Error![]RemoteFileEntry {
         return self.vtable.list(self.context, allocator, path);
+    }
+
+    pub fn stat(self: Sftp, path: []const u8) Error!remote_file.RemoteFileMetadata {
+        return self.vtable.stat(self.context, path);
     }
 
     pub fn readFile(self: Sftp, allocator: std.mem.Allocator, path: []const u8) Error![]u8 {
@@ -301,6 +307,10 @@ pub const Sftp = struct {
 
     pub fn rename(self: Sftp, old_path: []const u8, new_path: []const u8) Error!void {
         return self.vtable.rename(self.context, old_path, new_path);
+    }
+
+    pub fn replace(self: Sftp, old_path: []const u8, new_path: []const u8) Error!void {
+        return self.vtable.replace(self.context, old_path, new_path);
     }
 
     pub fn chmod(self: Sftp, path: []const u8, permissions: u32) Error!void {

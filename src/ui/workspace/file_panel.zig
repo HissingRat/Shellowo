@@ -24,6 +24,7 @@ const PaneKind = enum { tree, remote };
 
 const folder_icon_bytes = @embedFile("shellowo-folder-icon");
 const file_icon_bytes = @embedFile("shellowo-file-icon");
+const refresh_icon_bytes = @embedFile("shellowo-refresh-icon");
 
 pub const Options = struct {
     app: *App,
@@ -76,7 +77,14 @@ pub fn show(palette: theme.Palette, opts: Options) ?remote_file.FilePanelIntent 
     }));
     defer root.deinit();
 
-    pathBar(opts.app, opts.snapshot.remote, palette, opts.id_extra + 10, &intent);
+    pathBar(
+        opts.app,
+        opts.snapshot.remote,
+        root.data().contentRectScale().r.toNatural(),
+        palette,
+        opts.id_extra + 10,
+        &intent,
+    );
 
     var split = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
@@ -130,7 +138,14 @@ fn panelOptions(opts: Options) dvui.Options {
     return options;
 }
 
-fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palette, id_extra: usize, intent: *?remote_file.FilePanelIntent) void {
+fn pathBar(
+    app: *App,
+    remote: remote_file.FilePaneSnapshot,
+    panel_bounds: dvui.Rect.Natural,
+    palette: theme.Palette,
+    id_extra: usize,
+    intent: *?remote_file.FilePanelIntent,
+) void {
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, theme.panel(.{
         .expand = .horizontal,
         .min_size_content = .height(toolbar_height),
@@ -226,7 +241,21 @@ fn pathBar(app: *App, remote: remote_file.FilePaneSnapshot, palette: theme.Palet
         }
     }
 
-    active_tasks_panel.showButton(app, palette, id_extra + 20);
+    const refresh = theme.iconButton(@src(), refresh_icon_bytes, "refresh.png", .{
+        .min_size_content = .{ .w = toolbar_height, .h = toolbar_height },
+        .max_size_content = .{ .w = toolbar_height, .h = toolbar_height },
+        .padding = .all(0),
+        .corner_radius = .all(0),
+        .id_extra = id_extra + 20,
+        .margin = .all(0),
+    }, palette, .{ .variant = .ghost }, .{
+        .icon_size = 15,
+        .id_extra = id_extra + 21,
+        .enabled = remote.capabilities.can_refresh,
+    });
+    if (refresh.clicked) intent.* = .{ .refresh = .remote };
+
+    active_tasks_panel.showButton(app, panel_bounds, palette, id_extra + 30);
 }
 
 fn pathBarEditable(remote: remote_file.FilePaneSnapshot) bool {
@@ -396,9 +425,9 @@ fn fileRows(app: *App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayo
         .ready => {},
     }
 
-    registerDropTarget(app, snapshot, path_busy, drop_rect);
+    registerDropTarget(app, snapshot, drop_rect);
     renderDropTooltip(app, snapshot, palette, id_extra + 7000);
-    handleDroppedUploads(app, snapshot, layout, path_busy, drop_rect, intent);
+    handleDroppedUploads(app, snapshot, layout, drop_rect, intent);
 
     if (snapshot.entries.len == 0 and layout.edit_mode == .none) {
         emptyRow("No files", palette, id_extra);
@@ -798,8 +827,8 @@ fn droppedUploadIntent(snapshot: remote_file.FilePaneSnapshot, path: []const u8)
     } };
 }
 
-fn handleDroppedUploads(app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, path_busy: bool, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
-    if (intent.* != null or snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
+fn handleDroppedUploads(app: *const App, snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState, rect: dvui.Rect.Physical, intent: *?remote_file.FilePanelIntent) void {
+    if (intent.* != null or snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
     var paths: [max_selected_entries][]const u8 = undefined;
     var count: usize = 0;
     for (app.nativeEvents()) |event| {
@@ -847,8 +876,8 @@ fn handleDroppedUploads(app: *const App, snapshot: remote_file.FilePaneSnapshot,
     } }, intent);
 }
 
-fn registerDropTarget(app: *App, snapshot: remote_file.FilePaneSnapshot, path_busy: bool, rect: dvui.Rect.Physical) void {
-    if (snapshot.state != .ready or !snapshot.capabilities.can_upload or path_busy) return;
+fn registerDropTarget(app: *App, snapshot: remote_file.FilePaneSnapshot, rect: dvui.Rect.Physical) void {
+    if (snapshot.state != .ready or !snapshot.capabilities.can_upload) return;
     app.registerFileDropTarget(.{
         .x = rect.x,
         .y = rect.y,
@@ -1173,6 +1202,7 @@ fn handleEntryContextMenu(app: *App, snapshot: remote_file.FilePaneSnapshot, ent
         .download => queueTransferIntent(app, snapshot, layout, downloadIntent(snapshot, layout, entry), intent),
         .upload => queueTransferIntent(app, snapshot, layout, uploadFilesIntent(snapshot), intent),
         .upload_folder => queueTransferIntent(app, snapshot, layout, uploadFolderIntent(snapshot), intent),
+        .refresh => intent.* = .{ .refresh = .remote },
         .details => layout.details.show(snapshot, entry),
     }
 }
@@ -1191,6 +1221,7 @@ fn handleBlankContextMenu(app: *const App, snapshot: remote_file.FilePaneSnapsho
         .new_folder => layout.startCreate(.new_folder),
         .upload => queueTransferIntent(app, snapshot, layout, uploadFilesIntent(snapshot), intent),
         .upload_folder => queueTransferIntent(app, snapshot, layout, uploadFolderIntent(snapshot), intent),
+        .refresh => intent.* = .{ .refresh = .remote },
     }
 }
 

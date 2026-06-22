@@ -1,5 +1,6 @@
 const std = @import("std");
 const ssh = @import("../../contracts/ssh.zig");
+const remote_file = @import("../../core/remote_file.zig");
 
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -616,6 +617,35 @@ fn sftpList(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8)
     return entries.toOwnedSlice(allocator) catch return ssh.Error.TransferFailed;
 }
 
+fn sftpStat(context: *anyopaque, path: []const u8) ssh.Error!remote_file.RemoteFileMetadata {
+    const self: *SftpContext = @ptrCast(@alignCast(context));
+    if (self.closed) return ssh.Error.SftpUnavailable;
+    const path_z = self.allocator.dupeZ(u8, path) catch return ssh.Error.TransferFailed;
+    defer self.allocator.free(path_z);
+
+    var attrs: c.LIBSSH2_SFTP_ATTRIBUTES = std.mem.zeroes(c.LIBSSH2_SFTP_ATTRIBUTES);
+    var attempts: usize = 0;
+    while (attempts < 5000) : (attempts += 1) {
+        const rc = c.libssh2_sftp_stat_ex(
+            self.sftp,
+            path_z.ptr,
+            @intCast(path.len),
+            c.LIBSSH2_SFTP_STAT,
+            &attrs,
+        );
+        if (rc == 0) {
+            return .{
+                .size = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_SIZE) != 0) attrs.filesize else null,
+                .permissions = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_PERMISSIONS) != 0) @intCast(attrs.permissions) else null,
+                .modified_unix = if ((attrs.flags & c.LIBSSH2_SFTP_ATTR_ACMODTIME) != 0) @intCast(attrs.mtime) else null,
+            };
+        }
+        if (rc != c.LIBSSH2_ERROR_EAGAIN) return ssh.Error.TransferFailed;
+        sleepMs(1);
+    }
+    return ssh.Error.TransferFailed;
+}
+
 fn sftpReadFile(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8, reporter: ?ssh.FileProgressReporter) ssh.Error![]u8 {
     const self: *SftpContext = @ptrCast(@alignCast(context));
     if (self.closed) return ssh.Error.SftpUnavailable;
@@ -851,6 +881,48 @@ fn sftpRename(context: *anyopaque, old_path: []const u8, new_path: []const u8) s
     return ssh.Error.TransferFailed;
 }
 
+fn sftpReplace(context: *anyopaque, old_path: []const u8, new_path: []const u8) ssh.Error!void {
+    const self: *SftpContext = @ptrCast(@alignCast(context));
+    if (self.closed) return ssh.Error.SftpUnavailable;
+    const old_z = self.allocator.dupeZ(u8, old_path) catch return ssh.Error.TransferFailed;
+    defer self.allocator.free(old_z);
+    const new_z = self.allocator.dupeZ(u8, new_path) catch return ssh.Error.TransferFailed;
+    defer self.allocator.free(new_z);
+
+    var use_compatibility_fallback = false;
+    var attempts: usize = 0;
+    while (attempts < 5000) : (attempts += 1) {
+        const rc = c.libssh2_sftp_posix_rename_ex(
+            self.sftp,
+            old_z.ptr,
+            @intCast(old_path.len),
+            new_z.ptr,
+            @intCast(new_path.len),
+        );
+        if (rc == 0) return;
+        if (rc != c.LIBSSH2_ERROR_EAGAIN) {
+            use_compatibility_fallback = rc == c.LIBSSH2_ERROR_SFTP_PROTOCOL and
+                c.libssh2_sftp_last_error(self.sftp) == c.LIBSSH2_FX_OP_UNSUPPORTED;
+            break;
+        }
+        sleepMs(1);
+    }
+    if (!use_compatibility_fallback) return ssh.Error.TransferFailed;
+
+    // SFTP v3 ignores overwrite flags on ordinary rename. When the OpenSSH
+    // atomic extension is unavailable, keep the original as a temporary
+    // backup until the replacement has reached its final path.
+    const backup_path = std.fmt.allocPrint(self.allocator, "{s}.replace-backup", .{old_path}) catch return ssh.Error.TransferFailed;
+    defer self.allocator.free(backup_path);
+    sftpRemove(context, backup_path) catch {};
+    sftpRename(context, new_path, backup_path) catch return ssh.Error.TransferFailed;
+    sftpRename(context, old_path, new_path) catch {
+        sftpRename(context, backup_path, new_path) catch {};
+        return ssh.Error.TransferFailed;
+    };
+    sftpRemove(context, backup_path) catch {};
+}
+
 fn sftpChmod(context: *anyopaque, path: []const u8, permissions: u32) ssh.Error!void {
     const self: *SftpContext = @ptrCast(@alignCast(context));
     if (self.closed) return ssh.Error.SftpUnavailable;
@@ -883,6 +955,7 @@ fn closeSftp(context: *anyopaque) void {
 
 const sftp_vtable: ssh.Sftp.VTable = .{
     .list = sftpList,
+    .stat = sftpStat,
     .readFile = sftpReadFile,
     .readFileToSink = sftpReadFileToSink,
     .writeFile = sftpWriteFile,
@@ -892,6 +965,7 @@ const sftp_vtable: ssh.Sftp.VTable = .{
     .removeDir = sftpRemoveDir,
     .mkdir = sftpMkdir,
     .rename = sftpRename,
+    .replace = sftpReplace,
     .chmod = sftpChmod,
     .close = closeSftp,
 };

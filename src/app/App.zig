@@ -811,7 +811,7 @@ pub fn retryTransfer(self: *App, transfer_id: u64) void {
     };
 
     self.transfers.items[idx].id = new_id;
-    self.transfers.items[idx].status = .running;
+    self.transfers.items[idx].status = .pending;
     self.transfers.items[idx].progress = 0;
     self.transfers.items[idx].bytes_done = 0;
     self.transfers.items[idx].bytes_total = null;
@@ -931,7 +931,7 @@ fn appendOwnedTransferTitle(self: *App, tab_id: u64, direction: transfer.Transfe
         .tab_id = tab_id,
         .title = title,
         .direction = direction,
-        .status = .running,
+        .status = .pending,
         .progress = 0,
         .started_ns = now,
         .last_sample_ns = now,
@@ -1170,6 +1170,7 @@ fn fileIntentMessage(intent: remote_file.FilePanelIntent) []const u8 {
         .chmod => "Updating permissions",
         .open_edit => "Opening editor",
         .save_edit => "Saving file",
+        .reload_edit => "Reloading file",
         .close_edit => "Closing editor",
         .delete => "Deleting file",
         .upload, .upload_many => "Uploading file",

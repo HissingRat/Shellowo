@@ -44,7 +44,7 @@
 - 当前 vendor 版本：`third_party/libssh2-1.11.1`。
 - 当前 crypto backend：`third_party/mbedtls-3.6.6`。
 - 当前 Zig build 已编译 `shellow_mbedcrypto` 与 `shellow_libssh2` 静态库，并通过 `libssh2_init/libssh2_exit` smoke test。
-- `src/backends/ssh/libssh2.zig` 已具备第一版阻塞式 connect/auth/shell channel wrapper，并在认证前提取 host key SHA256 fingerprint 交给 Shellow verifier；known_hosts strict/TOFU 存储与 missing host key 确认路径已接入；password/private key/agent auth 已接入；SFTP list/read/write/mkdir/remove/rename 已接入。
+- `src/backends/ssh/libssh2.zig` 已具备第一版阻塞式 connect/auth/shell channel wrapper，并在认证前提取 host key SHA256 fingerprint 交给 Shellow verifier；known_hosts strict/TOFU 存储与 missing host key 确认路径已接入；password/private key/agent auth 已接入；SFTP list/stat/read/write/mkdir/remove/rename/chmod 与同目录 atomic replace 已接入。
 - `zig build ssh-probe -- host port username password` 可通过 Shellow libssh2 backend 做真实 SSH connect/auth/open shell/write/read smoke test。
 - Zig 原生 SSH/SFTP 库暂不作为主路线。
 - 外部 `ssh` 进程桥接仅可作为诊断或临时验证手段，不进入正式运行时。
@@ -53,7 +53,7 @@
 
 - 支持 PTY shell
 - 支持 resize
-- 支持 SFTP list/read/write/upload/download
+- 支持 SFTP list/stat/read/write/upload/download/atomic replace
 - 能在 Windows/macOS/Linux 构建或有清晰替代策略
 - 错误状态可映射为用户可读提示
 

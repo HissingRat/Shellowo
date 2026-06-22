@@ -1,6 +1,144 @@
 const std = @import("std");
 
 pub const max_editor_bytes: usize = 64 * 1024 * 1024;
+pub const large_editor_warning_bytes: usize = 8 * 1024 * 1024;
+
+pub const TextEncoding = enum {
+    ascii,
+    utf8,
+    utf8_bom,
+
+    pub fn label(self: TextEncoding) []const u8 {
+        return switch (self) {
+            .ascii => "ASCII",
+            .utf8 => "UTF-8",
+            .utf8_bom => "UTF-8 BOM",
+        };
+    }
+};
+
+pub const LineEnding = enum {
+    none,
+    lf,
+    crlf,
+    mixed,
+
+    pub fn label(self: LineEnding) []const u8 {
+        return switch (self) {
+            .none => "No line endings",
+            .lf => "LF",
+            .crlf => "CRLF",
+            .mixed => "Mixed line endings",
+        };
+    }
+};
+
+pub const RemoteFileMetadata = struct {
+    size: ?u64 = null,
+    permissions: ?u32 = null,
+    modified_unix: ?i64 = null,
+};
+
+pub const DecodedEditorText = struct {
+    content: []u8,
+    encoding: TextEncoding,
+    line_ending: LineEnding,
+    raw_hash: u64,
+
+    pub fn deinit(self: *DecodedEditorText, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+        self.* = undefined;
+    }
+};
+
+pub fn decodeEditorText(allocator: std.mem.Allocator, bytes: []const u8) !DecodedEditorText {
+    const has_bom = bytes.len >= 3 and std.mem.eql(u8, bytes[0..3], "\xEF\xBB\xBF");
+    const payload = if (has_bom) bytes[3..] else bytes;
+    if (!std.unicode.utf8ValidateSlice(payload)) return error.UnsupportedEncoding;
+
+    const line_ending = detectLineEnding(payload);
+    const content = if (line_ending == .crlf)
+        try normalizeCrlf(allocator, payload)
+    else
+        try allocator.dupe(u8, payload);
+
+    var ascii = true;
+    for (payload) |byte| {
+        if (byte >= 0x80) {
+            ascii = false;
+            break;
+        }
+    }
+    return .{
+        .content = content,
+        .encoding = if (has_bom) .utf8_bom else if (ascii) .ascii else .utf8,
+        .line_ending = line_ending,
+        .raw_hash = std.hash.Wyhash.hash(0, bytes),
+    };
+}
+
+pub fn encodeEditorText(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+    encoding: TextEncoding,
+    line_ending: LineEnding,
+) ![]u8 {
+    if (!std.unicode.utf8ValidateSlice(content)) return error.InvalidUtf8;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    if (encoding == .utf8_bom) try out.appendSlice(allocator, "\xEF\xBB\xBF");
+    if (line_ending == .crlf) {
+        for (content) |byte| {
+            if (byte == '\n') try out.append(allocator, '\r');
+            try out.append(allocator, byte);
+        }
+    } else {
+        try out.appendSlice(allocator, content);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn encodingForEditedContent(original: TextEncoding, content: []const u8) TextEncoding {
+    if (original == .utf8_bom) return .utf8_bom;
+    for (content) |byte| {
+        if (byte >= 0x80) return .utf8;
+    }
+    return original;
+}
+
+pub fn contentHash(bytes: []const u8) u64 {
+    return std.hash.Wyhash.hash(0, bytes);
+}
+
+fn detectLineEnding(bytes: []const u8) LineEnding {
+    var lf_count: usize = 0;
+    var crlf_count: usize = 0;
+    var idx: usize = 0;
+    while (idx < bytes.len) : (idx += 1) {
+        if (bytes[idx] != '\n') continue;
+        if (idx > 0 and bytes[idx - 1] == '\r') {
+            crlf_count += 1;
+        } else {
+            lf_count += 1;
+        }
+    }
+    if (lf_count == 0 and crlf_count == 0) return .none;
+    if (lf_count == 0) return .crlf;
+    if (crlf_count == 0) return .lf;
+    return .mixed;
+}
+
+fn normalizeCrlf(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var out = try allocator.alloc(u8, bytes.len);
+    var written: usize = 0;
+    var idx: usize = 0;
+    while (idx < bytes.len) : (idx += 1) {
+        if (bytes[idx] == '\r' and idx + 1 < bytes.len and bytes[idx + 1] == '\n') continue;
+        out[written] = bytes[idx];
+        written += 1;
+    }
+    return allocator.realloc(out, written);
+}
 
 pub const RemoteFileKind = enum {
     file,
@@ -118,6 +256,10 @@ pub const FileEditorSnapshot = struct {
     progress_done: u64 = 0,
     progress_total: ?u64 = null,
     version: u64 = 0,
+    encoding: TextEncoding = .utf8,
+    line_ending: LineEnding = .none,
+    large_file: bool = false,
+    save_conflict: bool = false,
 
     pub fn isOpen(self: FileEditorSnapshot) bool {
         return self.state != .closed;
@@ -174,6 +316,7 @@ pub const FileEditSaveIntent = struct {
     pane: FilePaneTarget,
     path: []const u8,
     content: []const u8,
+    force: bool = false,
 };
 
 pub const FileTransferIntent = struct {
@@ -220,6 +363,7 @@ pub const FilePanelIntent = union(enum) {
     chmod: FileChmodIntent,
     open_edit: FileEditOpenIntent,
     save_edit: FileEditSaveIntent,
+    reload_edit: FilePaneTarget,
     close_edit: FilePaneTarget,
     delete: FileEntryTarget,
     upload: FileTransferIntent,
@@ -280,8 +424,10 @@ pub fn clonePanelIntent(allocator: std.mem.Allocator, intent: FilePanelIntent) !
                 .pane = item.pane,
                 .path = pair.first,
                 .content = pair.second,
+                .force = item.force,
             } };
         },
+        .reload_edit => |pane| .{ .reload_edit = pane },
         .close_edit => |pane| .{ .close_edit = pane },
         .delete => |target| .{ .delete = try cloneEntryTarget(allocator, target) },
         .upload => |item| .{ .upload = try cloneTransferIntent(allocator, item) },
@@ -295,7 +441,7 @@ pub fn freePanelIntent(allocator: std.mem.Allocator, intent: FilePanelIntent) vo
     switch (intent) {
         .select => |selection| freeEntryTarget(allocator, selection.target),
         .toggle_tree, .open, .delete => |target| freeEntryTarget(allocator, target),
-        .refresh, .go_parent, .close_edit => {},
+        .refresh, .go_parent, .close_edit, .reload_edit => {},
         .go_path => |target| allocator.free(target.path),
         .create_file => |item| freePair(allocator, item.parent_path, item.name),
         .create_directory => |item| freePair(allocator, item.parent_path, item.name),
@@ -442,6 +588,28 @@ test "file entry identifies the remote root directory" {
 
 test "file panel intent clone releases partial allocations" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testPanelIntentCloneAllocationFailure, .{});
+}
+
+test "editor text preserves utf8 bom and crlf on round trip" {
+    var decoded = try decodeEditorText(std.testing.allocator, "\xEF\xBB\xBFhello\r\n世界\r\n");
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(TextEncoding.utf8_bom, decoded.encoding);
+    try std.testing.expectEqual(LineEnding.crlf, decoded.line_ending);
+    try std.testing.expectEqualStrings("hello\n世界\n", decoded.content);
+
+    const encoded = try encodeEditorText(std.testing.allocator, decoded.content, decoded.encoding, decoded.line_ending);
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqualStrings("\xEF\xBB\xBFhello\r\n世界\r\n", encoded);
+}
+
+test "editor text rejects invalid utf8" {
+    try std.testing.expectError(error.UnsupportedEncoding, decodeEditorText(std.testing.allocator, "\xff\xfe"));
+}
+
+test "editing unicode promotes ascii content to utf8" {
+    try std.testing.expectEqual(TextEncoding.utf8, encodingForEditedContent(.ascii, "hello 世界"));
+    try std.testing.expectEqual(TextEncoding.ascii, encodingForEditedContent(.ascii, "hello"));
+    try std.testing.expectEqual(TextEncoding.utf8_bom, encodingForEditedContent(.utf8_bom, "hello 世界"));
 }
 
 fn testPanelIntentCloneAllocationFailure(allocator: std.mem.Allocator) !void {

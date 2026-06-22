@@ -92,7 +92,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 目标：从“能用”提升到“顺手”。
 
-状态：进行中。全局任务面板、进度/速度、取消、重试、覆盖确认、基础 busy/disabled 状态、主题/布局记忆和系统信息面板已实现。
+状态：进行中。全局任务面板、全局 10 / 单 SSH 4 并发调度、进度/速度、取消、重试、覆盖确认、基础 busy/disabled 状态、主题/布局记忆和系统信息面板已实现。
 
 交付：
 
@@ -107,7 +107,7 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 剩余：
 
 - 最近连接与连接使用历史
-- 传输历史持久化、批量清理/控制和并发队列策略
+- 传输历史持久化与批量清理/控制
 - 更细的路径占用解释与复杂批量冲突策略
 - 可配置 terminal 字体；主题设置已实现
 - profile/editor/workspace 的 UI polish 与回归说明
@@ -168,8 +168,8 @@ Shellow 的目标是做一个原生、轻量、可长期使用的 FinalShell 替
 
 ## 近期待办
 
-1. 收敛 terminal cursor/cell metrics 和自动回归 fixture；dirty region、text run、60 FPS snapshot gate 与 scrollback 上限已实现。
-2. 完善传输中心的历史、批量控制、队列策略和复杂冲突说明；重试、覆盖确认和基础 busy/disabled 已实现。
+1. 继续扩充 terminal fixture 的真实程序样本；统一 cell metrics、dirty region、text run、60 FPS snapshot gate 与 scrollback 上限已实现。
+2. 完善传输中心的历史、批量控制和复杂冲突说明；全局 10 / 单 SSH 4 队列、重试、覆盖确认和基础 busy/disabled 已实现。
 3. 打磨 selected connection 状态、profile editor 和 Phase 1 UI polish，并补 profile CRUD UI 回归。
 4. 完善安全凭据策略和发布前安全检查。
 5. 在现有自动打包基础上补 Windows/macOS 正式签名、notarization/安装器与三平台运行回归。

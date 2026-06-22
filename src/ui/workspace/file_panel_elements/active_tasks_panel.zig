@@ -34,7 +34,7 @@ const RowAction = union(enum) {
     retry: u64,
 };
 
-pub fn showButton(app: *App, palette: theme.Palette, id_extra: usize) void {
+pub fn showButton(app: *App, panel_bounds: dvui.Rect.Natural, palette: theme.Palette, id_extra: usize) void {
     var count_buf: [32]u8 = undefined;
     const active_count = activeTransferCount(app.transfers.items);
     const count_label = std.fmt.bufPrint(&count_buf, "{d} active tasks", .{active_count}) catch "active tasks";
@@ -56,15 +56,15 @@ pub fn showButton(app: *App, palette: theme.Palette, id_extra: usize) void {
         .id_extra = id_extra + 1,
     }, palette, .{ .variant = .ghost, .font_size = 10, .text_align_x = 0.5 });
     button_box.deinit();
+    state.popup_anchor = button_rect.toNatural();
 
     if (clicked) {
         state.popup_open = !state.popup_open;
-        state.popup_anchor = button_rect.toNatural();
     }
 
     if (state.popup_open) {
-        state.popup_rect = popupRect(state.popup_anchor, app.transfers.items);
-        popup(app, palette, state, id_extra + 100);
+        state.popup_rect = popupRect(state.popup_anchor, panel_bounds, app.transfers.items);
+        popup(app, button_rect, palette, state, id_extra + 100);
     }
 }
 
@@ -76,9 +76,10 @@ fn activeTransferCount(tasks: []const transfer.TransferTask) usize {
     return count;
 }
 
-fn popup(app: *App, palette: theme.Palette, state: *State, id_extra: usize) void {
+fn popup(app: *App, button_rect: dvui.Rect.Physical, palette: theme.Palette, state: *State, id_extra: usize) void {
     const tasks = app.transfers.items;
-    const width = popupWidth(tasks);
+    const width = state.popup_rect.w;
+    const content_height = @max(state.popup_rect.h - 28 - popup_pad_y * 2, 1);
     var win = dvui.floatingWindow(@src(), .{
         .rect = &state.popup_rect,
         .open_flag = &state.popup_open,
@@ -88,8 +89,8 @@ fn popup(app: *App, palette: theme.Palette, state: *State, id_extra: usize) void
         .id_extra = id_extra,
         .padding = .{ .x = popup_pad_x, .y = popup_pad_y, .w = popup_pad_x, .h = popup_pad_y },
         .corner_radius = .all(3),
-        .min_size_content = .{ .w = width, .h = 58 },
-        .max_size_content = .{ .w = width, .h = popup_max_height },
+        .min_size_content = .{ .w = width, .h = state.popup_rect.h },
+        .max_size_content = .{ .w = width, .h = state.popup_rect.h },
     }, palette));
     defer win.deinit();
 
@@ -108,8 +109,8 @@ fn popup(app: *App, palette: theme.Palette, state: *State, id_extra: usize) void
             .horizontal = .none,
         }, .{
             .expand = .horizontal,
-            .min_size_content = .{ .w = width - popup_pad_x * 2, .h = @min(popup_max_height - 28, popupContentHeight(tasks, width)) },
-            .max_size_content = .{ .w = width - popup_pad_x * 2, .h = popup_max_height - 28 },
+            .min_size_content = .{ .w = width - popup_pad_x * 2, .h = @min(content_height, popupContentHeight(tasks, width)) },
+            .max_size_content = .{ .w = width - popup_pad_x * 2, .h = content_height },
             .padding = .all(0),
             .background = true,
             .color_fill = palette.popup_bg,
@@ -131,7 +132,7 @@ fn popup(app: *App, palette: theme.Palette, state: *State, id_extra: usize) void
 
     if (pending_action) |action| applyRowAction(app, action);
 
-    if (outsidePopupClick(win.data().rectScale().r)) {
+    if (outsidePopupClick(win.data().rectScale().r, button_rect)) {
         state.popup_open = false;
         win.close();
     }
@@ -159,12 +160,17 @@ fn transferIndex(tasks: []const transfer.TransferTask, transfer_id: u64) ?usize 
     return null;
 }
 
-fn popupRect(anchor: dvui.Rect.Natural, tasks: []const transfer.TransferTask) dvui.Rect {
-    const width = popupWidth(tasks);
-    const height = @min(popup_max_height, popupContentHeight(tasks, width) + 28 + popup_pad_y * 2);
+fn popupRect(anchor: dvui.Rect.Natural, panel_bounds: dvui.Rect.Natural, tasks: []const transfer.TransferTask) dvui.Rect {
+    const width = @min(popupWidth(tasks), panel_bounds.w);
+    const y = anchor.y + anchor.h + 4;
+    const available_height = @max(panel_bounds.y + panel_bounds.h - y, 1);
+    const desired_height = popupContentHeight(tasks, width) + 28 + popup_pad_y * 2;
+    const height = @min(popup_max_height, @min(desired_height, available_height));
+    const preferred_x = anchor.x + anchor.w - width;
+    const x = std.math.clamp(preferred_x, panel_bounds.x, panel_bounds.x + panel_bounds.w - width);
     return .{
-        .x = anchor.x + anchor.w - width,
-        .y = anchor.y + anchor.h + 4,
+        .x = x,
+        .y = y,
         .w = width,
         .h = height,
     };
@@ -470,13 +476,14 @@ fn actionIconButton(bytes: []const u8, name: []const u8, palette: theme.Palette,
     }).clicked;
 }
 
-fn outsidePopupClick(menu_rect: dvui.Rect.Physical) bool {
+fn outsidePopupClick(menu_rect: dvui.Rect.Physical, button_rect: dvui.Rect.Physical) bool {
     if (menu_rect.empty()) return false;
     for (dvui.events()) |event| {
-        if (event.handled or event.evt != .mouse) continue;
+        if (event.evt != .mouse) continue;
         const mouse = event.evt.mouse;
         if (mouse.action != .press or !mouse.button.pointer()) continue;
         if (menu_rect.contains(mouse.p)) continue;
+        if (button_rect.contains(mouse.p)) continue;
         return true;
     }
     return false;

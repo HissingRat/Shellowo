@@ -92,7 +92,7 @@ SSH PTY channel
 
 - [x] 统一使用闪烁下划线 cursor；保留远端 shape/blink 状态供后续可配置样式使用。
 - [x] terminal 失焦时隐藏 cursor。
-- [ ] 统一 cell width / line height 计算，避免 cursor 与文本错位。
+- [x] 统一 cell width / line height 计算，PTY resize、绘制、鼠标命中、cursor 与 IME 使用同一 `TerminalMetrics`。
 - [x] 支持远端 cursor visible 状态。
 
 验收：
@@ -223,7 +223,7 @@ dirty metadata、行缓存和 present 调度层，不代表底层窗口像素级
 
 ### 12. 回归测试基线
 
-- [ ] 建立 terminal fixture。
+- [x] 建立数据化 terminal fixture runner。
 - [x] 覆盖 ANSI colors。
 - [x] 覆盖 resize。
 - [x] 覆盖 scrollback。

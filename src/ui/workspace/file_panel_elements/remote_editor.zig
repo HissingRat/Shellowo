@@ -19,6 +19,7 @@ const search_capacity = 128;
 const replace_capacity = 256;
 
 const ConfirmAction = enum { cancel, discard, save };
+const ConflictAction = enum { keep_editing, reload, overwrite };
 const SearchAction = enum { find_nearest, find_prev, find_next, replace_next, replace_all };
 
 pub const State = struct {
@@ -32,6 +33,8 @@ pub const State = struct {
     close_after_save: bool = false,
     save_requested: bool = false,
     close_requested: bool = false,
+    conflict_dismissed: bool = false,
+    observed_save_conflict: bool = false,
     search_focus_requested: bool = false,
     search_action: ?SearchAction = null,
     search_query: [search_capacity]u8 = std.mem.zeroes([search_capacity]u8),
@@ -91,6 +94,7 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
     header(state, snapshot, state.dirty, palette, id_extra + 10);
     separator(palette, id_extra + 20);
     progressBar(snapshot, palette, id_extra + 24);
+    editorNotice(snapshot, palette, id_extra + 26);
 
     var action: ?remote_file.FilePanelIntent = null;
     var current_text: []const u8 = "";
@@ -106,6 +110,8 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
     }
     handleEditorShortcuts(root.data(), state);
     state.dirty = dirty;
+    observeSaveConflict(state, snapshot.save_conflict);
+    if (state.save_requested and snapshot.save_conflict) state.conflict_dismissed = false;
 
     if (state.close_after_save and snapshot.state == .ready and !dirty) {
         state.close_after_save = false;
@@ -113,11 +119,12 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
         action = .{ .close_edit = .remote };
     }
 
-    if (action == null and snapshot.state == .ready and !state.confirm_close and state.save_requested) {
+    if (action == null and snapshot.state == .ready and !state.confirm_close and !snapshot.save_conflict and state.save_requested) {
         action = .{ .save_edit = .{
             .pane = .remote,
             .path = snapshot.path,
             .content = current_text,
+            .force = false,
         } };
     }
 
@@ -146,13 +153,38 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
                 .save => if (snapshot.state == .ready) {
                     state.confirm_close = false;
                     state.close_after_save = true;
+                    state.conflict_dismissed = false;
+                    state.open = true;
                     action = .{ .save_edit = .{
                         .pane = .remote,
                         .path = snapshot.path,
                         .content = current_text,
+                        .force = false,
                     } };
                 },
             }
+        }
+    }
+
+    if (action == null and snapshot.save_conflict and !state.conflict_dismissed) {
+        if (conflictPrompt(palette, id_extra + 120)) |conflict_action| {
+            action = switch (conflict_action) {
+                .keep_editing => blk: {
+                    state.conflict_dismissed = true;
+                    state.close_after_save = false;
+                    break :blk null;
+                },
+                .reload => blk: {
+                    state.close_after_save = false;
+                    break :blk .{ .reload_edit = .remote };
+                },
+                .overwrite => .{ .save_edit = .{
+                    .pane = .remote,
+                    .path = snapshot.path,
+                    .content = current_text,
+                    .force = true,
+                } },
+            };
         }
     }
 
@@ -163,6 +195,17 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
         }
     }
     return action;
+}
+
+fn observeSaveConflict(state: *State, save_conflict: bool) void {
+    if (save_conflict and !state.observed_save_conflict) {
+        state.open = true;
+        state.confirm_close = false;
+        state.conflict_dismissed = false;
+    } else if (!save_conflict) {
+        state.conflict_dismissed = false;
+    }
+    state.observed_save_conflict = save_conflict;
 }
 
 fn loadEditorFontsOnce(state: *State, os_win: anytype) void {
@@ -222,6 +265,33 @@ fn header(state: *State, snapshot: remote_file.FileEditorSnapshot, dirty: bool, 
         .gravity_y = 0.5,
         .id_extra = id_extra + 1,
     });
+
+    var format_buf: [96]u8 = undefined;
+    const format_label = std.fmt.bufPrint(
+        &format_buf,
+        "{s} · {s}{s}",
+        .{
+            snapshot.encoding.label(),
+            snapshot.line_ending.label(),
+            if (snapshot.large_file) " · Large file" else "",
+        },
+    ) catch snapshot.encoding.label();
+    dvui.label(@src(), "{s}", .{format_label}, .{
+        .font = theme.textFont(format_label, 8.5),
+        .color_text = if (snapshot.large_file) palette.warning else palette.muted_text,
+        .gravity_y = 0.5,
+        .margin = .{ .x = 8 },
+        .id_extra = id_extra + 2,
+    });
+
+    if (theme.button(@src(), "Save", .{
+        .min_size_content = .{ .w = 62, .h = 24 },
+        .max_size_content = .{ .w = 62, .h = 24 },
+        .gravity_y = 0.5,
+        .id_extra = id_extra + 3,
+    }, palette, .{ .intent = .primary, .variant = .solid, .font_size = 9.5 })) {
+        state.save_requested = true;
+    }
 
     searchBox(state, palette, id_extra + 20);
 }
@@ -485,6 +555,28 @@ fn progressBar(snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette,
         };
         fill_rect.fill(.all(@min(crs.r.h / 2, 3 * crs.s)), .{ .color = palette.accent.opacity(0.68) });
     }
+}
+
+fn editorNotice(snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) void {
+    if (snapshot.state != .ready or snapshot.error_summary == null or snapshot.save_conflict) return;
+    const message = snapshot.error_summary.?;
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, theme.panel(.{
+        .expand = .horizontal,
+        .min_size_content = .height(24),
+        .max_size_content = .height(24),
+        .padding = .{ .x = 14, .y = 5, .w = 14, .h = 4 },
+        .id_extra = id_extra,
+    }, palette).override(.{
+        .color_fill = palette.panel_bg,
+        .color_border = palette.panel_bg,
+    }));
+    defer row.deinit();
+    dvui.label(@src(), "{s}", .{message}, .{
+        .font = theme.textFont(message, 9),
+        .color_text = if (std.mem.eql(u8, message, "Saved")) palette.network_rx else palette.warning,
+        .expand = .horizontal,
+        .id_extra = id_extra + 1,
+    });
 }
 
 fn loadFraction(snapshot: remote_file.FileEditorSnapshot) f32 {
@@ -865,7 +957,10 @@ fn editorTextOptions(palette: theme.Palette, naked_theme: *const dvui.Theme, id_
         .color_fill_hover = dvui.Color.transparent,
         .color_fill_press = dvui.Color.transparent,
         .color_border = dvui.Color.transparent,
-        .font = theme.textFont("editor", 10),
+        // TextEntry uses one font for the entire editable buffer and does not
+        // provide per-codepoint fallback. Use the bundled Unicode-capable font
+        // so content typed after opening an ASCII file is visible as well.
+        .font = theme.cjkFont(10),
     });
 }
 
@@ -1003,15 +1098,74 @@ fn unsavedPrompt(palette: theme.Palette, id_extra: usize) ?ConfirmAction {
     if (theme.button(@src(), "Cancel", .{
         .min_size_content = .{ .w = 76, .h = 24 },
         .id_extra = id_extra + 12,
+        .padding = .{ .h = 0 },
     }, palette, .{ .variant = .ghost, .font_size = 10 })) return .cancel;
     if (theme.button(@src(), "Discard", .{
         .min_size_content = .{ .w = 82, .h = 24 },
         .id_extra = id_extra + 13,
+        .padding = .{ .h = 0 },
     }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = 10 })) return .discard;
     if (theme.button(@src(), "Save", .{
         .min_size_content = .{ .w = 76, .h = 24 },
         .id_extra = id_extra + 14,
+        .padding = .{ .h = 0 },
     }, palette, .{ .intent = .primary, .variant = .solid, .font_size = 10 })) return .save;
+    return null;
+}
+
+fn conflictPrompt(palette: theme.Palette, id_extra: usize) ?ConflictAction {
+    const window_rect = dvui.windowRect();
+    const popup_w: f32 = 348;
+    const popup_h: f32 = 86;
+    const rect: dvui.Rect.Natural = .{
+        .x = @max(12, @round((window_rect.w - popup_w) / 2)),
+        .y = @max(12, @round((window_rect.h - popup_h) / 2)),
+        .w = popup_w,
+        .h = popup_h,
+    };
+
+    var panel: dvui.FloatingWidget = undefined;
+    panel.init(@src(), .{}, theme.popup(.{
+        .rect = .cast(rect),
+        .min_size_content = .{ .w = rect.w, .h = rect.h },
+        .max_size_content = .{ .w = rect.w, .h = rect.h },
+        .padding = .{ .x = 10, .y = 8, .w = 10, .h = 8 },
+        .border = .all(1),
+        .corner_radius = .all(6),
+        .id_extra = id_extra,
+    }, palette));
+    defer panel.deinit();
+    dvui.focusSubwindow(panel.data().id, null);
+
+    dvui.label(@src(), "Remote File Changed", .{}, .{
+        .font = theme.textFont("Remote File Changed", 12),
+        .color_text = palette.warning,
+        .expand = .horizontal,
+        .id_extra = id_extra + 1,
+        .margin = .{ .h = 2 },
+    });
+
+    var buttons = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .gravity_x = 1,
+        .id_extra = id_extra + 10,
+    });
+    defer buttons.deinit();
+    if (theme.button(@src(), "Keep Editing", .{
+        .min_size_content = .{ .w = 106, .h = 24 },
+        .id_extra = id_extra + 11,
+        .padding = .{ .h = 0 },
+    }, palette, .{ .variant = .ghost, .font_size = 9.5 })) return .keep_editing;
+    if (theme.button(@src(), "Reload", .{
+        .min_size_content = .{ .w = 72, .h = 24 },
+        .id_extra = id_extra + 12,
+        .padding = .{ .h = 0 },
+    }, palette, .{ .variant = .ghost, .font_size = 9.5 })) return .reload;
+    if (theme.button(@src(), "Overwrite", .{
+        .min_size_content = .{ .w = 82, .h = 24 },
+        .id_extra = id_extra + 13,
+        .padding = .{ .h = 0 },
+    }, palette, .{ .intent = .danger, .variant = .solid, .font_size = 9.5 })) return .overwrite;
     return null;
 }
 
@@ -1024,4 +1178,35 @@ fn separator(palette: theme.Palette, id_extra: usize) void {
         .id_extra = id_extra,
         .color_fill = palette.border_subtle,
     });
+}
+
+test "save conflict preserves close-after-save for overwrite resolution" {
+    var state = State{
+        .open = false,
+        .confirm_close = true,
+        .close_after_save = true,
+        .conflict_dismissed = true,
+    };
+
+    observeSaveConflict(&state, true);
+    try std.testing.expect(state.open);
+    try std.testing.expect(!state.confirm_close);
+    try std.testing.expect(state.close_after_save);
+    try std.testing.expect(!state.conflict_dismissed);
+    try std.testing.expect(state.observed_save_conflict);
+}
+
+test "existing conflict dismissal remains stable until a new conflict edge" {
+    var state = State{
+        .open = true,
+        .conflict_dismissed = true,
+        .observed_save_conflict = true,
+    };
+
+    observeSaveConflict(&state, true);
+    try std.testing.expect(state.conflict_dismissed);
+
+    observeSaveConflict(&state, false);
+    observeSaveConflict(&state, true);
+    try std.testing.expect(!state.conflict_dismissed);
 }

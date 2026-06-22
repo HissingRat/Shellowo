@@ -9,6 +9,7 @@ const workspace = @import("../../core/workspace.zig");
 const terminal = @import("../../contracts/terminal_emulator.zig");
 const ssh_session = @import("ssh_session.zig");
 const ssh_workspace_worker = @import("ssh_workspace_worker.zig");
+const transfer_scheduler = @import("../transfers/scheduler.zig");
 
 const SshWorkspaceRuntimeSlot = struct {
     tab_id: u64,
@@ -16,17 +17,31 @@ const SshWorkspaceRuntimeSlot = struct {
     presented_file_notice_generation: u64 = 0,
 };
 
+const RetiredSshWorkspaceRuntimeSlot = struct {
+    tab_id: u64,
+    worker: *ssh_workspace_worker.SshWorkspaceWorker,
+};
+
 const ActiveTerminalSlot = struct {
     tab_id: u64,
     slot_id: terminal_slot.TerminalSlotId,
+};
+
+const QueuedTransferIntent = struct {
+    id: u64,
+    tab_id: u64,
+    intent: remote_file.FilePanelIntent,
 };
 
 pub const SessionRegistry = struct {
     allocator: std.mem.Allocator,
     tabs: std.ArrayList(workspace.WorkspaceTab) = .empty,
     ssh_workspaces: std.ArrayList(SshWorkspaceRuntimeSlot) = .empty,
-    retired_ssh_workspaces: std.ArrayList(*ssh_workspace_worker.SshWorkspaceWorker) = .empty,
+    retired_ssh_workspaces: std.ArrayList(RetiredSshWorkspaceRuntimeSlot) = .empty,
     active_terminal_slots: std.ArrayList(ActiveTerminalSlot) = .empty,
+    transfer_scheduler: transfer_scheduler.Scheduler = .{},
+    queued_transfer_intents: std.ArrayList(QueuedTransferIntent) = .empty,
+    transfer_updates: std.ArrayList(transfer.TransferProgress) = .empty,
     next_id: u64 = 1,
     active_tab_id: ?u64 = null,
 
@@ -35,12 +50,18 @@ pub const SessionRegistry = struct {
     }
 
     pub fn deinit(self: *SessionRegistry) void {
+        for (self.queued_transfer_intents.items) |record| {
+            remote_file.freePanelIntent(self.allocator, record.intent);
+        }
+        self.queued_transfer_intents.deinit(self.allocator);
+        self.transfer_updates.deinit(self.allocator);
+        self.transfer_scheduler.deinit(self.allocator);
         for (self.ssh_workspaces.items) |slot| {
             slot.worker.destroy();
         }
         self.ssh_workspaces.deinit(self.allocator);
-        for (self.retired_ssh_workspaces.items) |worker| {
-            worker.destroy();
+        for (self.retired_ssh_workspaces.items) |slot| {
+            slot.worker.destroy();
         }
         self.retired_ssh_workspaces.deinit(self.allocator);
         self.active_terminal_slots.deinit(self.allocator);
@@ -89,6 +110,7 @@ pub const SessionRegistry = struct {
             };
             self.setTabStatus(tab.id, status);
         }
+        self.dispatchTransfers();
     }
 
     pub fn activate(self: *SessionRegistry, id: u64) void {
@@ -101,12 +123,19 @@ pub const SessionRegistry = struct {
     }
 
     pub fn closeTab(self: *SessionRegistry, id: u64) void {
+        self.cancelPendingTransfersForTab(id);
         if (self.sshWorkspaceIndex(id)) |worker_idx| {
             const slot = self.ssh_workspaces.orderedRemove(worker_idx);
             slot.worker.requestRetire();
-            self.retired_ssh_workspaces.append(self.allocator, slot.worker) catch {
+            self.retired_ssh_workspaces.append(self.allocator, .{
+                .tab_id = id,
+                .worker = slot.worker,
+            }) catch {
                 slot.worker.destroy();
+                self.releaseRunningTransfersForTab(id);
             };
+        } else {
+            self.releaseRunningTransfersForTab(id);
         }
 
         if (self.activeTerminalSlotIndex(id)) |active_idx| {
@@ -171,24 +200,55 @@ pub const SessionRegistry = struct {
 
     pub fn handleFilePanelIntent(self: *SessionRegistry, tab_id: u64, intent: remote_file.FilePanelIntent) !void {
         if (self.tabById(tab_id) == null) return ssh_session.Error.ChannelClosed;
+        if (transferIntentId(intent)) |transfer_id| {
+            const owned = try remote_file.clonePanelIntent(self.allocator, intent);
+            errdefer remote_file.freePanelIntent(self.allocator, owned);
+            try self.queued_transfer_intents.append(self.allocator, .{
+                .id = transfer_id,
+                .tab_id = tab_id,
+                .intent = owned,
+            });
+            errdefer {
+                const removed = self.queued_transfer_intents.pop().?;
+                remote_file.freePanelIntent(self.allocator, removed.intent);
+            }
+            try self.transfer_scheduler.enqueue(self.allocator, .{
+                .id = transfer_id,
+                .session_id = tab_id,
+            });
+            self.dispatchTransfers();
+            return;
+        }
         if (self.sshWorkspace(tab_id)) |worker| {
             try worker.queueFileIntent(intent);
         }
     }
 
     pub fn transferProgress(self: *SessionRegistry, buffer: []transfer.TransferProgress) []transfer.TransferProgress {
-        var count: usize = 0;
+        var count = self.drainTransferUpdates(buffer);
         for (self.ssh_workspaces.items) |slot| {
             if (count >= buffer.len) break;
             const written = slot.worker.transferProgress(buffer[count..]);
+            for (written) |update| {
+                if (isTerminalTransferStatus(update.status)) {
+                    _ = self.transfer_scheduler.finish(update.id);
+                }
+            }
             count += written.len;
         }
+        self.dispatchTransfers();
         return buffer[0..count];
     }
 
     pub fn cancelTransfer(self: *SessionRegistry, transfer_id: u64) void {
-        for (self.ssh_workspaces.items) |slot| {
-            slot.worker.requestCancelTransfer(transfer_id);
+        if (self.transfer_scheduler.cancelPending(transfer_id)) {
+            self.removeQueuedTransferIntent(transfer_id);
+            self.emitTransferUpdate(transfer_id, .canceled);
+            self.dispatchTransfers();
+            return;
+        }
+        if (self.transfer_scheduler.runningSession(transfer_id)) |tab_id| {
+            if (self.sshWorkspace(tab_id)) |worker| worker.requestCancelTransfer(transfer_id);
         }
     }
 
@@ -355,17 +415,110 @@ pub const SessionRegistry = struct {
     fn reapRetiredWorkspaces(self: *SessionRegistry) void {
         var idx: usize = 0;
         while (idx < self.retired_ssh_workspaces.items.len) {
-            const worker = self.retired_ssh_workspaces.items[idx];
-            worker.reapFinishedThreads();
-            if (!worker.canDestroyWithoutBlocking()) {
+            const slot = self.retired_ssh_workspaces.items[idx];
+            slot.worker.reapFinishedThreads();
+            if (!slot.worker.canDestroyWithoutBlocking()) {
                 idx += 1;
                 continue;
             }
-            worker.destroy();
+            slot.worker.destroy();
+            self.releaseRunningTransfersForTab(slot.tab_id);
             _ = self.retired_ssh_workspaces.orderedRemove(idx);
         }
     }
+
+    fn dispatchTransfers(self: *SessionRegistry) void {
+        while (self.transfer_scheduler.nextReady(self.allocator) catch null) |task| {
+            const record_idx = self.queuedTransferIntentIndex(task.id) orelse {
+                _ = self.transfer_scheduler.finish(task.id);
+                continue;
+            };
+            const record = self.queued_transfer_intents.items[record_idx];
+            const worker = self.sshWorkspace(record.tab_id) orelse {
+                _ = self.transfer_scheduler.finish(task.id);
+                self.emitTransferUpdate(task.id, .failed);
+                self.removeQueuedTransferIntentAt(record_idx);
+                continue;
+            };
+            worker.queueFileIntent(record.intent) catch {
+                _ = self.transfer_scheduler.finish(task.id);
+                self.emitTransferUpdate(task.id, .failed);
+                self.removeQueuedTransferIntentAt(record_idx);
+                continue;
+            };
+            self.removeQueuedTransferIntentAt(record_idx);
+        }
+    }
+
+    fn cancelPendingTransfersForTab(self: *SessionRegistry, tab_id: u64) void {
+        var canceled_ids: std.ArrayList(u64) = .empty;
+        defer canceled_ids.deinit(self.allocator);
+        self.transfer_scheduler.removePendingSession(tab_id, &canceled_ids, self.allocator);
+        for (canceled_ids.items) |transfer_id| {
+            self.removeQueuedTransferIntent(transfer_id);
+            self.emitTransferUpdate(transfer_id, .canceled);
+        }
+    }
+
+    fn releaseRunningTransfersForTab(self: *SessionRegistry, tab_id: u64) void {
+        var canceled_ids: std.ArrayList(u64) = .empty;
+        defer canceled_ids.deinit(self.allocator);
+        self.transfer_scheduler.removeRunningSession(tab_id, &canceled_ids, self.allocator);
+        for (canceled_ids.items) |transfer_id| {
+            self.removeQueuedTransferIntent(transfer_id);
+            self.emitTransferUpdate(transfer_id, .canceled);
+        }
+    }
+
+    fn emitTransferUpdate(self: *SessionRegistry, id: u64, status: transfer.TransferStatus) void {
+        self.transfer_updates.append(self.allocator, .{
+            .id = id,
+            .status = status,
+            .progress = if (status == .pending or status == .running) 0 else 1,
+        }) catch {};
+    }
+
+    fn drainTransferUpdates(self: *SessionRegistry, buffer: []transfer.TransferProgress) usize {
+        const count = @min(buffer.len, self.transfer_updates.items.len);
+        if (count == 0) return 0;
+        @memcpy(buffer[0..count], self.transfer_updates.items[0..count]);
+        self.transfer_updates.replaceRange(self.allocator, 0, count, &.{}) catch {
+            for (0..count) |_| _ = self.transfer_updates.orderedRemove(0);
+        };
+        return count;
+    }
+
+    fn queuedTransferIntentIndex(self: *const SessionRegistry, transfer_id: u64) ?usize {
+        for (self.queued_transfer_intents.items, 0..) |record, idx| {
+            if (record.id == transfer_id) return idx;
+        }
+        return null;
+    }
+
+    fn removeQueuedTransferIntent(self: *SessionRegistry, transfer_id: u64) void {
+        const idx = self.queuedTransferIntentIndex(transfer_id) orelse return;
+        self.removeQueuedTransferIntentAt(idx);
+    }
+
+    fn removeQueuedTransferIntentAt(self: *SessionRegistry, idx: usize) void {
+        const record = self.queued_transfer_intents.orderedRemove(idx);
+        remote_file.freePanelIntent(self.allocator, record.intent);
+    }
 };
+
+fn transferIntentId(intent: remote_file.FilePanelIntent) ?u64 {
+    return switch (intent) {
+        .upload => |item| item.transfer_id,
+        .upload_many => |item| item.transfer_id,
+        .download => |item| item.transfer_id,
+        .download_many => |item| item.transfer_id,
+        else => null,
+    };
+}
+
+fn isTerminalTransferStatus(status: transfer.TransferStatus) bool {
+    return status == .completed or status == .failed or status == .canceled;
+}
 
 fn consumeFileNotice(presented_generation: *u64, generation: u64, summary: ?[]const u8) ?[]const u8 {
     if (generation == 0 or generation == presented_generation.* or summary == null) return null;

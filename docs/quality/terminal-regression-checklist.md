@@ -2,6 +2,12 @@
 
 终端相关改动必须复测这些场景。Shellow 已接入真实 SSH PTY 和 libvterm emulator；本清单用于保持日常 terminal 行为不回退。
 
+## 自动回归基线
+
+- `src/backends/terminal/fixture_tests.zig` 覆盖分段 ANSI、宽字符、cursor、alternate screen、bracketed paste、scrollback 与 resize。
+- `src/ui/features/terminal/metrics.zig` 覆盖网格尺寸、鼠标命中和最小行列钳制。
+- 改动 terminal parser、snapshot 或 cell metrics 后必须执行 `zig build test`。
+
 ## 基础
 
 - 连接后显示 shell prompt。
@@ -9,6 +15,7 @@
 - 复制和粘贴不破坏换行。
 - bracketed paste 模式下，粘贴不会被 shell 当作逐键输入处理。
 - 大文本粘贴会分批发送，期间 UI 仍可响应，末尾内容不会丢失。
+- 单个 chunk 内的小段粘贴在远端回显后立即可见，不需要再输入字符或移动 cursor 才刷新。
 - 中文、Powerline 字符和宽字符不明显错位。
 - IME composition 期间候选窗靠近 cursor，提交后只发送最终文本。
 

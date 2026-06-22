@@ -26,8 +26,9 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 - PTY shell channel、libvterm terminal rendering、resize/input/selection 基础路径
 - terminal runtime 在异常断线后保留最后 screen/scrollback snapshot；主动关闭仍释放 runtime
 - SFTP 文件面板：远端目录树、右侧文件表、基础 mutation、上传/下载任务
-- 全局 transfer task 摘要、进度、速度、取消、重试、覆盖确认和 busy 状态
-- 远程文件编辑器基础能力：加载、保存、查找/替换和未保存关闭确认
+- 远端目录采用 snapshot + 事件驱动 revalidation：首次无 snapshot 时显示 loading，进入已有缓存的目录时立即展示旧 snapshot 并在后台更新；用户可通过工具栏或右键菜单手动刷新，Shellow 自身 mutation 完成后也会主动刷新，不做固定周期轮询
+- 全局 transfer scheduler：最多 10 个运行任务、单 SSH workspace 最多 4 个；支持 pending、进度、速度、取消、重试、覆盖确认和 busy 状态
+- 远程文件编辑器：加载、查找/替换、UTF-8/BOM/ASCII 与换行识别、远端冲突检查、临时文件原子替换和未保存关闭确认
 - 系统信息面板雏形与进程/网络快照
 - 设置与主题系统基础：`owoConfig.json`、Light/Dark、窗口/布局尺寸和下载路径持久化
 - 三平台 CI 构建、nightly/tag Release、macOS `.app` 基础打包
@@ -35,8 +36,8 @@ Shellow 第一版要解决的是“原生桌面远程工作台”的核心闭环
 尚未具备：
 
 - 平台系统凭据库集成与发布级 profile secret 策略；当前已有可选 Master Password 加密 vault
-- 完整传输中心体验，例如持久化历史、批量控制、并发/排队策略和更清晰的占用说明
-- 远程编辑器的大文件、编码检测和冲突处理等高级编辑体验
+- 完整传输中心体验，例如持久化历史、批量控制和更清晰的占用说明
+- 通用编码转换、真正分块的大文件编辑和可视化 diff/merge 等高级编辑体验
 - 正式发布签名、公证、安装器和三平台运行回归
 
 ## 3. 技术路线
@@ -252,6 +253,7 @@ SFTP 文件操作通过 Shellow-owned controller 暴露：
 - stat
 - mkdir
 - rename
+- atomic replace
 - delete
 - chmod
 - read

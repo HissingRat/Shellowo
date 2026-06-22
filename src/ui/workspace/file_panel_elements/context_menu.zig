@@ -36,6 +36,7 @@ pub const EntryAction = struct {
         download,
         upload,
         upload_folder,
+        refresh,
         details,
     };
 };
@@ -45,6 +46,7 @@ pub const BlankAction = enum {
     new_folder,
     upload,
     upload_folder,
+    refresh,
 };
 
 pub const DeleteAction = enum {
@@ -75,7 +77,8 @@ pub fn entry(palette: theme.Palette, opts: EntryOptions) ?EntryAction {
     if (menuItem("Upload", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 8)) |_| return closeEntry(menu, .upload, .{});
     if (menuItem("Upload Folder", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 9)) |_| return closeEntry(menu, .upload_folder, .{});
     rowSeparator(palette, opts.id_extra + 21);
-    if (menuItem("Details", opts.can_mutate, palette, opts.id_extra + 10)) |_| return closeEntry(menu, .details, .{});
+    if (menuItem("Refresh", opts.capabilities.can_refresh, palette, opts.id_extra + 10)) |_| return closeEntry(menu, .refresh, .{});
+    if (menuItem("Details", opts.can_mutate, palette, opts.id_extra + 11)) |_| return closeEntry(menu, .details, .{});
     return null;
 }
 
@@ -95,6 +98,8 @@ pub fn blank(palette: theme.Palette, opts: BlankOptions) ?BlankAction {
     rowSeparator(palette, opts.id_extra + 20);
     if (menuItem("Upload", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 4)) |_| return closeBlank(menu, .upload);
     if (menuItem("Upload Folder", can_change_path and opts.capabilities.can_upload, palette, opts.id_extra + 5)) |_| return closeBlank(menu, .upload_folder);
+    rowSeparator(palette, opts.id_extra + 21);
+    if (menuItem("Refresh", opts.capabilities.can_refresh, palette, opts.id_extra + 6)) |_| return closeBlank(menu, .refresh);
     return null;
 }
 
