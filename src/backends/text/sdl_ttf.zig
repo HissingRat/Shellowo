@@ -5,6 +5,7 @@ const platform_fonts = @import("platform_fonts.zig");
 
 const c = dvui.backend.c;
 const cjk_font_family = "Noto Sans CJK SC";
+const emoji_advance_padding_ratio: f32 = 0.16;
 
 pub const System = struct {
     allocator: std.mem.Allocator,
@@ -244,6 +245,10 @@ pub const System = struct {
         return @max(1, @min(text_height * 0.82, em * 1.04));
     }
 
+    fn emojiAdvancePhysical(self: *System, font: dvui.Font, scale: f32) f32 {
+        return emojiAdvanceForBox(self.emojiBoxPhysical(font, scale));
+    }
+
     fn measure(
         context: *anyopaque,
         font: dvui.Font,
@@ -271,6 +276,7 @@ pub const System = struct {
         var end = line.bytes.len;
         const has_emoji = containsEmojiCluster(line.bytes);
         const emoji_box = self.emojiBoxPhysical(font, scale);
+        const emoji_advance = emojiAdvanceForBox(emoji_box);
         if (options.max_width) |max_width| {
             const point_x: c_int = @intFromFloat(@max(0, @round(max_width * scale)));
             if (has_emoji) {
@@ -279,7 +285,7 @@ pub const System = struct {
                     line.bytes,
                     @floatFromInt(point_x),
                     options.end_metric,
-                    emoji_box,
+                    emoji_advance,
                 );
             } else {
                 var substring: c.TTF_SubString = undefined;
@@ -290,7 +296,7 @@ pub const System = struct {
         }
         if (options.max_width) |max_width| {
             const max_width_px = @max(0, max_width * scale);
-            while (end > 0 and compensatedCaretXPhysical(layout_text, line.bytes, end, emoji_box) > max_width_px) {
+            while (end > 0 and compensatedCaretXPhysical(layout_text, line.bytes, end, emoji_advance) > max_width_px) {
                 const previous = previousEmojiOrCodepoint(line.bytes, end);
                 if (previous >= end) break;
                 end = previous;
@@ -307,9 +313,9 @@ pub const System = struct {
         }
 
         const measured_width_px = if (end < line.bytes.len)
-            compensatedCaretXPhysical(layout_text, line.bytes, end, emoji_box)
+            compensatedCaretXPhysical(layout_text, line.bytes, end, emoji_advance)
         else
-            @as(f32, @floatFromInt(width_px)) + emojiCompensationBefore(layout_text, line.bytes, line.bytes.len, emoji_box);
+            @as(f32, @floatFromInt(width_px)) + emojiCompensationBefore(layout_text, line.bytes, line.bytes.len, emoji_advance);
         const measured_height_px = if (has_emoji)
             @max(self.fontTextHeightPhysical(font, scale), emoji_box)
         else
@@ -332,12 +338,13 @@ pub const System = struct {
 
         const face = self.faceFor(font, scale) orelse return null;
         const emoji_box = self.emojiBoxPhysical(font, scale);
+        const emoji_advance = emojiAdvanceForBox(emoji_box);
         const metrics = self.simpleMetricsFor(font, scale);
 
         const measured = if (options.max_width) |max_width|
-            measureEmojiWidth(face.primary, metrics, line.bytes, emoji_box, @max(0, max_width * scale), options.end_metric)
+            measureEmojiWidth(face.primary, metrics, line.bytes, emoji_advance, @max(0, max_width * scale), options.end_metric)
         else
-            measureEmojiWidth(face.primary, metrics, line.bytes, emoji_box, null, options.end_metric);
+            measureEmojiWidth(face.primary, metrics, line.bytes, emoji_advance, null, options.end_metric);
 
         var end = measured.end;
         if (line.has_newline and end == line.bytes.len) end += 1;
@@ -525,9 +532,10 @@ pub const System = struct {
         else
             16 * scale;
         const emoji_box = self.emojiBoxPhysical(options.font, scale);
+        const emoji_advance = emojiAdvanceForBox(emoji_box);
         const has_emoji = containsEmojiCluster(options.text);
         const use_emoji_overlay = has_emoji and emojiOverlayEnabled();
-        const emoji_extra = if (use_emoji_overlay) emojiCompensationBefore(text, options.text, options.text.len, emoji_box) else 0;
+        const emoji_extra = if (use_emoji_overlay) emojiCompensationBefore(text, options.text, options.text.len, emoji_advance) else 0;
         const render_height = if (use_emoji_overlay) @max(self.fontTextHeightPhysical(options.font, scale), emoji_box) else default_h;
 
         if (options.background_color) |background| {
@@ -545,8 +553,8 @@ pub const System = struct {
         const sel_end = @min(options.sel_end orelse 0, options.text.len);
         if (sel_start < sel_end and use_emoji_overlay) {
             const selection_color = options.sel_color orelse dvui.themeGet().focus;
-            const x0 = compensatedCaretXPhysical(text, options.text, sel_start, emoji_box);
-            const x1 = compensatedCaretXPhysical(text, options.text, sel_end, emoji_box);
+            const x0 = compensatedCaretXPhysical(text, options.text, sel_start, emoji_advance);
+            const x1 = compensatedCaretXPhysical(text, options.text, sel_end, emoji_advance);
             (dvui.Rect.Physical{
                 .x = start.x + @min(x0, x1),
                 .y = start.y,
@@ -596,9 +604,9 @@ pub const System = struct {
 
         const align_cjk = containsCjkBaselineCodepoint(options.text) and !isCjkFont(options.font);
         if (use_emoji_overlay or align_cjk) {
-            try self.renderVisualTextSegments(options.font, text, options.text, start, scale, options.color, emoji_box, use_emoji_overlay, align_cjk);
+            try self.renderVisualTextSegments(options.font, text, options.text, start, scale, options.color, emoji_advance, use_emoji_overlay, align_cjk);
         } else if (!c.TTF_DrawRendererText(text, start.x, start.y)) return error.SdlTtfDrawFailed;
-        if (use_emoji_overlay) self.renderEmojiOverlays(text, options.text, start, emoji_box, render_height);
+        if (use_emoji_overlay) self.renderEmojiOverlays(text, options.text, start, emoji_box, emoji_advance, render_height);
     }
 
     fn caretX(
@@ -614,7 +622,7 @@ pub const System = struct {
         const shaped = self.layout(font, text, scale, null) orelse return 0;
         defer shaped.release();
         const layout_text = shaped.text;
-        return compensatedCaretXPhysical(layout_text, text, byte_offset, self.emojiBoxPhysical(font, scale)) / scale;
+        return compensatedCaretXPhysical(layout_text, text, byte_offset, self.emojiAdvancePhysical(font, scale)) / scale;
     }
 
     fn caretPoint(
@@ -635,11 +643,12 @@ pub const System = struct {
         var substring: c.TTF_SubString = undefined;
         if (!c.TTF_GetTextSubString(layout_text, @intCast(byte_offset), &substring)) {
             return .{
-                .x = compensatedCaretXPhysical(layout_text, text, byte_offset, self.emojiBoxPhysical(font, scale)) / scale,
+                .x = compensatedCaretXPhysical(layout_text, text, byte_offset, self.emojiAdvancePhysical(font, scale)) / scale,
                 .y = 0,
             };
         }
         const emoji_box = self.emojiBoxPhysical(font, scale);
+        const emoji_advance = emojiAdvanceForBox(emoji_box);
         const rtl = (substring.flags & c.TTF_SUBSTRING_DIRECTION_MASK) == c.TTF_DIRECTION_RTL;
         const at_start = byte_offset <= @as(usize, @intCast(@max(0, substring.offset)));
         const x_px: f32 = @floatFromInt(if (at_start)
@@ -647,7 +656,7 @@ pub const System = struct {
         else
             (if (rtl) substring.rect.x else substring.rect.x + substring.rect.w));
         return .{
-            .x = (x_px + emojiCompensationBefore(layout_text, text, byte_offset, emoji_box)) / scale,
+            .x = (x_px + emojiCompensationBeforeOnVisualLine(layout_text, text, byte_offset, substring.rect.y, emoji_advance)) / scale,
             .y = @as(f32, @floatFromInt(substring.rect.y)) / scale,
         };
     }
@@ -888,21 +897,27 @@ pub const System = struct {
         bytes: []const u8,
         start: dvui.Point.Physical,
         draw_h: f32,
+        emoji_advance: f32,
         line_h: f32,
     ) void {
         var index: usize = 0;
         while (nextEmojiCluster(bytes, &index)) |cluster| {
             const texture = self.emojiTexture(bytes[cluster.start..cluster.end], draw_h) orelse continue;
-            const cluster_x = compensatedCaretXPhysical(layout_text, bytes, cluster.start, draw_h);
+            const cluster_x = compensatedCaretXPhysical(layout_text, bytes, cluster.start, emoji_advance);
             const aspect = if (texture.height > 0) texture.width / texture.height else 1;
-            const draw_w = @max(1, draw_h * aspect);
-            const draw_x = start.x + cluster_x + (draw_h - draw_w) * 0.5;
-            const draw_y = start.y + @max(0, line_h - draw_h) * 0.5;
+            var draw_w = @max(1, draw_h * aspect);
+            var draw_actual_h = draw_h;
+            if (draw_w > emoji_advance) {
+                draw_w = @max(1, emoji_advance);
+                draw_actual_h = @max(1, draw_w / @max(aspect, 0.01));
+            }
+            const draw_x = start.x + cluster_x + @max(0, (emoji_advance - draw_w) * 0.5);
+            const draw_y = start.y + @max(0, line_h - draw_actual_h) * 0.5;
             const dst: c.SDL_FRect = .{
                 .x = draw_x,
                 .y = draw_y,
                 .w = draw_w,
-                .h = draw_h,
+                .h = draw_actual_h,
             };
             _ = c.SDL_RenderTexture(self.renderer, texture.texture, null, &dst);
         }
@@ -1048,6 +1063,10 @@ fn currentScale() f32 {
 
 fn safeScale(scale: f32) f32 {
     return if (scale > 0) scale else 1;
+}
+
+fn emojiAdvanceForBox(emoji_box: f32) f32 {
+    return @max(1, emoji_box) + @max(1, emoji_box * emoji_advance_padding_ratio);
 }
 
 const TextLine = struct {
@@ -1250,6 +1269,38 @@ fn emojiCompensationBefore(
         }
     }
     return extra;
+}
+
+fn emojiCompensationBeforeOnVisualLine(
+    layout_text: *c.TTF_Text,
+    bytes: []const u8,
+    byte_offset: usize,
+    line_y: c_int,
+    emoji_advance: f32,
+) f32 {
+    if (!emojiOverlayEnabled()) return 0;
+    var extra: f32 = 0;
+    var index: usize = 0;
+    const offset = @min(byte_offset, bytes.len);
+    while (nextEmojiCluster(bytes, &index)) |cluster| {
+        if (cluster.start >= offset) break;
+        if (!emojiClusterOnVisualLine(layout_text, cluster, line_y)) continue;
+
+        const delta = emojiClusterDeltaPhysical(layout_text, bytes, cluster, emoji_advance);
+        if (cluster.end <= offset) {
+            extra += delta;
+        } else {
+            extra += delta;
+            break;
+        }
+    }
+    return extra;
+}
+
+fn emojiClusterOnVisualLine(layout_text: *c.TTF_Text, cluster: ByteRange, line_y: c_int) bool {
+    var substring: c.TTF_SubString = undefined;
+    if (!c.TTF_GetTextSubString(layout_text, @intCast(cluster.start), &substring)) return false;
+    return substring.rect.y == line_y;
 }
 
 fn compensatedCaretXPhysical(

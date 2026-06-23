@@ -1153,10 +1153,7 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
 
     const blockers = app.closeBlockers();
     const window_rect = dvui.windowRect();
-    const blocker_count: usize =
-        @intFromBool(blockers.active_sessions > 0) +
-        @intFromBool(blockers.active_transfers > 0) +
-        @intFromBool(blockers.dirty_editors > 0);
+    const blocker_count = closeBlockerRowCount(blockers);
     const popup_w: f32 = 290;
     const popup_h: f32 = 100 + @as(f32, @floatFromInt(blocker_count)) * 21;
     const rect: dvui.Rect.Natural = .{
@@ -1278,6 +1275,23 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
     }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 12.5 })) {
         app.confirmWindowClose();
     }
+}
+
+fn closeBlockerRowCount(blockers: App.CloseBlockers) usize {
+    var count: usize = 0;
+    if (blockers.active_sessions > 0) count += 1;
+    if (blockers.active_transfers > 0) count += 1;
+    if (blockers.dirty_editors > 0) count += 1;
+    return count;
+}
+
+test "window close blocker row count handles multiple blockers" {
+    try std.testing.expectEqual(@as(usize, 0), closeBlockerRowCount(.{}));
+    try std.testing.expectEqual(@as(usize, 3), closeBlockerRowCount(.{
+        .active_sessions = 2,
+        .active_transfers = 1,
+        .dirty_editors = 1,
+    }));
 }
 
 fn handleWindowClosePromptKeys(app: *App, data: *dvui.WidgetData) void {

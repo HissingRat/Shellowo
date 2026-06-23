@@ -725,12 +725,10 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
     var te = &te_storage;
     defer te.deinit();
 
-    var reloaded_snapshot = false;
     if (dvui.firstFrame(te.data().id) or state.loaded_version != snapshot.version) {
         te.textSet(snapshot.content, false);
         state.loaded_version = snapshot.version;
         state.dirty = false;
-        reloaded_snapshot = true;
         clearSearchMatch(state);
         markSearchStatsDirty(state);
     }
@@ -738,15 +736,19 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
     applySearchAction(state, te);
     te.processEvents();
     te.draw();
+    const current_text = te.textGet();
     var dirty = state.dirty;
     if (te.text_changed) {
-        if (!reloaded_snapshot) dirty = true;
+        dirty = editorBufferDirty(current_text, snapshot.content);
         markSearchStatsDirty(state);
     }
-    const current_text = te.textGet();
     state.editor_text_len = current_text.len;
     updateSearchStatsLight(state, current_text);
     return .{ .dirty = dirty };
+}
+
+fn editorBufferDirty(current_text: []const u8, snapshot_content: []const u8) bool {
+    return current_text.len != snapshot_content.len or !std.mem.eql(u8, current_text, snapshot_content);
 }
 
 const SearchMatch = struct {
