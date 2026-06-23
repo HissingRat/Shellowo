@@ -409,7 +409,7 @@ fn searchBox(state: *State, palette: theme.Palette, id_extra: usize) void {
         dvui.focusWidget(te.data().id, null, null);
         state.search_focus_requested = false;
     }
-    if (te.enterPressed()) state.search_action = .find_nearest;
+    if (te.enterPressed()) state.search_action = .find_next;
     if (te.textChanged()) {
         clearSearchMatch(state);
     }
@@ -993,10 +993,8 @@ fn updateSearchStatsLight(state: *State, text: []const u8) void {
     if (!activeMatchValid(state, text, query)) {
         state.search_active_index = 0;
         state.search_has_match = false;
-        state.search_match_count = 0;
-        resetSearchStatsScan(state);
-        cacheSearchStatsKey(state, text, query);
-        return;
+        state.search_active_start = 0;
+        state.search_active_end = 0;
     }
 
     if (searchStatsNeedsRefresh(state, text, query)) {
@@ -1083,7 +1081,7 @@ fn continueSearchStatsScan(state: *State, text: []const u8, query: []const u8) v
 
 fn finishSearchStatsScan(state: *State) void {
     state.search_match_count = state.search_stats_scan_count;
-    if (state.search_match_count == 0) {
+    if (!state.search_has_match or state.search_match_count == 0) {
         state.search_active_index = 0;
     } else if (state.search_stats_scan_active_index > 0) {
         state.search_active_index = state.search_stats_scan_active_index;
