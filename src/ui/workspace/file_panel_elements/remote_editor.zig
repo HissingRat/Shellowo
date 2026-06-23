@@ -27,7 +27,6 @@ pub const State = struct {
     initialized: bool = false,
     positioned: bool = false,
     fonts_loaded: bool = false,
-    font_window: ?*dvui.Window = null,
     loaded_version: u64 = 0,
     dirty: bool = false,
     confirm_close: bool = false,
@@ -50,7 +49,6 @@ pub const State = struct {
 
 pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) ?remote_file.FilePanelIntent {
     if (!snapshot.isOpen()) {
-        unloadEditorFonts(state);
         state.* = .{};
         return null;
     }
@@ -71,9 +69,6 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
     state.close_requested = false;
 
     const parent_window = dvui.currentWindow().backend.impl.window;
-    var unload_fonts_after_render = false;
-    defer if (unload_fonts_after_render) unloadEditorFonts(state);
-
     var os_win = dvui.osWindow(@src(), .{
         .title = editor_title,
         .size = editor_initial_size,
@@ -195,10 +190,7 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
 
     if (action != null) {
         switch (action.?) {
-            .close_edit => {
-                state.open = false;
-                unload_fonts_after_render = true;
-            },
+            .close_edit => state.open = false,
             else => {},
         }
     }
@@ -219,19 +211,9 @@ fn observeSaveConflict(state: *State, save_conflict: bool) void {
 fn loadEditorFontsOnce(state: *State, os_win: anytype) void {
     if (state.fonts_loaded) return;
     if (dvui.Backend.support_child_os_wins) {
-        const font_window = os_win.inner.dvui_win;
-        ui_fonts.loadEmbedded(font_window);
-        state.font_window = font_window;
+        ui_fonts.loadEmbedded(os_win.inner.dvui_win);
     }
     state.fonts_loaded = true;
-}
-
-fn unloadEditorFonts(state: *State) void {
-    if (state.font_window) |font_window| {
-        ui_fonts.unloadEmbedded(font_window);
-    }
-    state.font_window = null;
-    state.fonts_loaded = false;
 }
 
 fn centerEditorWindowOnce(state: *State, os_win: anytype, parent_window: anytype) void {

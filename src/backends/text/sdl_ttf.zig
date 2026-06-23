@@ -68,6 +68,13 @@ pub const System = struct {
         return .{ .context = self, .vtable = &vtable };
     }
 
+    fn destroyFromTextEngine(context: *anyopaque) void {
+        const self: *System = @ptrCast(@alignCast(context));
+        const allocator = self.allocator;
+        self.deinit();
+        allocator.destroy(self);
+    }
+
     fn faceFor(self: *System, font: dvui.Font, scale: f32) ?Face {
         const physical_size = @max(1, font.size * safeScale(scale));
         var hasher = std.hash.Wyhash.init(font.hash());
@@ -364,6 +371,7 @@ pub const System = struct {
 };
 
 const vtable: dvui.TextEngine.VTable = .{
+    .deinit = System.destroyFromTextEngine,
     .measure = System.measure,
     .render = System.render,
     .caret_x = System.caretX,
@@ -371,6 +379,10 @@ const vtable: dvui.TextEngine.VTable = .{
     .previous_boundary = System.previousBoundary,
     .next_boundary = System.nextBoundary,
 };
+
+pub fn ownsEngine(engine: dvui.TextEngine) bool {
+    return engine.vtable == &vtable;
+}
 
 fn openFont(bytes: []const u8, size: f32) ?*c.TTF_Font {
     const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return null;
