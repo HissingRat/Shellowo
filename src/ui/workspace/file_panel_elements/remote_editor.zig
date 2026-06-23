@@ -818,30 +818,65 @@ fn findNextMatch(text: []const u8, query: []const u8, start: usize) ?SearchMatch
     if (query.len == 0 or text.len < query.len) return null;
 
     const safe_start = @min(start, text.len);
-    if (std.mem.indexOfPos(u8, text, safe_start, query)) |idx| {
-        return .{ .start = idx, .end = idx + query.len };
+    var first: ?SearchMatch = null;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
+        const match: SearchMatch = .{ .start = idx, .end = idx + query.len };
+        if (first == null) first = match;
+        if (match.end > safe_start) return match;
+        pos = match.end;
     }
-    if (safe_start > 0) {
-        if (std.mem.indexOf(u8, text[0..safe_start], query)) |idx| {
-            return .{ .start = idx, .end = idx + query.len };
-        }
-    }
-    return null;
+    return if (safe_start > 0) first else null;
 }
 
 fn findPrevMatch(text: []const u8, query: []const u8, start: usize) ?SearchMatch {
     if (query.len == 0 or text.len < query.len) return null;
 
     const safe_start = @min(start, text.len);
-    if (std.mem.lastIndexOf(u8, text[0..safe_start], query)) |idx| {
-        return .{ .start = idx, .end = idx + query.len };
-    }
-    if (safe_start < text.len) {
-        if (std.mem.lastIndexOf(u8, text, query)) |idx| {
-            return .{ .start = idx, .end = idx + query.len };
+    var last: ?SearchMatch = null;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
+        const match: SearchMatch = .{ .start = idx, .end = idx + query.len };
+        if (match.start < safe_start) {
+            last = match;
+        } else if (safe_start < text.len and last == null) {
+            last = lastNonOverlappingMatch(text, query);
+            break;
         }
+        pos = match.end;
     }
-    return null;
+    if (last == null and safe_start < text.len) return lastNonOverlappingMatch(text, query);
+    return last;
+}
+
+fn lastNonOverlappingMatch(text: []const u8, query: []const u8) ?SearchMatch {
+    var last: ?SearchMatch = null;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
+        last = .{ .start = idx, .end = idx + query.len };
+        pos = idx + query.len;
+    }
+    return last;
+}
+
+test "remote editor search uses non-overlapping match sequence" {
+    const text = "aaa";
+    const query = "aa";
+
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findNextMatch(text, query, 0).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findNextMatch(text, query, 1).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findPrevMatch(text, query, 2).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findPrevMatch(text, query, 1).?);
+}
+
+test "remote editor search previous skips overlapping matches" {
+    const text = "aaaa";
+    const query = "aa";
+
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findPrevMatch(text, query, 2).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 2, .end = 4 }, findPrevMatch(text, query, 4).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 2, .end = 4 }, findNextMatch(text, query, 2).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findNextMatch(text, query, 4).?);
 }
 
 fn nearestMatch(prev: ?SearchMatch, next: ?SearchMatch, cursor: usize) ?SearchMatch {

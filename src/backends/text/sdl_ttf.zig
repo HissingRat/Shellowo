@@ -5,6 +5,7 @@ const platform_fonts = @import("platform_fonts.zig");
 
 const c = dvui.backend.c;
 const cjk_font_family = "Noto Sans CJK SC";
+const max_cached_layouts = 2048;
 
 pub const System = struct {
     allocator: std.mem.Allocator,
@@ -15,6 +16,8 @@ pub const System = struct {
     fonts: std.AutoHashMapUnmanaged(u64, Face) = .empty,
     simple_metrics: std.AutoHashMapUnmanaged(u64, SimpleMetrics) = .empty,
     layouts: std.AutoHashMapUnmanaged(u64, *c.TTF_Text) = .empty,
+    active_cached_layouts: usize = 0,
+    clear_layouts_after_release: bool = false,
     emoji_textures: std.AutoHashMapUnmanaged(u64, EmojiTexture) = .empty,
 
     pub const FontSources = struct {
@@ -37,11 +40,16 @@ pub const System = struct {
     };
 
     const Layout = struct {
+        system: *System,
         text: *c.TTF_Text,
         cached: bool,
 
         fn release(self: Layout) void {
-            if (!self.cached) c.TTF_DestroyText(self.text);
+            if (self.cached) {
+                self.system.releaseCachedLayout();
+            } else {
+                c.TTF_DestroyText(self.text);
+            }
         }
     };
 
@@ -209,7 +217,7 @@ pub const System = struct {
         const cacheable = text.len <= 256;
         if (cacheable) {
             if (self.layouts.get(key)) |cached| {
-                return .{ .text = cached, .cached = true };
+                return self.borrowCachedLayout(cached);
             }
         }
 
@@ -229,18 +237,38 @@ pub const System = struct {
             _ = c.TTF_SetTextWrapWhitespaceVisible(result, true);
         }
         if (cacheable) {
-            if (self.layouts.count() >= 2048) self.clearLayouts();
+            if (self.layouts.count() >= max_cached_layouts) {
+                if (self.active_cached_layouts > 0) {
+                    self.clear_layouts_after_release = true;
+                    return .{ .system = self, .text = result, .cached = false };
+                }
+                self.clearLayouts();
+            }
             self.layouts.put(self.allocator, key, result) catch
-                return .{ .text = result, .cached = false };
-            return .{ .text = result, .cached = true };
+                return .{ .system = self, .text = result, .cached = false };
+            return self.borrowCachedLayout(result);
         }
-        return .{ .text = result, .cached = false };
+        return .{ .system = self, .text = result, .cached = false };
     }
 
     fn clearLayouts(self: *System) void {
         var it = self.layouts.valueIterator();
         while (it.next()) |text| c.TTF_DestroyText(text.*);
         self.layouts.clearRetainingCapacity();
+        self.clear_layouts_after_release = false;
+    }
+
+    fn borrowCachedLayout(self: *System, text: *c.TTF_Text) Layout {
+        self.active_cached_layouts += 1;
+        return .{ .system = self, .text = text, .cached = true };
+    }
+
+    fn releaseCachedLayout(self: *System) void {
+        std.debug.assert(self.active_cached_layouts > 0);
+        self.active_cached_layouts -= 1;
+        if (self.active_cached_layouts == 0 and self.clear_layouts_after_release) {
+            self.clearLayouts();
+        }
     }
 
     fn fontTextHeightPhysical(self: *System, font: dvui.Font, scale: f32) f32 {
@@ -434,8 +462,9 @@ pub const System = struct {
             16 * scale;
         const emoji_box = self.emojiBoxPhysical(options.font, scale);
         const has_emoji = containsEmojiCluster(options.text);
-        const emoji_extra = emojiCompensationBefore(text, options.text, options.text.len, emoji_box);
-        const render_height = if (has_emoji) @max(self.fontTextHeightPhysical(options.font, scale), emoji_box) else default_h;
+        const use_emoji_overlay = has_emoji and emojiOverlayEnabled();
+        const emoji_extra = if (use_emoji_overlay) emojiCompensationBefore(text, options.text, options.text.len, emoji_box) else 0;
+        const render_height = if (use_emoji_overlay) @max(self.fontTextHeightPhysical(options.font, scale), emoji_box) else default_h;
 
         if (options.background_color) |background| {
             if (have_size) {
@@ -450,7 +479,7 @@ pub const System = struct {
 
         const sel_start = @min(options.sel_start orelse 0, options.text.len);
         const sel_end = @min(options.sel_end orelse 0, options.text.len);
-        if (sel_start < sel_end and has_emoji) {
+        if (sel_start < sel_end and use_emoji_overlay) {
             const selection_color = options.sel_color orelse dvui.themeGet().focus;
             const x0 = compensatedCaretXPhysical(text, options.text, sel_start, emoji_box);
             const x1 = compensatedCaretXPhysical(text, options.text, sel_end, emoji_box);
@@ -502,10 +531,10 @@ pub const System = struct {
         defer _ = c.SDL_SetRenderClipRect(self.renderer, if (previous_clip_enabled) &previous_clip else null);
 
         const align_cjk = containsCjkBaselineCodepoint(options.text) and !isCjkFont(options.font);
-        if (has_emoji or align_cjk) {
-            try self.renderVisualTextSegments(options.font, text, options.text, start, scale, options.color, emoji_box, align_cjk);
+        if (use_emoji_overlay or align_cjk) {
+            try self.renderVisualTextSegments(options.font, text, options.text, start, scale, options.color, emoji_box, use_emoji_overlay, align_cjk);
         } else if (!c.TTF_DrawRendererText(text, start.x, start.y)) return error.SdlTtfDrawFailed;
-        self.renderEmojiOverlays(text, options.text, start, emoji_box, render_height);
+        if (use_emoji_overlay) self.renderEmojiOverlays(text, options.text, start, emoji_box, render_height);
     }
 
     fn caretX(
@@ -693,12 +722,13 @@ pub const System = struct {
         scale: f32,
         color: dvui.Color,
         emoji_advance: f32,
+        skip_emoji_clusters: bool,
         align_cjk: bool,
     ) !void {
         const cjk_offset_y = if (align_cjk) self.cjkBaselineOffsetPhysical(font, scale) else 0;
 
         var emoji_index: usize = 0;
-        var next_emoji = nextEmojiCluster(bytes, &emoji_index);
+        var next_emoji: ?ByteRange = if (skip_emoji_clusters) nextEmojiCluster(bytes, &emoji_index) else null;
         var pos: usize = 0;
         while (pos < bytes.len) {
             while (next_emoji) |cluster| {
