@@ -20,8 +20,8 @@ const replace_capacity = 256;
 const search_match_count_unknown = std.math.maxInt(usize);
 const search_stats_chunk_bytes: usize = 256 * 1024;
 const search_stats_frame_us: i32 = 16_000;
-const save_flash_total_s: f32 = 1.0;
-const save_flash_fade_in_s: f32 = 0.3;
+const save_flash_total_s: f32 = 0.45;
+const save_flash_fade_in_s: f32 = 0.1;
 const save_flash_fade_out_s: f32 = save_flash_total_s - save_flash_fade_in_s;
 const save_flash_frame_us: i32 = 16_000;
 
@@ -35,6 +35,9 @@ pub const State = struct {
     positioned: bool = false,
     fonts_loaded: bool = false,
     loaded_version: u64 = 0,
+    editor_text: []u8 = &.{},
+    editor_text_allocator: ?std.mem.Allocator = null,
+    editor_text_len: usize = 0,
     dirty: bool = false,
     confirm_close: bool = false,
     close_after_save: bool = false,
@@ -54,7 +57,6 @@ pub const State = struct {
     search_has_match: bool = false,
     search_match_count: usize = 0,
     search_active_index: usize = 0,
-    search_target_y: ?f32 = null,
     search_stats_dirty: bool = true,
     search_stats_text_len: usize = 0,
     search_stats_query_len: usize = 0,
@@ -64,11 +66,31 @@ pub const State = struct {
     search_stats_scan_pos: usize = 0,
     search_stats_scan_count: usize = 0,
     search_stats_scan_active_index: usize = 0,
+
+    pub fn deinit(self: *State) void {
+        if (self.editor_text.len > 0) {
+            if (self.editor_text_allocator) |allocator| {
+                allocator.free(self.editor_text);
+            }
+        }
+        self.editor_text = &.{};
+        self.editor_text_allocator = null;
+        self.editor_text_len = 0;
+    }
+
+    fn reset(self: *State) void {
+        self.deinit();
+        self.* = .{};
+    }
+
+    fn text(self: *const State) []const u8 {
+        return self.editor_text[0..@min(self.editor_text_len, self.editor_text.len)];
+    }
 };
 
 pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) ?remote_file.FilePanelIntent {
     if (!snapshot.isOpen()) {
-        state.* = .{};
+        state.reset();
         return null;
     }
 
@@ -123,8 +145,9 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
         .loading => loading(palette, id_extra + 30),
         .failed => failed(snapshot, palette, id_extra + 30),
         .ready => {
-            current_text = editorBody(state, snapshot, palette, id_extra + 30);
-            dirty = !std.mem.eql(u8, current_text, snapshot.content);
+            const body = editorBody(state, snapshot, palette, id_extra + 30);
+            current_text = state.text();
+            dirty = body.dirty;
         },
         .closed => {},
     }
@@ -239,14 +262,18 @@ fn observeSaveFlash(state: *State, snapshot: remote_file.FileEditorSnapshot) voi
 }
 
 fn saveFlashLabel(state: *State, palette: theme.Palette, title_group_id: dvui.Id, id_extra: usize) void {
-    const alpha = saveFlashAlpha(state) orelse return;
-    dvui.timer(title_group_id.update("save_flash"), save_flash_frame_us);
-    dvui.label(@src(), "save", .{}, .{
-        .font = theme.textFont("save", 10),
+    const active_alpha = saveFlashAlpha(state);
+    const alpha = active_alpha orelse 0;
+    if (active_alpha != null) {
+        dvui.timer(title_group_id.update("save_flash"), save_flash_frame_us);
+    }
+    dvui.label(@src(), "saved", .{}, .{
+        .font = theme.textFont("saved", 10),
         .color_text = palette.network_rx.opacity(alpha),
         .gravity_y = 0.5,
         .margin = .{ .x = 8 },
         .id_extra = id_extra,
+        .expand = .horizontal,
     });
 }
 
@@ -325,7 +352,6 @@ fn header(state: *State, snapshot: remote_file.FileEditorSnapshot, dirty: bool, 
     dvui.label(@src(), "{s}", .{title}, .{
         .font = theme.textFont(title, 15),
         .color_text = palette.text,
-        .expand = .horizontal,
         .gravity_y = 0.5,
         .id_extra = id_extra + 2,
     });
@@ -655,7 +681,11 @@ fn loadFraction(snapshot: remote_file.FileEditorSnapshot) f32 {
     return 0.15 + @as(f32, @floatFromInt(slot)) * 0.07;
 }
 
-fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) []const u8 {
+const EditorBodyResult = struct {
+    dirty: bool,
+};
+
+fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) EditorBodyResult {
     var body = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
         .expand = .both,
         .padding = .all(0),
@@ -672,6 +702,11 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
     var naked_theme = dvui.themeGet();
     naked_theme.focus = dvui.Color.transparent;
 
+    if (state.editor_text_allocator == null) {
+        state.editor_text_allocator = dvui.currentWindow().gpa;
+    }
+    const editor_text_allocator = state.editor_text_allocator.?;
+
     var te_storage: dvui.TextEntryWidget = undefined;
     te_storage.init(@src(), .{
         .multiline = true,
@@ -681,25 +716,37 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
         .scroll_vertical_bar = .auto_overlay,
         .scroll_horizontal = false,
         .scroll_horizontal_bar = .hide,
-        .text = .{ .internal = .{ .limit = remote_file.max_editor_bytes } },
+        .text = .{ .buffer_dynamic = .{
+            .backing = &state.editor_text,
+            .allocator = editor_text_allocator,
+            .limit = remote_file.max_editor_bytes,
+        } },
     }, editorTextOptions(palette, &naked_theme, id_extra + 1));
     var te = &te_storage;
     defer te.deinit();
 
+    var reloaded_snapshot = false;
     if (dvui.firstFrame(te.data().id) or state.loaded_version != snapshot.version) {
         te.textSet(snapshot.content, false);
         state.loaded_version = snapshot.version;
+        state.dirty = false;
+        reloaded_snapshot = true;
         clearSearchMatch(state);
         markSearchStatsDirty(state);
     }
 
     applySearchAction(state, te);
-    applyPendingSearchScroll(state, te);
     te.processEvents();
     te.draw();
-    if (te.text_changed) markSearchStatsDirty(state);
-    updateSearchStatsLight(state, te.textGet());
-    return te.textGet();
+    var dirty = state.dirty;
+    if (te.text_changed) {
+        if (!reloaded_snapshot) dirty = true;
+        markSearchStatsDirty(state);
+    }
+    const current_text = te.textGet();
+    state.editor_text_len = current_text.len;
+    updateSearchStatsLight(state, current_text);
+    return .{ .dirty = dirty };
 }
 
 const SearchMatch = struct {
@@ -893,12 +940,11 @@ fn selectMatch(state: *State, te: *dvui.TextEntryWidget, start: usize, end: usiz
     sel.start = start;
     sel.cursor = start;
     sel.end = end;
-    te.textLayout.scroll_to_cursor = false;
+    te.textLayout.scroll_to_cursor = true;
 
     state.search_active_start = start;
     state.search_active_end = end;
     state.search_has_match = true;
-    state.search_target_y = visualYOfOffset(te, start);
     setSearchStatsUnknown(state);
     dvui.refresh(null, @src(), te.data().id);
 }
@@ -916,7 +962,6 @@ fn clearSearchMatch(state: *State) void {
     state.search_has_match = false;
     state.search_active_index = 0;
     state.search_match_count = 0;
-    state.search_target_y = null;
     markSearchStatsDirty(state);
 }
 
@@ -931,132 +976,6 @@ fn setSearchStatsUnknown(state: *State) void {
     state.search_stats_scan_pos = 0;
     state.search_stats_scan_count = 0;
     state.search_stats_scan_active_index = 0;
-}
-
-fn applyPendingSearchScroll(state: *State, te: *dvui.TextEntryWidget) void {
-    const target_y = state.search_target_y orelse return;
-    state.search_target_y = null;
-
-    const line_h = editorLineHeight(te);
-    const viewport_h = te.scroll.si.viewport.h;
-    if (viewport_h <= 0) return;
-
-    const margin = @min(viewport_h * 0.25, line_h * 3);
-    const next_offset = target_y - margin;
-    te.scroll.si.virtual_size.h = @max(te.scroll.si.virtual_size.h, target_y + viewport_h);
-    te.scroll.si.scrollToOffset(.vertical, @max(0, next_offset));
-    te.scroll.si.velocity.y = 0;
-    if (te.scroll.scroll) |*scroll| {
-        scroll.frame_viewport.y = te.scroll.si.viewport.y;
-        scroll.frame_viewport.x = te.scroll.si.viewport.x;
-    }
-    te.textLayout.scroll_to_cursor = false;
-    dvui.refresh(null, @src(), te.data().id);
-}
-
-fn editorLineHeight(te: *dvui.TextEntryWidget) f32 {
-    return @max(te.textLayout.data().options.fontGet().lineHeight(), 1);
-}
-
-const SearchScrollAnchor = struct {
-    byte: usize,
-    y: f32,
-};
-
-fn visualYOfOffset(te: *dvui.TextEntryWidget, offset: usize) f32 {
-    const text = te.textGet();
-    const bounded = @min(offset, text.len);
-    if (bounded == 0) return 0;
-
-    const line_h = editorLineHeight(te);
-    const wrap_cols = editorWrapColumns(te);
-
-    if (byteHeightAnchorBefore(te, bounded)) |anchor| {
-        const start = @min(anchor.byte, bounded);
-        const local_rows = estimatedVisualRows(text[start..bounded], wrap_cols);
-        return anchor.y + @as(f32, @floatFromInt(local_rows)) * line_h;
-    }
-
-    return @as(f32, @floatFromInt(estimatedVisualRows(text[0..bounded], wrap_cols))) * line_h;
-}
-
-fn editorWrapColumns(te: *dvui.TextEntryWidget) usize {
-    const font = te.textLayout.data().options.fontGet();
-    const msize = font.sizeM(1, 1);
-    const content_w = @max(@max(te.textLayout.data().contentRect().w, te.scroll.si.viewport.w), msize.w);
-    const cell_w = @max(msize.w, 1);
-    return @max(1, @as(usize, @intFromFloat(@max(1, @floor(content_w / cell_w)))));
-}
-
-fn byteHeightAnchorBefore(te: *dvui.TextEntryWidget, offset: usize) ?SearchScrollAnchor {
-    const byte_heights = te.textLayout.byte_heights;
-    if (byte_heights.len == 0) return null;
-
-    var lo: usize = 0;
-    var hi: usize = byte_heights.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        if (byte_heights[mid].byte <= offset) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    if (lo == 0) return null;
-
-    var idx = lo - 1;
-    while (true) {
-        const bh = byte_heights[idx];
-        const is_final = idx == byte_heights.len - 1;
-        // Non-final byte-height entries are recorded immediately after a
-        // newline, which makes them safe y anchors.  The final entry can be in
-        // the middle of a line when the layout cache only covered a visible
-        // prefix, so only trust it if it is the real EOF marker.
-        if (!is_final or bh.byte == te.len) {
-            return .{ .byte = @min(bh.byte, te.len), .y = bh.height };
-        }
-        if (idx == 0) return null;
-        idx -= 1;
-    }
-}
-
-fn estimatedVisualRows(text: []const u8, wrap_cols: usize) usize {
-    var rows: usize = 0;
-    var col: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) {
-        const byte = text[i];
-        if (byte == '\n') {
-            rows += 1;
-            col = 0;
-            i += 1;
-            continue;
-        }
-
-        const width = estimatedColumnWidth(text, &i);
-        if (wrap_cols > 0 and col > 0 and col + width > wrap_cols) {
-            rows += 1;
-            col = 0;
-        }
-        col += width;
-    }
-    return rows;
-}
-
-fn estimatedColumnWidth(text: []const u8, index: *usize) usize {
-    const byte = text[index.*];
-    if (byte == '\t') {
-        index.* += 1;
-        return 4;
-    }
-    if (byte < 0x80) {
-        index.* += 1;
-        return 1;
-    }
-
-    const len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
-    index.* = @min(text.len, index.* + len);
-    return 2;
 }
 
 fn updateSearchStatsLight(state: *State, text: []const u8) void {

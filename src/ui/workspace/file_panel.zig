@@ -323,6 +323,7 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     }));
     defer pane.deinit();
     const layout = dvui.dataGetPtrDefault(null, pane.data().id, "file-pane-layout", PaneLayoutState, .{});
+    dvui.dataSetDeinitFunction(null, pane.data().id, "file-pane-layout", &PaneLayoutState.deinitData);
     if (!layout.columns_initialized) {
         layout.columns = opts.columns.*;
         layout.columns_initialized = true;
