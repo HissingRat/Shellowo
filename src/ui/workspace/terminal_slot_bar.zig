@@ -12,7 +12,7 @@ const chip_max_width: f32 = 132;
 const chip_margin_width: f32 = 4;
 const side_button_width: f32 = 20;
 const side_button_margin_width: f32 = 8;
-const font_size: f32 = 9;
+const font_size: f32 = 12;
 const menu_item_height: f32 = 18;
 const prediction_diagnostics_width: f32 = 76;
 

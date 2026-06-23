@@ -17,6 +17,9 @@
 - 大文本粘贴会分批发送，期间 UI 仍可响应，末尾内容不会丢失。
 - 单个 chunk 内的小段粘贴在远端回显后立即可见，不需要再输入字符或移动 cursor 才刷新。
 - 中文、Powerline 字符和宽字符不明显错位。
+- SDL3_ttf shaping 开启后，ASCII ligature 不改变 libvterm cell 占用列数。
+- terminal glyph、selection、underline cursor 与 PTY grid 使用同一
+  `TerminalMetrics`，切换 DPI/窗口缩放后仍对齐。
 - IME composition 期间候选窗靠近 cursor，提交后只发送最终文本。
 
 ## Resize

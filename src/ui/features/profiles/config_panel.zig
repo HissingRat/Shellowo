@@ -9,8 +9,6 @@ const header_height: f32 = 36;
 const footer_height: f32 = 44;
 const separator_height: f32 = 1;
 const min_content_height: f32 = 120;
-const form_font_size: f32 = 11;
-const control_font_size: f32 = 11;
 const field_height: f32 = 20;
 
 pub fn show(app: *App, palette: theme.Palette) void {
@@ -58,7 +56,7 @@ fn header(palette: theme.Palette) void {
     defer box.deinit();
 
     dvui.label(@src(), "Configuration", .{}, .{
-        .font = theme.cjkFont(13),
+        .font = theme.cjkFont(16),
         .color_text = palette.text,
         .gravity_y = 0.5,
         .id_extra = 50_011,
@@ -127,7 +125,7 @@ fn form(app: *App, palette: theme.Palette, content_height: f32) void {
 
     _ = theme.checkbox(@src(), &app.draft.sftp_enabled, "Enable SFTP", palette, .{
         .id_extra = 50_080,
-        .font_size = form_font_size,
+        .font_size = 14,
     });
 }
 
@@ -141,7 +139,7 @@ fn authSelector(app: *App, palette: theme.Palette) void {
 
     dvui.label(@src(), "Authentication", .{}, .{
         .color_text = palette.muted_text,
-        .font = theme.textFont("Authentication", form_font_size),
+        .font = theme.textFont("Authentication", 14),
         .id_extra = 50_066,
     });
 
@@ -164,7 +162,7 @@ fn authButton(app: *App, auth_type: profile.AuthType, id_extra: usize, palette: 
         .intent = if (selected) .primary else .neutral,
         .state = if (selected) .selected else .normal,
         .variant = if (selected) .solid else .ghost,
-        .font_size = control_font_size,
+        .font_size = 14,
     })) {
         app.draft.auth_type = auth_type;
     }
@@ -180,7 +178,7 @@ fn privateKeyPathField(app: *App, palette: theme.Palette) void {
 
     dvui.label(@src(), "Private Key Path", .{}, .{
         .color_text = palette.muted_text,
-        .font = theme.textFont("Private Key Path", form_font_size),
+        .font = theme.textFont("Private Key Path", 14),
         .id_extra = 50_073,
     });
 
@@ -197,7 +195,7 @@ fn privateKeyPathField(app: *App, palette: theme.Palette) void {
         .gravity_y = 0.5,
         .min_size_content = .height(field_height),
         .max_size_content = .height(field_height),
-        .font = theme.cjkFont(form_font_size),
+        .font = theme.cjkFont(14),
         .corner_radius = .all(5),
         .id_extra = 50_076,
     }, palette).override(.{
@@ -211,7 +209,7 @@ fn privateKeyPathField(app: *App, palette: theme.Palette) void {
         .min_size_content = .{ .w = 70, .h = field_height },
         .margin = .{ .x = 6 },
         .id_extra = 50_078,
-    }, palette, .{ .variant = .ghost, .font_size = control_font_size })) {
+    }, palette, .{ .variant = .ghost, .font_size = 14 })) {
         const selected = dvui.dialogNativeFileOpen(dvui.currentWindow().arena(), .{ .title = "Select Private Key" }) catch null;
         if (selected) |path| profile.setBuffer(&app.draft.private_key_path, path);
     }
@@ -220,7 +218,7 @@ fn privateKeyPathField(app: *App, palette: theme.Palette) void {
 fn authNotice(message: []const u8, id_extra: usize, palette: theme.Palette) void {
     dvui.label(@src(), "{s}", .{message}, .{
         .color_text = palette.muted_text,
-        .font = theme.textFont(message, form_font_size),
+        .font = theme.textFont(message, 14),
         .margin = .{ .y = 4, .h = 6 },
         .id_extra = id_extra,
     });
@@ -252,7 +250,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .id_extra = 50_092,
         .gravity_y = 0.5,
         .padding = .{ .y = 1, .h = 0 },
-    }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = control_font_size })) {
+    }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = 14 })) {
         app.deleteSelectedProfile();
     }
     if (theme.button(@src(), "Save", .{
@@ -261,7 +259,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .id_extra = 50_093,
         .gravity_y = 0.5,
         .padding = .{ .y = 1, .h = 0 },
-    }, palette, .{ .intent = .primary, .variant = .ghost, .font_size = control_font_size })) {
+    }, palette, .{ .intent = .primary, .variant = .ghost, .font_size = 14 })) {
         app.saveDraft();
     }
     if (theme.button(@src(), "Cancel", .{
@@ -270,7 +268,7 @@ fn footer(app: *App, palette: theme.Palette) void {
         .id_extra = 50_094,
         .gravity_y = 0.5,
         .padding = .{ .y = 1, .h = 0 },
-    }, palette, .{ .variant = .ghost, .font_size = control_font_size })) {
+    }, palette, .{ .variant = .ghost, .font_size = 14 })) {
         app.cancelConfig();
     }
 }
@@ -284,7 +282,7 @@ fn textFieldSized(label: []const u8, buffer: []u8, id_extra: usize, palette: the
         .id_extra = id_extra,
         .expand = expand,
         .field_height = field_height,
-        .font_size = form_font_size,
+        .font_size = 14,
     });
 }
 
@@ -298,7 +296,7 @@ fn portField(app: *App, palette: theme.Palette) void {
 
     dvui.label(@src(), "Port", .{}, .{
         .color_text = palette.muted_text,
-        .font = theme.textFont("Port", form_font_size),
+        .font = theme.textFont("Port", 14),
         .id_extra = 50_046,
     });
     var port_i32: i32 = app.draft.port;
@@ -309,7 +307,7 @@ fn portField(app: *App, palette: theme.Palette) void {
     }, theme.panel(.{
         .expand = .horizontal,
         .min_size_content = .height(field_height),
-        .font = theme.textFont("22", form_font_size),
+        .font = theme.textFont("22", 14),
         .corner_radius = .all(5),
         .id_extra = 50_047,
     }, palette).override(.{

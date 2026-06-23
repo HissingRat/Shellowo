@@ -9,7 +9,7 @@ pub const Options = struct {
     id_extra: usize,
     expand: bool = true,
     field_height: f32 = metrics.defaults.control_height,
-    font_size: f32 = 12,
+    font_size: f32 = 15,
 };
 
 pub const Entry = struct {

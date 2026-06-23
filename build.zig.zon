@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .dvui = .{
-            .url = "git+https://github.com/david-vanderson/dvui?ref=main#9707de2c7e9408b9326bb3c2c83ca0aa603fddca",
-            .hash = "dvui-0.5.0-dev-AQFJmbbs9gAKq7l6sNTZ5958PkPBH_dJ7rlbc4D7oYMs",
+            .url = "https://codeload.github.com/HissingRat/dvui/tar.gz/aa20ca2b1d27c91e82640cedebafe57157524d3d",
+            .hash = "dvui-0.5.0-dev-AQFJmZ4nTwEV5QgY8zlsVF-_s923qRRlUbbC_2sKCWnx",
         },
         // Keep SDL's Linux platform metadata eager at the application root.
         // Without this, SDL's second-level lazy dependency can be absent while

@@ -9,6 +9,11 @@
 | `dvui` | 原生 UI、窗口 app lifecycle、widgets | `build.zig`, `src/main.zig` | Shellow 主界面走 DVUI，不用 Electron/WebView 替代主 UI。 |
 | `dvui_sdl3` | SDL3 backend | `build.zig` | 通过 `b.dependency("dvui", .{ .backend = .sdl3 })` 导入。 |
 
+当前 DVUI 使用 `HissingRat/dvui` fork 的固定 commit。fork 基于原 Shellowo
+pin 的 DVUI commit，增加了可选 `TextEngine` 契约，使字体测量、绘制、
+TextLayout 命中和 TextEntry cluster 边界可以由同一 shaped-text backend
+提供。未安装 text engine 时仍保留 DVUI 原始字体路径。
+
 维护原则：
 
 - 新 UI 优先使用 DVUI widget 和布局能力。
@@ -36,7 +41,49 @@
   通过 `src/platform/macos_window_chrome.m` 调整 SDL 创建的原生
   `NSWindow`，保留系统交通灯和 fullscreen 行为；平台 handle 不进入产品 UI。
 
-## 3. SSH / SFTP
+## 3. Text Shaping: SDL3_ttf / FreeType / HarfBuzz
+
+当前实现：
+
+- SDL3_ttf 3.2.2 源码随 Shellowo 的 DVUI fork 固定，构建时启用 HarfBuzz。
+- SDL3_ttf 使用 DVUI 同一份 SDL3 3.4.4 renderer/backend。
+- FreeType 使用 DVUI 已有的固定依赖，HarfBuzz 源码随 fork 固定。
+- `src/backends/text/sdl_ttf.zig` 是 Shellowo-owned backend，负责
+  `TTF_TextEngine`、字体、fallback、按需 `TTF_Text` layout 生命周期以及
+  metrics/emoji texture cache。
+- Zed Mono Extended 的 regular/bold/italic 是主字体，Noto Sans CJK SC
+  通过 SDL3_ttf fallback chain 提供中文 glyph。
+- macOS 通过 `src/backends/text/platform_fonts_macos.c` 使用 CoreText
+  发现 Apple Color Emoji、Apple Symbols 和系统 cascade 字体；这些系统
+  字体作为 SDL3_ttf fallback chain 的后续候选，用于 emoji、符号和更广
+  Unicode 覆盖。Windows/Linux 保留同一 Shellowo-owned 边界，后续分别接
+  DirectWrite/known fonts 与 Fontconfig。
+- macOS 还通过 `src/backends/text/platform_emoji_macos.m` 提供
+  AppKit-backed emoji bitmap overlay。普通文字的 geometry 仍来自
+  SDL3_ttf；overlay 只在 render 阶段补 Apple Color Emoji 这类当前
+  FreeType/SDL_ttf 构建无法直接 rasterize 的彩色 glyph。
+- DVUI 的测量、绘制、鼠标命中、caret、selection 和 TextEntry
+  cluster movement 使用同一个 text engine。
+- terminal 继续由 libvterm cell grid 决定列宽、选择和 cursor；启用 shaped
+  backend 时终端 glyph 按 cell 绘制，避免 ligature 改变占用列数。
+
+维护原则：
+
+- Raw `TTF_Font`、`TTF_Text` 和 `TTF_TextEngine` 只允许出现在
+  `src/backends/text/`。
+- 平台字体发现只能返回候选路径/元数据；UI 不直接调用 CoreText、
+  DirectWrite 或 Fontconfig。
+- emoji overlay 不得成为第二套测量/命中系统；如果未来引入通用 emoji
+  atlas，必须显式接入 TextEngine 的 layout、caret、selection 和 hit
+  testing。
+- 不允许重新引入“绘制走 SDL3_ttf、测量走 DVUI”的双几何路径。
+- 新增字体 fallback 时必须保持主字体和 fallback 的 size/style 一致。
+- 更新 SDL3_ttf、FreeType、HarfBuzz 或 DVUI fork 后必须执行
+  `zig build test` 和 `zig build`，并复测编辑器、IME、terminal cell 对齐。
+- SDL3_ttf renderer text engine 是 window/renderer scoped；必须在 SDL
+  renderer 销毁之前释放。
+
+## 4. SSH / SFTP
 
 当前实现：
 
@@ -75,7 +122,7 @@
 | `third_party/libssh2-1.11.1` | vendored libssh2 1.11.1 source。 |
 | `third_party/mbedtls-3.6.6` | vendored mbedTLS 3.6.6 source for libssh2 crypto backend。 |
 
-## 4. Terminal Emulator
+## 5. Terminal Emulator
 
 当前实现：
 
@@ -109,7 +156,7 @@
 | `src/backends/terminal/libvterm_shim.c` | C shim，负责把 libvterm bitfield cell/color 数据转成 Zig 可直接消费的 plain struct。 |
 | `third_party/libvterm-0.3.3` | vendored libvterm 0.3.3 source。 |
 
-## 5. 本地存储
+## 6. 本地存储
 
 当前实现：
 
@@ -125,7 +172,7 @@
 - 平台安全存储
 - 无 Master Password 模式的发布级凭据策略
 
-## 6. 新依赖准入规则
+## 7. 新依赖准入规则
 
 新增或替换第三方项目时，至少补齐：
 
@@ -135,7 +182,7 @@
 4. 如果改变分层边界，同步更新 `docs/architecture.md` 或 `docs/decisions/`。
 5. 跑 `zig build`。
 
-## 7. 打包与发布
+## 8. 打包与发布
 
 当前实现：
 

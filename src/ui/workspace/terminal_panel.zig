@@ -63,7 +63,7 @@ const search_query_capacity: usize = 128;
 const search_max_matches: usize = 512;
 const search_bar_width: f32 = 260;
 const search_bar_height: f32 = 34;
-const search_bar_font_size: f32 = 10;
+const search_bar_font_size: f32 = 13;
 const row_render_cache_capacity: usize = 256;
 
 pub const Options = struct {

@@ -138,7 +138,7 @@ fn header(state: *State, palette: theme.Palette, id_extra: usize) void {
     var title_buf: [320]u8 = undefined;
     const title = std.fmt.bufPrint(&title_buf, "{s}", .{state.nameText()}) catch "Details";
     dvui.label(@src(), "{s}", .{title}, .{
-        .font = theme.textFont(title, 11),
+        .font = theme.textFont(title, 14),
         .color_text = palette.text,
         .expand = .horizontal,
         .gravity_y = 0.5,
@@ -206,7 +206,7 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?Action {
         .margin = .{ .x = 4, .y = 2, .w = 4, .h = 2 },
         .id_extra = id_extra + 2,
         .gravity_y = 0,
-    }, palette, .{ .variant = .ghost, .font_size = 10 })) {
+    }, palette, .{ .variant = .ghost, .font_size = 13 })) {
         return .{ .edit_permissions = state.entry() };
     }
 
@@ -217,7 +217,7 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?Action {
         .margin = .{ .y = 2, .w = 4, .h = 2 },
         .id_extra = id_extra + 3,
         .gravity_y = 0.5,
-    }, palette, .{ .variant = .solid, .font_size = 10 })) {
+    }, palette, .{ .variant = .solid, .font_size = 13 })) {
         state.open = false;
     }
     return null;
@@ -249,7 +249,7 @@ fn row(label: []const u8, value: []const u8, palette: theme.Palette, id_extra: u
     defer box.deinit();
 
     dvui.label(@src(), "{s}", .{label}, .{
-        .font = theme.textFont(label, 10),
+        .font = theme.textFont(label, 13),
         .color_text = palette.text_subtle,
         .min_size_content = .{ .w = label_width, .h = 24 },
         .max_size_content = .{ .w = label_width, .h = 24 },
@@ -259,7 +259,7 @@ fn row(label: []const u8, value: []const u8, palette: theme.Palette, id_extra: u
         .margin = .all(0),
     });
     dvui.label(@src(), "{s}", .{value}, .{
-        .font = theme.textFont(value, 10),
+        .font = theme.textFont(value, 13),
         .color_text = palette.text,
         .expand = .horizontal,
         .min_size_content = .height(24),

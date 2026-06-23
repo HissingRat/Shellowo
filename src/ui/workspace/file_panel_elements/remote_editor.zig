@@ -17,6 +17,13 @@ const editor_initial_size: dvui.Size = .{ .w = 860, .h = 620 };
 const editor_min_size: dvui.Size = .{ .w = 460, .h = 320 };
 const search_capacity = 128;
 const replace_capacity = 256;
+const search_match_count_unknown = std.math.maxInt(usize);
+const search_stats_chunk_bytes: usize = 256 * 1024;
+const search_stats_frame_us: i32 = 16_000;
+const save_flash_total_s: f32 = 0.45;
+const save_flash_fade_in_s: f32 = 0.1;
+const save_flash_fade_out_s: f32 = save_flash_total_s - save_flash_fade_in_s;
+const save_flash_frame_us: i32 = 16_000;
 
 const ConfirmAction = enum { cancel, discard, save };
 const ConflictAction = enum { keep_editing, reload, overwrite };
@@ -28,6 +35,9 @@ pub const State = struct {
     positioned: bool = false,
     fonts_loaded: bool = false,
     loaded_version: u64 = 0,
+    editor_text: []u8 = &.{},
+    editor_text_allocator: ?std.mem.Allocator = null,
+    editor_text_len: usize = 0,
     dirty: bool = false,
     confirm_close: bool = false,
     close_after_save: bool = false,
@@ -35,6 +45,9 @@ pub const State = struct {
     close_requested: bool = false,
     conflict_dismissed: bool = false,
     observed_save_conflict: bool = false,
+    save_flash_version: u64 = 0,
+    save_flash_elapsed_s: f32 = save_flash_total_s,
+    save_flash_just_started: bool = false,
     search_focus_requested: bool = false,
     search_action: ?SearchAction = null,
     search_query: [search_capacity]u8 = std.mem.zeroes([search_capacity]u8),
@@ -44,12 +57,40 @@ pub const State = struct {
     search_has_match: bool = false,
     search_match_count: usize = 0,
     search_active_index: usize = 0,
-    search_target_y: ?f32 = null,
+    search_stats_dirty: bool = true,
+    search_stats_text_len: usize = 0,
+    search_stats_query_len: usize = 0,
+    search_stats_query: [search_capacity]u8 = std.mem.zeroes([search_capacity]u8),
+    search_stats_has_match: bool = false,
+    search_stats_active_start: usize = 0,
+    search_stats_scan_pos: usize = 0,
+    search_stats_scan_count: usize = 0,
+    search_stats_scan_active_index: usize = 0,
+
+    pub fn deinit(self: *State) void {
+        if (self.editor_text.len > 0) {
+            if (self.editor_text_allocator) |allocator| {
+                allocator.free(self.editor_text);
+            }
+        }
+        self.editor_text = &.{};
+        self.editor_text_allocator = null;
+        self.editor_text_len = 0;
+    }
+
+    fn reset(self: *State) void {
+        self.deinit();
+        self.* = .{};
+    }
+
+    fn text(self: *const State) []const u8 {
+        return self.editor_text[0..@min(self.editor_text_len, self.editor_text.len)];
+    }
 };
 
 pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) ?remote_file.FilePanelIntent {
     if (!snapshot.isOpen()) {
-        state.* = .{};
+        state.reset();
         return null;
     }
 
@@ -91,6 +132,7 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
     }));
     defer root.deinit();
 
+    observeSaveFlash(state, snapshot);
     header(state, snapshot, state.dirty, palette, id_extra + 10);
     separator(palette, id_extra + 20);
     progressBar(snapshot, palette, id_extra + 24);
@@ -103,8 +145,9 @@ pub fn show(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: th
         .loading => loading(palette, id_extra + 30),
         .failed => failed(snapshot, palette, id_extra + 30),
         .ready => {
-            current_text = editorBody(state, snapshot, palette, id_extra + 30);
-            dirty = !std.mem.eql(u8, current_text, snapshot.content);
+            const body = editorBody(state, snapshot, palette, id_extra + 30);
+            current_text = state.text();
+            dirty = body.dirty;
         },
         .closed => {},
     }
@@ -208,6 +251,53 @@ fn observeSaveConflict(state: *State, save_conflict: bool) void {
     state.observed_save_conflict = save_conflict;
 }
 
+fn observeSaveFlash(state: *State, snapshot: remote_file.FileEditorSnapshot) void {
+    if (snapshot.state != .ready or snapshot.error_summary == null or snapshot.save_conflict) return;
+    if (!std.mem.eql(u8, snapshot.error_summary.?, "Saved")) return;
+    if (state.save_flash_version == snapshot.version) return;
+
+    state.save_flash_version = snapshot.version;
+    state.save_flash_elapsed_s = 0;
+    state.save_flash_just_started = true;
+}
+
+fn saveFlashLabel(state: *State, palette: theme.Palette, title_group_id: dvui.Id, id_extra: usize) void {
+    const active_alpha = saveFlashAlpha(state);
+    const alpha = active_alpha orelse 0;
+    if (active_alpha != null) {
+        dvui.timer(title_group_id.update("save_flash"), save_flash_frame_us);
+    }
+    dvui.label(@src(), "saved", .{}, .{
+        .font = theme.textFont("saved", 10),
+        .color_text = palette.network_rx.opacity(alpha),
+        .gravity_y = 0.5,
+        .margin = .{ .x = 8 },
+        .id_extra = id_extra,
+        .expand = .horizontal,
+    });
+}
+
+fn saveFlashAlpha(state: *State) ?f32 {
+    if (state.save_flash_elapsed_s >= save_flash_total_s) return null;
+    const elapsed = state.save_flash_elapsed_s;
+
+    if (state.save_flash_just_started) {
+        state.save_flash_just_started = false;
+    } else {
+        state.save_flash_elapsed_s = @min(save_flash_total_s, state.save_flash_elapsed_s + dvui.secondsSinceLastFrame());
+    }
+
+    if (elapsed >= save_flash_total_s) {
+        return null;
+    }
+    if (elapsed <= 0) return 0;
+    if (elapsed < save_flash_fade_in_s) {
+        return elapsed / save_flash_fade_in_s;
+    }
+    const fade_elapsed = elapsed - save_flash_fade_in_s;
+    return 1 - (fade_elapsed / save_flash_fade_out_s);
+}
+
 fn loadEditorFontsOnce(state: *State, os_win: anytype) void {
     if (state.fonts_loaded) return;
     if (dvui.Backend.support_child_os_wins) {
@@ -258,13 +348,14 @@ fn header(state: *State, snapshot: remote_file.FileEditorSnapshot, dirty: bool, 
         std.fmt.bufPrint(&title_buf, "{s}*", .{name}) catch name
     else
         name;
+
     dvui.label(@src(), "{s}", .{title}, .{
-        .font = theme.textFont(title, 12),
+        .font = theme.textFont(title, 15),
         .color_text = palette.text,
-        .expand = .horizontal,
         .gravity_y = 0.5,
-        .id_extra = id_extra + 1,
+        .id_extra = id_extra + 2,
     });
+    saveFlashLabel(state, palette, row.data().id, id_extra + 3);
 
     var format_buf: [96]u8 = undefined;
     const format_label = std.fmt.bufPrint(
@@ -277,19 +368,19 @@ fn header(state: *State, snapshot: remote_file.FileEditorSnapshot, dirty: bool, 
         },
     ) catch snapshot.encoding.label();
     dvui.label(@src(), "{s}", .{format_label}, .{
-        .font = theme.textFont(format_label, 8.5),
+        .font = theme.textFont(format_label, 11.5),
         .color_text = if (snapshot.large_file) palette.warning else palette.muted_text,
         .gravity_y = 0.5,
         .margin = .{ .x = 8 },
-        .id_extra = id_extra + 2,
+        .id_extra = id_extra + 6,
     });
 
     if (theme.button(@src(), "Save", .{
         .min_size_content = .{ .w = 62, .h = 24 },
         .max_size_content = .{ .w = 62, .h = 24 },
         .gravity_y = 0.5,
-        .id_extra = id_extra + 3,
-    }, palette, .{ .intent = .primary, .variant = .solid, .font_size = 9.5 })) {
+        .id_extra = id_extra + 7,
+    }, palette, .{ .intent = .primary, .variant = .solid, .font_size = 12.5 })) {
         state.save_requested = true;
     }
 
@@ -318,7 +409,7 @@ fn searchBox(state: *State, palette: theme.Palette, id_extra: usize) void {
         dvui.focusWidget(te.data().id, null, null);
         state.search_focus_requested = false;
     }
-    if (te.enterPressed()) state.search_action = .find_nearest;
+    if (te.enterPressed()) state.search_action = .find_next;
     if (te.textChanged()) {
         clearSearchMatch(state);
     }
@@ -329,12 +420,9 @@ fn searchBox(state: *State, palette: theme.Palette, id_extra: usize) void {
     }
 
     var label_buf: [32]u8 = undefined;
-    const label = if (state.search_match_count == 0)
-        "0/0"
-    else
-        std.fmt.bufPrint(&label_buf, "{d}/{d}", .{ state.search_active_index, state.search_match_count }) catch "";
+    const label = searchCountLabel(state, &label_buf);
     dvui.label(@src(), "{s}", .{label}, .{
-        .font = theme.textFont(label, 9),
+        .font = theme.textFont(label, 12),
         .color_text = palette.muted_text,
         .gravity_y = 0.5,
         .padding = .{ .x = 3, .w = 5 },
@@ -372,10 +460,10 @@ fn tinyIconButton(bytes: []const u8, name: []const u8, palette: theme.Palette, i
         .min_size_content = .{ .w = 22, .h = 11 },
         .max_size_content = .{ .w = 22, .h = 11 },
         .padding = .all(0),
-        .margin = .{ .y = 3 },
+        .margin = .{ .y = 1 },
         .corner_radius = .all(2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 7 }, .{});
+    }, palette, .{ .variant = .ghost, .font_size = 10 }, .{});
     bw.processEvents();
     bw.drawBackground();
     renderPng(bytes, name, bw.data().contentRectScale(), bw.style().color(.text));
@@ -398,7 +486,7 @@ fn searchEntryOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
     }, palette).override(.{
         .color_fill = dvui.Color.transparent,
         .color_border = palette.border_subtle,
-        .font = theme.textFont("Search", 9),
+        .font = theme.textFont("Search", 12),
     });
 }
 
@@ -483,7 +571,7 @@ fn replaceEntryOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
     }, palette).override(.{
         .color_fill = palette.surface_bg.opacity(0.92),
         .color_border = palette.border_subtle,
-        .font = theme.textFont("Replace", 9),
+        .font = theme.textFont("Replace", 12),
     });
 }
 
@@ -497,7 +585,7 @@ fn iconButton(bytes: []const u8, name: []const u8, palette: theme.Palette, id_ex
         .corner_radius = .all(3),
         .id_extra = id_extra,
         .gravity_y = 0.5,
-    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{});
+    }, palette, .{ .variant = .ghost, .font_size = 12 }, .{});
     bw.processEvents();
     bw.drawBackground();
     renderPng(bytes, name, bw.data().contentRectScale(), bw.style().color(.text));
@@ -560,6 +648,7 @@ fn progressBar(snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette,
 fn editorNotice(snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) void {
     if (snapshot.state != .ready or snapshot.error_summary == null or snapshot.save_conflict) return;
     const message = snapshot.error_summary.?;
+    if (std.mem.eql(u8, message, "Saved")) return;
     var row = dvui.box(@src(), .{ .dir = .horizontal }, theme.panel(.{
         .expand = .horizontal,
         .min_size_content = .height(24),
@@ -572,8 +661,8 @@ fn editorNotice(snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette
     }));
     defer row.deinit();
     dvui.label(@src(), "{s}", .{message}, .{
-        .font = theme.textFont(message, 9),
-        .color_text = if (std.mem.eql(u8, message, "Saved")) palette.network_rx else palette.warning,
+        .font = theme.textFont(message, 12),
+        .color_text = palette.warning,
         .expand = .horizontal,
         .id_extra = id_extra + 1,
     });
@@ -592,7 +681,11 @@ fn loadFraction(snapshot: remote_file.FileEditorSnapshot) f32 {
     return 0.15 + @as(f32, @floatFromInt(slot)) * 0.07;
 }
 
-fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) []const u8 {
+const EditorBodyResult = struct {
+    dirty: bool,
+};
+
+fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: theme.Palette, id_extra: usize) EditorBodyResult {
     var body = dvui.box(@src(), .{ .dir = .vertical }, theme.panel(.{
         .expand = .both,
         .padding = .all(0),
@@ -609,6 +702,11 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
     var naked_theme = dvui.themeGet();
     naked_theme.focus = dvui.Color.transparent;
 
+    if (state.editor_text_allocator == null) {
+        state.editor_text_allocator = dvui.currentWindow().gpa;
+    }
+    const editor_text_allocator = state.editor_text_allocator.?;
+
     var te_storage: dvui.TextEntryWidget = undefined;
     te_storage.init(@src(), .{
         .multiline = true,
@@ -618,7 +716,11 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
         .scroll_vertical_bar = .auto_overlay,
         .scroll_horizontal = false,
         .scroll_horizontal_bar = .hide,
-        .text = .{ .internal = .{ .limit = remote_file.max_editor_bytes } },
+        .text = .{ .buffer_dynamic = .{
+            .backing = &state.editor_text,
+            .allocator = editor_text_allocator,
+            .limit = remote_file.max_editor_bytes,
+        } },
     }, editorTextOptions(palette, &naked_theme, id_extra + 1));
     var te = &te_storage;
     defer te.deinit();
@@ -626,15 +728,27 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
     if (dvui.firstFrame(te.data().id) or state.loaded_version != snapshot.version) {
         te.textSet(snapshot.content, false);
         state.loaded_version = snapshot.version;
+        state.dirty = false;
         clearSearchMatch(state);
+        markSearchStatsDirty(state);
     }
 
     applySearchAction(state, te);
-    applyPendingSearchScroll(state, te);
     te.processEvents();
     te.draw();
-    updateSearchStats(state, te.textGet());
-    return te.textGet();
+    const current_text = te.textGet();
+    var dirty = state.dirty;
+    if (te.text_changed) {
+        dirty = editorBufferDirty(current_text, snapshot.content);
+        markSearchStatsDirty(state);
+    }
+    state.editor_text_len = current_text.len;
+    updateSearchStatsLight(state, current_text);
+    return .{ .dirty = dirty };
+}
+
+fn editorBufferDirty(current_text: []const u8, snapshot_content: []const u8) bool {
+    return current_text.len != snapshot_content.len or !std.mem.eql(u8, current_text, snapshot_content);
 }
 
 const SearchMatch = struct {
@@ -753,52 +867,82 @@ fn findNextMatch(text: []const u8, query: []const u8, start: usize) ?SearchMatch
     if (query.len == 0 or text.len < query.len) return null;
 
     const safe_start = @min(start, text.len);
-    if (std.mem.indexOfPos(u8, text, safe_start, query)) |idx| {
-        return .{ .start = idx, .end = idx + query.len };
+    var first: ?SearchMatch = null;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
+        const match: SearchMatch = .{ .start = idx, .end = idx + query.len };
+        if (first == null) first = match;
+        if (match.end > safe_start) return match;
+        pos = match.end;
     }
-    if (safe_start > 0) {
-        if (std.mem.indexOf(u8, text[0..safe_start], query)) |idx| {
-            return .{ .start = idx, .end = idx + query.len };
-        }
-    }
-    return null;
+    return if (safe_start > 0) first else null;
 }
 
 fn findPrevMatch(text: []const u8, query: []const u8, start: usize) ?SearchMatch {
     if (query.len == 0 or text.len < query.len) return null;
 
     const safe_start = @min(start, text.len);
-    if (lastIndexBefore(text, query, safe_start)) |idx| {
-        return .{ .start = idx, .end = idx + query.len };
-    }
-    if (safe_start < text.len) {
-        if (lastIndexBefore(text, query, text.len)) |idx| {
-            return .{ .start = idx, .end = idx + query.len };
+    var last: ?SearchMatch = null;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
+        const match: SearchMatch = .{ .start = idx, .end = idx + query.len };
+        if (match.start < safe_start) {
+            last = match;
+        } else if (safe_start < text.len and last == null) {
+            last = lastNonOverlappingMatch(text, query);
+            break;
         }
+        pos = match.end;
     }
-    return null;
+    if (last == null and safe_start < text.len) return lastNonOverlappingMatch(text, query);
+    return last;
 }
 
-fn lastIndexBefore(text: []const u8, query: []const u8, end: usize) ?usize {
-    const safe_end = @min(end, text.len);
-    if (query.len == 0 or safe_end < query.len) return null;
-
+fn lastNonOverlappingMatch(text: []const u8, query: []const u8) ?SearchMatch {
+    var last: ?SearchMatch = null;
     var pos: usize = 0;
-    var last: ?usize = null;
-    while (std.mem.indexOfPos(u8, text[0..safe_end], pos, query)) |idx| {
-        last = idx;
+    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
+        last = .{ .start = idx, .end = idx + query.len };
         pos = idx + query.len;
     }
     return last;
+}
+
+test "remote editor search uses non-overlapping match sequence" {
+    const text = "aaa";
+    const query = "aa";
+
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findNextMatch(text, query, 0).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findNextMatch(text, query, 1).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findPrevMatch(text, query, 2).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findPrevMatch(text, query, 1).?);
+}
+
+test "remote editor search previous skips overlapping matches" {
+    const text = "aaaa";
+    const query = "aa";
+
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findPrevMatch(text, query, 2).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 2, .end = 4 }, findPrevMatch(text, query, 4).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 2, .end = 4 }, findNextMatch(text, query, 2).?);
+    try std.testing.expectEqual(SearchMatch{ .start = 0, .end = 2 }, findNextMatch(text, query, 4).?);
 }
 
 fn nearestMatch(prev: ?SearchMatch, next: ?SearchMatch, cursor: usize) ?SearchMatch {
     if (prev == null) return next;
     if (next == null) return prev;
 
-    const prev_distance = cursor -| prev.?.start;
-    const next_distance = next.?.start -| cursor;
+    const prev_distance = if (prev.?.start <= cursor) cursor - prev.?.start else std.math.maxInt(usize);
+    const next_distance = if (next.?.start >= cursor) next.?.start - cursor else std.math.maxInt(usize);
     return if (next_distance < prev_distance) next else prev;
+}
+
+test "remote editor nearest search ignores wrapped distance" {
+    const first: SearchMatch = .{ .start = 6, .end = 9 };
+    const last: SearchMatch = .{ .start = 32, .end = 35 };
+
+    try std.testing.expectEqual(first, nearestMatch(last, first, 0).?);
+    try std.testing.expectEqual(last, nearestMatch(last, first, 40).?);
 }
 
 fn selectMatch(state: *State, te: *dvui.TextEntryWidget, start: usize, end: usize) void {
@@ -811,8 +955,7 @@ fn selectMatch(state: *State, te: *dvui.TextEntryWidget, start: usize, end: usiz
     state.search_active_start = start;
     state.search_active_end = end;
     state.search_has_match = true;
-    state.search_target_y = visualYOfOffset(te, start);
-    updateSearchStats(state, te.textGet());
+    setSearchStatsUnknown(state);
     dvui.refresh(null, @src(), te.data().id);
 }
 
@@ -828,110 +971,145 @@ fn clearSearchMatch(state: *State) void {
     state.search_active_end = 0;
     state.search_has_match = false;
     state.search_active_index = 0;
-    state.search_target_y = null;
+    state.search_match_count = 0;
+    markSearchStatsDirty(state);
 }
 
-fn applyPendingSearchScroll(state: *State, te: *dvui.TextEntryWidget) void {
-    const target_y = state.search_target_y orelse return;
-    state.search_target_y = null;
-
-    const line_h = editorLineHeight(te);
-    const viewport_h = te.scroll.si.viewport.h;
-    if (viewport_h <= 0) return;
-
-    const margin = @min(viewport_h * 0.25, line_h * 3);
-    const next_offset = target_y - margin;
-    te.scroll.si.virtual_size.h = @max(te.scroll.si.virtual_size.h, target_y + viewport_h);
-    te.scroll.si.viewport.y = @max(0, next_offset);
-    te.scroll.si.velocity.y = 0;
-    if (te.scroll.scroll) |*scroll| {
-        scroll.frame_viewport.y = te.scroll.si.viewport.y;
-        scroll.frame_viewport.x = te.scroll.si.viewport.x;
-    }
-    te.init_opts.cache_layout = false;
-    te.textLayout.cache_layout = false;
-    te.textLayout.scroll_to_cursor = false;
-    dvui.refresh(null, @src(), te.data().id);
+fn markSearchStatsDirty(state: *State) void {
+    state.search_stats_dirty = true;
 }
 
-fn editorLineHeight(te: *dvui.TextEntryWidget) f32 {
-    return @max(te.textLayout.data().options.fontGet().lineHeight(), 1);
+fn setSearchStatsUnknown(state: *State) void {
+    state.search_active_index = 0;
+    state.search_match_count = search_match_count_unknown;
+    state.search_stats_dirty = true;
+    state.search_stats_scan_pos = 0;
+    state.search_stats_scan_count = 0;
+    state.search_stats_scan_active_index = 0;
 }
 
-fn visualYOfOffset(te: *dvui.TextEntryWidget, offset: usize) f32 {
-    const text = te.textGet()[0..@min(offset, te.len)];
-    if (text.len == 0) return 0;
-
-    const font = te.textLayout.data().options.fontGet();
-    const line_h = editorLineHeight(te);
-    const content_w = @max(te.textLayout.data().contentRect().w, font.sizeM(1, 1).w);
-    const break_width = content_w + 0.001;
-    const m_width = font.sizeM(1, 1).w;
-
-    var y: f32 = 0;
-    var pos: usize = 0;
-    while (pos < text.len) {
-        var end: usize = 0;
-        _ = font.textSizeEx(text[pos..], .{
-            .kerning = te.textLayout.kerning,
-            .max_width = break_width,
-            .end_idx = &end,
-        });
-        if (end == 0) {
-            end = std.unicode.utf8ByteSequenceLength(text[pos]) catch 1;
-        }
-
-        var line_end = end;
-        const newline = text[pos + line_end - 1] == '\n';
-        if (line_end < text.len - pos and !newline and break_width > (10 * m_width)) {
-            if (std.mem.findLastLinear(u8, text[pos .. pos + line_end + 1], " ")) |space_idx| {
-                line_end = space_idx + 1;
-            }
-        }
-
-        if (pos + line_end >= text.len) {
-            if (newline) y += line_h;
-            break;
-        }
-
-        y += line_h;
-        pos += line_end;
-    }
-    return y;
-}
-
-fn updateSearchStats(state: *State, text: []const u8) void {
+fn updateSearchStatsLight(state: *State, text: []const u8) void {
     const query = searchQuery(state);
-    state.search_match_count = countMatches(text, query);
-    if (state.search_match_count == 0 or !activeMatchValid(state, text, query)) {
+
+    if (query.len == 0) {
+        state.search_match_count = 0;
         state.search_active_index = 0;
-        if (state.search_match_count == 0) state.search_has_match = false;
+        state.search_has_match = false;
+        resetSearchStatsScan(state);
+        cacheSearchStatsKey(state, text, query);
         return;
     }
-    state.search_active_index = matchIndex(text, query, state.search_active_start) orelse 0;
+
+    if (!activeMatchValid(state, text, query)) {
+        state.search_active_index = 0;
+        state.search_has_match = false;
+        state.search_active_start = 0;
+        state.search_active_end = 0;
+    }
+
+    if (searchStatsNeedsRefresh(state, text, query)) {
+        beginSearchStatsScan(state, text, query);
+    }
+
+    if (state.search_match_count == search_match_count_unknown) {
+        continueSearchStatsScan(state, text, query);
+    }
 }
 
-fn countMatches(text: []const u8, query: []const u8) usize {
-    if (query.len == 0) return 0;
-    var count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
-        count += 1;
-        pos = idx + query.len;
-    }
-    return count;
+fn searchStatsNeedsRefresh(state: *const State, text: []const u8, query: []const u8) bool {
+    if (state.search_stats_dirty) return true;
+    if (state.search_stats_text_len != text.len) return true;
+    if (state.search_stats_query_len != query.len) return true;
+    if (!std.mem.eql(u8, state.search_stats_query[0..state.search_stats_query_len], query)) return true;
+    if (state.search_stats_has_match != state.search_has_match) return true;
+    if (state.search_has_match and state.search_stats_active_start != state.search_active_start) return true;
+    return false;
 }
 
-fn matchIndex(text: []const u8, query: []const u8, match_start: usize) ?usize {
-    if (query.len == 0) return null;
-    var count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, text, pos, query)) |idx| {
-        count += 1;
-        if (idx == match_start) return count;
-        pos = idx + query.len;
+fn cacheSearchStatsKey(state: *State, text: []const u8, query: []const u8) void {
+    state.search_stats_dirty = false;
+    state.search_stats_text_len = text.len;
+    state.search_stats_query_len = @min(query.len, state.search_stats_query.len);
+    @memset(&state.search_stats_query, 0);
+    std.mem.copyForwards(u8, state.search_stats_query[0..state.search_stats_query_len], query[0..state.search_stats_query_len]);
+    state.search_stats_has_match = state.search_has_match;
+    state.search_stats_active_start = state.search_active_start;
+}
+
+fn beginSearchStatsScan(state: *State, text: []const u8, query: []const u8) void {
+    state.search_match_count = search_match_count_unknown;
+    state.search_active_index = 0;
+    resetSearchStatsScan(state);
+    cacheSearchStatsKey(state, text, query);
+}
+
+fn resetSearchStatsScan(state: *State) void {
+    state.search_stats_scan_pos = 0;
+    state.search_stats_scan_count = 0;
+    state.search_stats_scan_active_index = 0;
+}
+
+fn continueSearchStatsScan(state: *State, text: []const u8, query: []const u8) void {
+    if (query.len == 0 or text.len < query.len) {
+        finishSearchStatsScan(state);
+        return;
     }
-    return null;
+
+    const scan_start = state.search_stats_scan_pos;
+    if (scan_start >= text.len) {
+        finishSearchStatsScan(state);
+        return;
+    }
+
+    const chunk_end = @min(text.len, scan_start + search_stats_chunk_bytes);
+    const search_end = @min(text.len, chunk_end + query.len - 1);
+    var pos = scan_start;
+    var next_pos = chunk_end;
+
+    while (std.mem.indexOfPos(u8, text[0..search_end], pos, query)) |idx| {
+        if (idx >= chunk_end) break;
+
+        state.search_stats_scan_count += 1;
+        if (state.search_has_match and idx <= state.search_active_start) {
+            state.search_stats_scan_active_index = state.search_stats_scan_count;
+            state.search_active_index = state.search_stats_scan_active_index;
+        }
+
+        pos = idx + query.len;
+        next_pos = @max(next_pos, pos);
+        if (pos >= search_end) break;
+    }
+
+    state.search_stats_scan_pos = next_pos;
+    if (state.search_stats_scan_pos >= text.len) {
+        finishSearchStatsScan(state);
+    } else {
+        dvui.timer(dvui.currentWindow().data().id.update("remote_editor_search_stats"), search_stats_frame_us);
+        dvui.refresh(null, @src(), null);
+    }
+}
+
+fn finishSearchStatsScan(state: *State) void {
+    state.search_match_count = state.search_stats_scan_count;
+    if (!state.search_has_match or state.search_match_count == 0) {
+        state.search_active_index = 0;
+    } else if (state.search_stats_scan_active_index > 0) {
+        state.search_active_index = state.search_stats_scan_active_index;
+    } else {
+        state.search_active_index = @min(@max(1, state.search_active_index), state.search_match_count);
+    }
+    dvui.refresh(null, @src(), null);
+}
+
+fn searchCountLabel(state: *const State, buf: []u8) []const u8 {
+    if (state.search_match_count == search_match_count_unknown) {
+        if (state.search_active_index > 0) {
+            return std.fmt.bufPrint(buf, "{d}/?", .{state.search_active_index}) catch "?/?";
+        }
+        return "?/?";
+    }
+    if (state.search_match_count == 0) return "0/0";
+    return std.fmt.bufPrint(buf, "{d}/{d}", .{ state.search_active_index, state.search_match_count }) catch "";
 }
 
 fn searchQuery(state: *const State) []const u8 {
@@ -957,10 +1135,9 @@ fn editorTextOptions(palette: theme.Palette, naked_theme: *const dvui.Theme, id_
         .color_fill_hover = dvui.Color.transparent,
         .color_fill_press = dvui.Color.transparent,
         .color_border = dvui.Color.transparent,
-        // TextEntry uses one font for the entire editable buffer and does not
-        // provide per-codepoint fallback. Use the bundled Unicode-capable font
-        // so content typed after opening an ASCII file is visible as well.
-        .font = theme.cjkFont(10),
+        // SDL3_ttf owns fallback shaping, so keep ASCII-heavy editor content on
+        // the bundled mono face while CJK/emoji can still fall back per glyph.
+        .font = theme.textFont("editor", 13),
     });
 }
 
@@ -980,7 +1157,7 @@ fn centerLabel(text: []const u8, palette: theme.Palette, id_extra: usize) void {
     });
     defer box.deinit();
     dvui.label(@src(), "{s}", .{text}, .{
-        .font = theme.textFont(text, 10),
+        .font = theme.textFont(text, 13),
         .color_text = palette.muted_text,
         .gravity_x = 0.5,
         .gravity_y = 0.5,
@@ -1072,13 +1249,13 @@ fn unsavedPrompt(palette: theme.Palette, id_extra: usize) ?ConfirmAction {
     defer content.deinit();
 
     dvui.label(@src(), "Unsaved Changes", .{}, .{
-        .font = theme.textFont("Unsaved Changes", 12),
+        .font = theme.textFont("Unsaved Changes", 15),
         .color_text = palette.text,
         .expand = .horizontal,
         .id_extra = id_extra + 2,
     });
     dvui.label(@src(), "Save changes before closing?", .{}, .{
-        .font = theme.textFont("Save changes before closing?", 9),
+        .font = theme.textFont("Save changes before closing?", 12),
         .color_text = palette.muted_text,
         .expand = .horizontal,
         .min_size_content = .height(20),
@@ -1099,17 +1276,17 @@ fn unsavedPrompt(palette: theme.Palette, id_extra: usize) ?ConfirmAction {
         .min_size_content = .{ .w = 76, .h = 24 },
         .id_extra = id_extra + 12,
         .padding = .{ .h = 0 },
-    }, palette, .{ .variant = .ghost, .font_size = 10 })) return .cancel;
+    }, palette, .{ .variant = .ghost, .font_size = 13 })) return .cancel;
     if (theme.button(@src(), "Discard", .{
         .min_size_content = .{ .w = 82, .h = 24 },
         .id_extra = id_extra + 13,
         .padding = .{ .h = 0 },
-    }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = 10 })) return .discard;
+    }, palette, .{ .intent = .danger, .variant = .ghost, .font_size = 13 })) return .discard;
     if (theme.button(@src(), "Save", .{
         .min_size_content = .{ .w = 76, .h = 24 },
         .id_extra = id_extra + 14,
         .padding = .{ .h = 0 },
-    }, palette, .{ .intent = .primary, .variant = .solid, .font_size = 10 })) return .save;
+    }, palette, .{ .intent = .primary, .variant = .solid, .font_size = 13 })) return .save;
     return null;
 }
 
@@ -1138,7 +1315,7 @@ fn conflictPrompt(palette: theme.Palette, id_extra: usize) ?ConflictAction {
     dvui.focusSubwindow(panel.data().id, null);
 
     dvui.label(@src(), "Remote File Changed", .{}, .{
-        .font = theme.textFont("Remote File Changed", 12),
+        .font = theme.textFont("Remote File Changed", 15),
         .color_text = palette.warning,
         .expand = .horizontal,
         .id_extra = id_extra + 1,
@@ -1155,17 +1332,17 @@ fn conflictPrompt(palette: theme.Palette, id_extra: usize) ?ConflictAction {
         .min_size_content = .{ .w = 106, .h = 24 },
         .id_extra = id_extra + 11,
         .padding = .{ .h = 0 },
-    }, palette, .{ .variant = .ghost, .font_size = 9.5 })) return .keep_editing;
+    }, palette, .{ .variant = .ghost, .font_size = 12.5 })) return .keep_editing;
     if (theme.button(@src(), "Reload", .{
         .min_size_content = .{ .w = 72, .h = 24 },
         .id_extra = id_extra + 12,
         .padding = .{ .h = 0 },
-    }, palette, .{ .variant = .ghost, .font_size = 9.5 })) return .reload;
+    }, palette, .{ .variant = .ghost, .font_size = 12.5 })) return .reload;
     if (theme.button(@src(), "Overwrite", .{
         .min_size_content = .{ .w = 82, .h = 24 },
         .id_extra = id_extra + 13,
         .padding = .{ .h = 0 },
-    }, palette, .{ .intent = .danger, .variant = .solid, .font_size = 9.5 })) return .overwrite;
+    }, palette, .{ .intent = .danger, .variant = .solid, .font_size = 12.5 })) return .overwrite;
     return null;
 }
 

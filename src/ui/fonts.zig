@@ -1,6 +1,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 
+const sdl_ttf = @import("../backends/text/sdl_ttf.zig");
 const theme = @import("theme.zig");
 
 const zed_font_bytes = @embedFile("shellowo-zed-font");
@@ -9,6 +10,10 @@ const zed_font_bold_bytes = @embedFile("shellowo-zed-bold-font");
 const cjk_font_bytes = @embedFile("shellowo-cjk-font");
 
 pub fn loadEmbedded(window: *dvui.Window) void {
+    if (window.text_engine) |engine| {
+        if (sdl_ttf.ownsEngine(engine)) return;
+    }
+
     var zed_loaded = true;
     window.addFont(theme.cjk_font_family, cjk_font_bytes, null) catch return;
     window.addFont(theme.zed_font_family, zed_font_bytes, null) catch {
@@ -24,6 +29,20 @@ pub fn loadEmbedded(window: *dvui.Window) void {
     current_theme.font_title = current_theme.font_title.withFamily(primary_family).withWeight(.normal).withSize(theme.font_sizes.title);
     current_theme.font_mono = current_theme.font_mono.withFamily(primary_family).withSize(theme.font_sizes.body);
     window.themeSet(current_theme);
+
+    const allocator = window.gpa;
+    const system = allocator.create(sdl_ttf.System) catch return;
+    system.* = sdl_ttf.System.init(allocator, window.backend.impl.renderer, .{
+        .regular = zed_font_bytes,
+        .bold = zed_font_bold_bytes,
+        .italic = zed_font_italic_bytes,
+        .cjk = cjk_font_bytes,
+    }) catch {
+        allocator.destroy(system);
+        return;
+    };
+
+    window.text_engine = system.dvuiEngine();
 }
 
 fn addFontSource(

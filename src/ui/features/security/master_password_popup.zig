@@ -50,7 +50,7 @@ pub fn show(app: *App, mode: Mode, palette: theme.Palette, id_extra: usize) Acti
 
     const title = if (disable_mode) "Disable Master Password" else "Enable Master Password";
     dvui.label(@src(), "{s}", .{title}, .{
-        .font = theme.textFont(title, 14),
+        .font = theme.textFont(title, 17),
         .color_text = palette.text,
         .margin = .{ .h = 8 },
         .id_extra = id_extra + 1,
@@ -122,7 +122,7 @@ fn fieldLabel(label: []const u8, palette: theme.Palette, id_extra: usize) void {
     defer slot.deinit();
 
     dvui.label(@src(), "{s}", .{label}, .{
-        .font = theme.textFont(label, 10),
+        .font = theme.textFont(label, 13),
         .color_text = palette.muted_text,
         .gravity_y = 0.5,
         .id_extra = id_extra + 1,
@@ -138,7 +138,7 @@ fn passwordEntry(buffer: []u8, width: f32, palette: theme.Palette, id_extra: usi
         .gravity_y = 0.5,
         .min_size_content = .{ .w = @max(80, width), .h = field_height },
         .max_size_content = .{ .w = @max(80, width), .h = field_height },
-        .font = theme.textFont("password", 10),
+        .font = theme.textFont("password", 13),
         .corner_radius = .all(5),
         .padding = .{ .x = 8, .y = 4, .w = 8, .h = 0 },
         .margin = .all(0),

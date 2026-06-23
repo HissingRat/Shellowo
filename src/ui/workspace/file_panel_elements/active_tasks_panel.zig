@@ -54,7 +54,7 @@ pub fn showButton(app: *App, panel_bounds: dvui.Rect.Natural, palette: theme.Pal
         .margin = .all(0),
         .corner_radius = .all(0),
         .id_extra = id_extra + 1,
-    }, palette, .{ .variant = .ghost, .font_size = 10, .text_align_x = 0.5 });
+    }, palette, .{ .variant = .ghost, .font_size = 13, .text_align_x = 0.5 });
     button_box.deinit();
     state.popup_anchor = button_rect.toNatural();
 
@@ -95,7 +95,7 @@ fn popup(app: *App, button_rect: dvui.Rect.Physical, palette: theme.Palette, sta
     defer win.deinit();
 
     dvui.label(@src(), "Transfers", .{}, .{
-        .font = theme.textFont("Transfers", 9),
+        .font = theme.textFont("Transfers", 12),
         .color_text = palette.text_subtle,
         .min_size_content = .height(22),
         .padding = .{ .x = 2, .y = 1, .w = 2, .h = 1 },
@@ -179,7 +179,7 @@ fn popupRect(anchor: dvui.Rect.Natural, panel_bounds: dvui.Rect.Natural, tasks: 
 fn popupWidth(tasks: []const transfer.TransferTask) f32 {
     var width = popup_min_width;
     for (tasks) |task| {
-        const measured = theme.textFont(task.title, 9).textSize(task.title).w;
+        const measured = theme.textFont(task.title, 12).textSize(task.title).w;
         const title_width = measured + 48;
         width = @max(width, title_width);
     }
@@ -196,7 +196,7 @@ fn popupContentHeight(tasks: []const transfer.TransferTask, width: f32) f32 {
 fn taskRowHeight(task: transfer.TransferTask, width: f32) f32 {
     const title_height = wrappedTextHeight(
         task.title,
-        theme.textFont(task.title, 9),
+        theme.textFont(task.title, 12),
         taskTitleWidth(task, width),
         task_title_height,
     );
@@ -204,7 +204,7 @@ fn taskRowHeight(task: transfer.TransferTask, width: f32) f32 {
     const error_height = if (task.errorSummary()) |error_summary|
         wrappedTextHeight(
             error_summary,
-            theme.textFont(error_summary, 9),
+            theme.textFont(error_summary, 12),
             taskContentWidth(width),
             task_error_height,
         )
@@ -262,7 +262,7 @@ fn wrappedTextHeight(text: []const u8, font: dvui.Font, max_width: f32, min_heig
 
 fn emptyRow(palette: theme.Palette, id_extra: usize) void {
     dvui.label(@src(), "No active tasks", .{}, .{
-        .font = theme.textFont("No active tasks", 9),
+        .font = theme.textFont("No active tasks", 12),
         .color_text = palette.muted_text,
         .min_size_content = .{ .w = 240, .h = 26 },
         .gravity_y = 0.5,
@@ -275,7 +275,7 @@ fn taskRow(task: transfer.TransferTask, width: f32, palette: theme.Palette, id_e
     const row_height = taskRowHeight(task, width);
     const title_height = wrappedTextHeight(
         task.title,
-        theme.textFont(task.title, 9),
+        theme.textFont(task.title, 12),
         taskTitleWidth(task, width),
         task_title_height,
     );
@@ -307,7 +307,7 @@ fn taskRow(task: transfer.TransferTask, width: f32, palette: theme.Palette, id_e
         defer title_line.deinit();
 
         const title = task.title;
-        const title_font = theme.textFont(title, 9);
+        const title_font = theme.textFont(title, 12);
         var title_layout = dvui.textLayout(@src(), .{ .break_lines = true }, .{
             .font = title_font,
             .color_text = palette.text,
@@ -369,7 +369,7 @@ fn taskRow(task: transfer.TransferTask, width: f32, palette: theme.Palette, id_e
         defer status_line.deinit();
 
         dvui.label(@src(), "{s}", .{status_text}, .{
-            .font = theme.textFont(status_text, 9),
+            .font = theme.textFont(status_text, 12),
             .color_text = palette.muted_text,
             .expand = .horizontal,
             .min_size_content = .height(task_status_height),
@@ -380,7 +380,7 @@ fn taskRow(task: transfer.TransferTask, width: f32, palette: theme.Palette, id_e
     }
 
     if (task.errorSummary()) |error_summary| {
-        const error_font = theme.textFont(error_summary, 9);
+        const error_font = theme.textFont(error_summary, 12);
         const error_height = wrappedTextHeight(
             error_summary,
             error_font,

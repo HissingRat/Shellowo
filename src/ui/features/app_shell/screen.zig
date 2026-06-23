@@ -53,7 +53,7 @@ const TopBarState = struct {
 };
 
 const theme_switch_anim_ns: i128 = 180 * std.time.ns_per_ms;
-const connection_tab_font_size: f32 = 9.5;
+const connection_tab_font_size: f32 = 12.5;
 const connection_tab_horizontal_padding: f32 = 6;
 const connection_tab_status_size: f32 = 6;
 const connection_tab_status_gap: f32 = 7;
@@ -149,7 +149,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
         spacer(@src(), 8, 91);
     }
 
-    const title_button_width = @ceil(theme.textFont("Shellowo", 10).textSize("Shellowo").w) + 14;
+    const title_button_width = @ceil(theme.textFont("Shellowo", 13).textSize("Shellowo").w) + 14;
     var home_slot = dvui.box(@src(), .{}, .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = title_button_width, .h = button_height },
@@ -164,7 +164,7 @@ fn topBar(app: *App, palette: theme.Palette) void {
         .margin = .all(0),
         .id_extra = 1,
     }, palette, .{
-        .font_size = 10,
+        .font_size = 13,
     });
     home_slot.deinit();
     if (home_clicked) {
@@ -309,7 +309,7 @@ fn tabOverflowIndicator(state: *TopBarState, height: f32, palette: theme.Palette
         .color_text = if (can_scroll_right) palette.muted_text else palette.text_subtle.opacity(0.45),
         .id_extra = 106,
     }, palette, .{
-        .font_size = 8.5,
+        .font_size = 11.5,
     });
     slot.deinit();
     if (clicked and can_scroll_right) {
@@ -597,7 +597,7 @@ fn predictionModeButton(app: *App, label: []const u8, mode: predictive.Predictio
         .variant = if (active) .solid else .ghost,
         .intent = if (active) .primary else .neutral,
         .state = if (active) .selected else .normal,
-        .font_size = 10,
+        .font_size = 13,
     })) {
         app.setTerminalPredictionMode(mode);
     }
@@ -667,7 +667,7 @@ fn masterPasswordToggleSwitch(app: *App, state: *TopBarState, palette: theme.Pal
         .margin = .all(0),
         .corner_radius = .all(switch_h / 2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{
+    }, palette, .{ .variant = .ghost, .font_size = 12 }, .{
         .interactive = false,
         .override = .{
             .color_fill = dvui.Color.transparent,
@@ -749,7 +749,7 @@ fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
         .corner_radius = .all(4),
         .id_extra = id_extra,
         .margin = .all(0),
-    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{
+    }, palette, .{ .variant = .ghost, .font_size = 12 }, .{
         .override = .{ .color_fill = palette.surface_hover },
     });
     bw.processEvents();
@@ -772,7 +772,7 @@ fn folderPathButton(palette: theme.Palette, id_extra: usize) bool {
 
 fn settingLabel(text: []const u8, width: f32, palette: theme.Palette, id_extra: usize) void {
     dvui.label(@src(), "{s}:", .{text}, .{
-        .font = theme.textFont(text, 11),
+        .font = theme.textFont(text, 14),
         .color_text = palette.text,
         .gravity_y = 0.5,
         .min_size_content = .width(width),
@@ -797,7 +797,7 @@ fn themeToggleSwitch(app: *App, state: *TopBarState, palette: theme.Palette, id_
         .margin = .all(0),
         .corner_radius = .all(switch_h / 2),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .ghost, .font_size = 9 }, .{
+    }, palette, .{ .variant = .ghost, .font_size = 12 }, .{
         .interactive = false,
         .override = .{
             .color_fill = dvui.Color.transparent,
@@ -927,7 +927,7 @@ fn pathValue(path: []const u8, width: f32, palette: theme.Palette, id_extra: usi
 
     const crs = slot.data().contentRectScale();
     var path_buf: [160]u8 = undefined;
-    const font = theme.textFont(path, 9);
+    const font = theme.textFont(path, 12);
     const display_path = foldedPathForWidth(path, &path_buf, width - 8, font);
     const text_size = font.textSize(display_path);
     const text_height = text_size.h * crs.s;
@@ -1111,7 +1111,7 @@ fn tabTitleWidth(title: []const u8, font_size: f32) f32 {
 
 fn workspaceTabSeparator(palette: theme.Palette) void {
     dvui.label(@src(), "›", .{}, .{
-        .font = theme.textFont("›", 10),
+        .font = theme.textFont("›", 13),
         .color_text = palette.text_subtle,
         .gravity_y = 0.5,
         .padding = .all(0),
@@ -1153,10 +1153,7 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
 
     const blockers = app.closeBlockers();
     const window_rect = dvui.windowRect();
-    const blocker_count: usize =
-        @intFromBool(blockers.active_sessions > 0) +
-        @intFromBool(blockers.active_transfers > 0) +
-        @intFromBool(blockers.dirty_editors > 0);
+    const blocker_count = closeBlockerRowCount(blockers);
     const popup_w: f32 = 290;
     const popup_h: f32 = 100 + @as(f32, @floatFromInt(blocker_count)) * 21;
     const rect: dvui.Rect.Natural = .{
@@ -1228,7 +1225,7 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
         .expand = .both,
         .gravity_x = 0.5,
         .gravity_y = 0.5,
-        .font = theme.textFont("!", 10),
+        .font = theme.textFont("!", 13),
         .color_text = palette.danger,
         .padding = .{ .x = 6, .y = 2.5 },
         .margin = .all(0),
@@ -1238,7 +1235,7 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
 
     dvui.label(@src(), "Quit Shellowo?", .{}, .{
         .gravity_y = 0.5,
-        .font = theme.textFont("Quit Shellowo?", 12),
+        .font = theme.textFont("Quit Shellowo?", 15),
         .color_text = palette.text,
         .padding = .all(0),
         .margin = .all(0),
@@ -1247,7 +1244,7 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
     heading.deinit();
 
     dvui.label(@src(), "Active work will be interrupted.", .{}, .{
-        .font = theme.textFont("Active work will be interrupted.", 9),
+        .font = theme.textFont("Active work will be interrupted.", 12),
         .color_text = palette.muted_text,
         .margin = .{ .y = 7, .h = 8 },
         .padding = .all(0),
@@ -1267,7 +1264,7 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
         .max_size_content = .height(22),
         .margin = .{ .x = 3 },
         .id_extra = 930_051,
-    }, palette, .{ .variant = .ghost, .font_size = 9.5 })) {
+    }, palette, .{ .variant = .ghost, .font_size = 12.5 })) {
         app.cancelWindowClose();
     }
     if (theme.button(@src(), "Quit", .{
@@ -1275,50 +1272,26 @@ fn windowClosePrompt(app: *App, palette: theme.Palette) void {
         .max_size_content = .height(22),
         .margin = .{ .x = 3 },
         .id_extra = 930_052,
-    }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 9.5 })) {
+    }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 12.5 })) {
         app.confirmWindowClose();
     }
 }
 
-fn closeBlockerRow(label: []const u8, count: usize, palette: theme.Palette, id_extra: usize) void {
-    if (count == 0) return;
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .horizontal,
-        .min_size_content = .height(21),
-        .max_size_content = .height(21),
-        .padding = .all(0),
-        .margin = .all(0),
-        .id_extra = id_extra,
-    });
-    defer row.deinit();
+fn closeBlockerRowCount(blockers: App.CloseBlockers) usize {
+    var count: usize = 0;
+    if (blockers.active_sessions > 0) count += 1;
+    if (blockers.active_transfers > 0) count += 1;
+    if (blockers.dirty_editors > 0) count += 1;
+    return count;
+}
 
-    dvui.label(@src(), "•", .{}, .{
-        .min_size_content = .width(14),
-        .max_size_content = .width(14),
-        .gravity_y = 0.5,
-        .font = theme.textFont("•", 9),
-        .color_text = palette.warning,
-        .padding = .all(0),
-        .margin = .all(0),
-        .id_extra = id_extra + 1,
-    });
-    dvui.label(@src(), "{s}", .{label}, .{
-        .gravity_y = 0.5,
-        .font = theme.textFont(label, 9.5),
-        .color_text = palette.muted_text,
-        .expand = .horizontal,
-        .padding = .all(0),
-        .margin = .all(0),
-        .id_extra = id_extra + 2,
-    });
-    dvui.label(@src(), "{d}", .{count}, .{
-        .gravity_y = 0.5,
-        .font = theme.textFont("0", 9.5),
-        .color_text = palette.text,
-        .padding = .all(0),
-        .margin = .all(0),
-        .id_extra = id_extra + 3,
-    });
+test "window close blocker row count handles multiple blockers" {
+    try std.testing.expectEqual(@as(usize, 0), closeBlockerRowCount(.{}));
+    try std.testing.expectEqual(@as(usize, 3), closeBlockerRowCount(.{
+        .active_sessions = 2,
+        .active_transfers = 1,
+        .dirty_editors = 1,
+    }));
 }
 
 fn handleWindowClosePromptKeys(app: *App, data: *dvui.WidgetData) void {
@@ -1364,7 +1337,7 @@ fn hostKeyPrompt(app: *App, palette: theme.Palette) void {
     defer panel.deinit();
 
     dvui.label(@src(), "Trust SSH Host Key", .{}, .{
-        .font = theme.textFont("Trust SSH Host Key", 14),
+        .font = theme.textFont("Trust SSH Host Key", 17),
         .color_text = palette.text,
         .margin = .{ .h = 3 },
         .id_extra = 920_002,
@@ -1392,7 +1365,7 @@ fn hostKeyPrompt(app: *App, palette: theme.Palette) void {
         .id_extra = 920_061,
     }, palette, .{
         .variant = .ghost,
-        .font_size = 11,
+        .font_size = 14,
     })) {
         app.rejectPendingHostKey();
     }
@@ -1402,7 +1375,7 @@ fn hostKeyPrompt(app: *App, palette: theme.Palette) void {
         .id_extra = 920_062,
     }, palette, .{
         .variant = .ghost,
-        .font_size = 11,
+        .font_size = 14,
     })) {
         app.trustPendingHostKey();
     }
@@ -1420,7 +1393,7 @@ fn hostKeyRow(label: []const u8, value: []const u8, palette: theme.Palette, id_e
 
     dvui.label(@src(), "{s}", .{label}, .{
         .min_size_content = .width(78),
-        .font = theme.textFont(label, 10),
+        .font = theme.textFont(label, 13),
         .color_text = palette.muted_text,
         .id_extra = id_extra + 1,
         .margin = .all(0),
@@ -1428,7 +1401,7 @@ fn hostKeyRow(label: []const u8, value: []const u8, palette: theme.Palette, id_e
     });
     dvui.label(@src(), "{s}", .{value}, .{
         .expand = .horizontal,
-        .font = theme.textFont(value, 10),
+        .font = theme.textFont(value, 13),
         .color_text = palette.text,
         .id_extra = id_extra + 2,
         .margin = .all(0),
@@ -1457,14 +1430,14 @@ fn homeStage(app: *App, palette: theme.Palette) void {
     defer column.deinit();
 
     dvui.label(@src(), "Shellowo", .{}, .{
-        .font = theme.textFont("Shellowo", 24),
+        .font = theme.textFont("Shellowo", 27),
         .color_text = palette.text,
         .gravity_x = 0.5,
         .margin = .{ .h = 4 },
     });
 
     dvui.label(@src(), "Remote workspace for who loves owo", .{}, .{
-        .font = theme.textFont("Remote workspace for who loves owo", 12),
+        .font = theme.textFont("Remote workspace for who loves owo", 15),
         .color_text = palette.muted_text,
         .gravity_x = 0.5,
         .margin = .{ .h = 28 },
@@ -1479,7 +1452,7 @@ fn homeStage(app: *App, palette: theme.Palette) void {
         .corner_radius = .all(5),
         .margin = .{ .y = 4 },
         .id_extra = 401,
-    }, palette, .{ .variant = .row, .font_size = 12 })) {
+    }, palette, .{ .variant = .row, .font_size = 15 })) {
         app.newProfile();
     }
 
@@ -1527,7 +1500,7 @@ fn connectionsHeader(app: *App, palette: theme.Palette) void {
     defer row.deinit();
 
     dvui.label(@src(), "CONNECTIONS", .{}, .{
-        .font = theme.textFont("CONNECTIONS", 10),
+        .font = theme.textFont("CONNECTIONS", 13),
         .color_text = palette.text_subtle,
         .gravity_y = 0.5,
         .id_extra = 412,
@@ -1542,7 +1515,7 @@ fn searchBox(app: *App, palette: theme.Palette) void {
         .gravity_y = 0.5,
         .min_size_content = .{ .w = 120, .h = 20 },
         .max_size_content = .{ .w = 120, .h = 20 },
-        .font = theme.cjkFont(10),
+        .font = theme.cjkFont(13),
         .corner_radius = .all(5),
         .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
         .id_extra = 405,
@@ -1582,7 +1555,7 @@ fn groupedConnectionList(app: *App, palette: theme.Palette) void {
 
     if (!rendered_any) {
         dvui.label(@src(), "No connections found", .{}, .{
-            .font = theme.textFont("No connections found", 12),
+            .font = theme.textFont("No connections found", 15),
             .color_text = palette.text_subtle,
             .gravity_x = 0.5,
             .margin = .{ .y = 16 },
@@ -1593,7 +1566,7 @@ fn groupedConnectionList(app: *App, palette: theme.Palette) void {
 
 fn sectionLabel(label: []const u8, palette: theme.Palette, id_extra: usize) void {
     dvui.label(@src(), "{s}", .{label}, .{
-        .font = theme.textFont(label, 10),
+        .font = theme.textFont(label, 13),
         .color_text = palette.text_subtle,
         .margin = .{ .y = 20, .h = 5 },
         .id_extra = id_extra,
@@ -1613,7 +1586,7 @@ fn groupHeader(app: *App, group: []const u8, group_idx: usize, count: usize, exp
         .id_extra = 50_000 + group_idx,
     }, palette, .{
         .variant = .ghost,
-        .font_size = 11,
+        .font_size = 14,
         .text_align_x = 0.0,
     })) {
         app.toggleGroup(group);

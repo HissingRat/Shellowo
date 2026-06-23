@@ -145,6 +145,15 @@ pub const PaneLayout = struct {
     dismissed_toast: [96]u8 = undefined,
     dismissed_toast_len: usize = 0,
 
+    pub fn deinitData(ptr: *anyopaque) void {
+        const self: *PaneLayout = @ptrCast(@alignCast(ptr));
+        self.deinit();
+    }
+
+    pub fn deinit(self: *PaneLayout) void {
+        self.editor.deinit();
+    }
+
     pub fn isSelected(self: *const PaneLayout, name: []const u8) bool {
         for (0..self.selected_count) |idx| {
             if (std.mem.eql(u8, self.selectedName(idx), name)) return true;

@@ -3,8 +3,6 @@ const dvui = @import("dvui");
 const remote_file = @import("../../../core/remote_file.zig");
 const theme = @import("../../theme.zig");
 
-const context_menu_font_size: f32 = 9;
-
 pub const EntryOptions = struct {
     rect: dvui.Rect.Physical,
     can_mutate: bool,
@@ -108,7 +106,7 @@ pub fn deleteConfirm(palette: theme.Palette, name: []const u8, anchor: dvui.Poin
     defer menu.deinit();
 
     dvui.label(@src(), "Delete {s}?", .{name}, .{
-        .font = theme.textFont("Delete file?", 9),
+        .font = theme.textFont("Delete file?", 12),
         .color_text = palette.text,
         .expand = .horizontal,
         .min_size_content = .{ .w = 142, .h = 18 },
@@ -127,14 +125,14 @@ pub fn deleteConfirm(palette: theme.Palette, name: []const u8, anchor: dvui.Poin
     if (theme.button(@src(), "Cancel", .{
         .min_size_content = .{ .w = 62, .h = 19 },
         .id_extra = id_extra + 3,
-    }, palette, .{ .variant = .ghost, .font_size = 9 })) {
+    }, palette, .{ .variant = .ghost, .font_size = 12 })) {
         menu.close();
         return .cancel;
     }
     if (theme.button(@src(), "Delete", .{
         .min_size_content = .{ .w = 62, .h = 19 },
         .id_extra = id_extra + 4,
-    }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 9 })) {
+    }, palette, .{ .variant = .solid, .intent = .danger, .font_size = 12 })) {
         menu.close();
         return .confirm;
     }
@@ -172,7 +170,7 @@ fn menuOptions(palette: theme.Palette, id_extra: usize) dvui.Options {
 fn menuItem(label: []const u8, enabled: bool, palette: theme.Palette, id_extra: usize) ?dvui.Rect.Natural {
     return theme.menuItem(@src(), label, palette, .{
         .id_extra = id_extra,
-        .font_size = context_menu_font_size,
+        .font_size = 12,
         .enabled = enabled,
         .layout = .{
             .expand = .horizontal,

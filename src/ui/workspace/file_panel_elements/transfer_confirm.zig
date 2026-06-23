@@ -169,13 +169,13 @@ pub fn show(state: *State, palette: theme.Palette, id_extra: usize) Action {
     dvui.focusSubwindow(panel.data().id, null);
 
     dvui.label(@src(), "Overwrite Existing Item?", .{}, .{
-        .font = theme.textFont("Overwrite Existing Item?", 12),
+        .font = theme.textFont("Overwrite Existing Item?", 15),
         .color_text = palette.text,
         .margin = .all(0),
         .id_extra = id_extra + 1,
     });
     dvui.label(@src(), "{s}", .{state.messageText()}, .{
-        .font = theme.textFont(state.messageText(), 9),
+        .font = theme.textFont(state.messageText(), 12),
         .color_text = palette.text_subtle,
         .expand = .horizontal,
         .min_size_content = .height(20),
@@ -196,13 +196,13 @@ pub fn show(state: *State, palette: theme.Palette, id_extra: usize) Action {
         .min_size_content = .{ .w = 72, .h = 19 },
         .margin = .{ .x = 4, .y = 4 },
         .id_extra = id_extra + 5,
-    }, palette, .{ .variant = .ghost, .font_size = 10 })) return .cancel;
+    }, palette, .{ .variant = .ghost, .font_size = 13 })) return .cancel;
 
     if (theme.button(@src(), "Overwrite", .{
         .min_size_content = .{ .w = 88, .h = 19 },
         .margin = .{ .x = 4, .y = 4 },
         .id_extra = id_extra + 6,
-    }, palette, .{ .variant = .solid, .font_size = 10 })) return .overwrite;
+    }, palette, .{ .variant = .solid, .font_size = 13 })) return .overwrite;
 
     return .none;
 }

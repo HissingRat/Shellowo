@@ -169,7 +169,7 @@ fn pathBar(
             .expand = .horizontal,
             .min_size_content = .height(toolbar_height - 8),
             .max_size_content = .height(toolbar_height - 8),
-            .font = theme.textFont(remote.path, 10),
+            .font = theme.textFont(remote.path, 13),
             .padding = .{ .x = 6, .y = 2.5, .w = 6, .h = 0 },
             .corner_radius = .all(3),
             .id_extra = id_extra + 1,
@@ -229,7 +229,7 @@ fn pathBar(
         }
         path_slot.drawBackground();
         dvui.label(@src(), "{s}", .{remote.path}, .{
-            .font = theme.textFont(remote.path, 10),
+            .font = theme.textFont(remote.path, 13),
             .color_text = palette.muted_text,
             .expand = .horizontal,
             .gravity_y = 0.5,
@@ -323,6 +323,7 @@ fn filePane(kind: PaneKind, palette: theme.Palette, opts: PaneOptions, intent: *
     }));
     defer pane.deinit();
     const layout = dvui.dataGetPtrDefault(null, pane.data().id, "file-pane-layout", PaneLayoutState, .{});
+    dvui.dataSetDeinitFunction(null, pane.data().id, "file-pane-layout", &PaneLayoutState.deinitData);
     if (!layout.columns_initialized) {
         layout.columns = opts.columns.*;
         layout.columns_initialized = true;
@@ -527,7 +528,7 @@ fn treeRow(snapshot: remote_file.FileTreeSnapshot, entry: remote_file.RemoteFile
 }
 
 fn treeRowWidth(entry: remote_file.RemoteFileEntry) f32 {
-    const font = theme.textFont(entry.name, 10);
+    const font = theme.textFont(entry.name, 13);
     const text_width = font.textSize(entry.name).w;
     const indent = @as(f32, @floatFromInt(entry.depth)) * tree_indent + 8;
     const right_padding: f32 = 8;
@@ -571,7 +572,7 @@ fn fileRow(app: *App, snapshot: remote_file.FilePaneSnapshot, entry: remote_file
         .margin = .all(0),
         .corner_radius = .all(0),
         .id_extra = id_extra,
-    }, palette, .{ .variant = .row, .font_size = 10, .text_align_x = 0 }, .{
+    }, palette, .{ .variant = .row, .font_size = 13, .text_align_x = 0 }, .{
         .override = .{
             .color_fill = if (selected) palette.surface_active else palette.panel_bg,
             .color_border = palette.border_subtle,
@@ -686,7 +687,7 @@ fn editFileRow(snapshot: remote_file.FilePaneSnapshot, layout: *PaneLayoutState,
     te.init(@src(), .{ .text = .{ .buffer = &layout.edit_buffer } }, theme.panel(.{
         .expand = .horizontal,
         .min_size_content = .height(row_height - 4),
-        .font = theme.textFont("filename", 10),
+        .font = theme.textFont("filename", 13),
         .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
         .corner_radius = .all(0),
         .id_extra = id_extra + 3,
@@ -915,7 +916,7 @@ fn renderDropTooltip(app: *const App, snapshot: remote_file.FilePaneSnapshot, pa
     defer tooltip.deinit();
 
     dvui.label(@src(), "Upload", .{}, .{
-        .font = theme.textFont("Upload", 9),
+        .font = theme.textFont("Upload", 12),
         .color_text = palette.text,
         .gravity_y = 0.5,
         .id_extra = id_extra + 1,
@@ -1057,7 +1058,7 @@ fn failureTooltip(layout: *PaneLayoutState, palette: theme.Palette, id_extra: us
     dvui.refresh(null, @src(), dvui.currentWindow().data().id.update("file_failure_tooltip"));
 
     const message = layout.toastMessage();
-    const font = theme.textFont(message, 9);
+    const font = theme.textFont(message, 12);
     const text_size = font.textSize(message);
     const natural_mouse = dvui.windowRectScale().pointFromPhysical(dvui.currentWindow().mouse_pt);
     var rect = dvui.Rect.Natural{
@@ -1131,7 +1132,7 @@ fn headerCell(text: []const u8, width: f32, palette: theme.Palette, id_extra: us
     const horizontal_padding: f32 = 16;
     const content_width = @max(0, width - horizontal_padding);
     dvui.label(@src(), "{s}", .{text}, .{
-        .font = theme.textFont(text, 9),
+        .font = theme.textFont(text, 12),
         .color_text = palette.text_subtle,
         .min_size_content = .width(content_width),
         .max_size_content = .width(content_width),
@@ -1164,7 +1165,7 @@ fn drawColumnSeparator(crs: dvui.RectScale, x: f32, palette: theme.Palette) void
 
 fn emptyRow(text: []const u8, palette: theme.Palette, id_extra: usize) void {
     dvui.label(@src(), "{s}", .{text}, .{
-        .font = theme.textFont(text, 10),
+        .font = theme.textFont(text, 13),
         .color_text = palette.muted_text,
         .expand = .horizontal,
         .min_size_content = .height(row_height),
@@ -1265,7 +1266,7 @@ fn renderNameCell(crs: dvui.RectScale, x_offset: f32, width: f32, entry: remote_
     const old_clip = dvui.clip(text_rect);
     defer dvui.clipSet(old_clip);
 
-    const font = theme.textFont(entry.name, 10);
+    const font = theme.textFont(entry.name, 13);
     const text_size = font.textSize(entry.name);
     dvui.renderText(.{
         .font = font,
@@ -1299,7 +1300,7 @@ fn renderTreeEntry(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry, pale
         .h = crs.r.h,
     };
     const glyph = if (entry.isRootDirectory() or entry.expanded) "v" else ">";
-    const disclosure_font = theme.textFont(glyph, 9);
+    const disclosure_font = theme.textFont(glyph, 12);
     const disclosure_size = disclosure_font.textSize(glyph);
     dvui.renderText(.{
         .font = disclosure_font,
@@ -1323,7 +1324,7 @@ fn renderTreeEntry(crs: dvui.RectScale, entry: remote_file.RemoteFileEntry, pale
     const old_clip = dvui.clip(text_rect);
     defer dvui.clipSet(old_clip);
 
-    const font = theme.textFont(entry.name, 10);
+    const font = theme.textFont(entry.name, 13);
     const text_size = font.textSize(entry.name);
     dvui.renderText(.{
         .font = font,
@@ -1358,7 +1359,7 @@ fn renderCellText(crs: dvui.RectScale, x_offset: f32, width: f32, text: []const 
     const old_clip = dvui.clip(text_rect);
     defer dvui.clipSet(old_clip);
 
-    const font = theme.textFont(text, 9);
+    const font = theme.textFont(text, 12);
     const text_size = font.textSize(text);
     dvui.renderText(.{
         .font = font,
@@ -1373,7 +1374,7 @@ fn renderCellText(crs: dvui.RectScale, x_offset: f32, width: f32, text: []const 
 }
 
 fn maybeNameTooltip(name: []const u8, crs: dvui.RectScale, x_offset: f32, width: f32) void {
-    const font = theme.textFont(name, 10);
+    const font = theme.textFont(name, 13);
     const available = @max(0, width - 16);
     if (font.textSize(name).w <= available) return;
     const active_rect = dvui.Rect.Physical{
