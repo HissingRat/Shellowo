@@ -932,9 +932,17 @@ fn nearestMatch(prev: ?SearchMatch, next: ?SearchMatch, cursor: usize) ?SearchMa
     if (prev == null) return next;
     if (next == null) return prev;
 
-    const prev_distance = cursor -| prev.?.start;
-    const next_distance = next.?.start -| cursor;
+    const prev_distance = if (prev.?.start <= cursor) cursor - prev.?.start else std.math.maxInt(usize);
+    const next_distance = if (next.?.start >= cursor) next.?.start - cursor else std.math.maxInt(usize);
     return if (next_distance < prev_distance) next else prev;
+}
+
+test "remote editor nearest search ignores wrapped distance" {
+    const first: SearchMatch = .{ .start = 6, .end = 9 };
+    const last: SearchMatch = .{ .start = 32, .end = 35 };
+
+    try std.testing.expectEqual(first, nearestMatch(last, first, 0).?);
+    try std.testing.expectEqual(last, nearestMatch(last, first, 40).?);
 }
 
 fn selectMatch(state: *State, te: *dvui.TextEntryWidget, start: usize, end: usize) void {
