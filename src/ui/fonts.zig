@@ -9,7 +9,8 @@ const zed_font_italic_bytes = @embedFile("shellowo-zed-italic-font");
 const zed_font_bold_bytes = @embedFile("shellowo-zed-bold-font");
 const cjk_font_bytes = @embedFile("shellowo-cjk-font");
 
-var system: ?sdl_ttf.System = null;
+var systems: std.AutoHashMapUnmanaged(*dvui.Window, *sdl_ttf.System) = .empty;
+var systems_allocator: ?std.mem.Allocator = null;
 
 pub fn loadEmbedded(window: *dvui.Window) void {
     var zed_loaded = true;
@@ -28,18 +29,58 @@ pub fn loadEmbedded(window: *dvui.Window) void {
     current_theme.font_mono = current_theme.font_mono.withFamily(primary_family).withSize(theme.font_sizes.body);
     window.themeSet(current_theme);
 
-    system = sdl_ttf.System.init(window.gpa, window.backend.impl.renderer, .{
+    const system = systemFor(window) catch return;
+    window.text_engine = system.dvuiEngine();
+}
+
+pub fn unloadEmbedded(window: *dvui.Window) void {
+    const removed = systems.fetchRemove(window) orelse return;
+    const system = removed.value;
+    if (window.text_engine) |engine| {
+        if (engine.context == @as(*anyopaque, @ptrCast(system))) {
+            window.text_engine = null;
+        }
+    }
+    const allocator = system.allocator;
+    system.deinit();
+    allocator.destroy(system);
+}
+
+pub fn deinit() void {
+    var it = systems.valueIterator();
+    while (it.next()) |entry| {
+        const system = entry.*;
+        const allocator = system.allocator;
+        system.deinit();
+        allocator.destroy(system);
+    }
+    if (systems_allocator) |allocator| {
+        systems.deinit(allocator);
+    }
+    systems = .empty;
+    systems_allocator = null;
+}
+
+fn systemFor(window: *dvui.Window) !*sdl_ttf.System {
+    if (systems.get(window)) |system| return system;
+
+    const allocator = window.gpa;
+    if (systems_allocator == null) {
+        systems_allocator = allocator;
+    }
+
+    const system = try allocator.create(sdl_ttf.System);
+    errdefer allocator.destroy(system);
+    system.* = try sdl_ttf.System.init(allocator, window.backend.impl.renderer, .{
         .regular = zed_font_bytes,
         .bold = zed_font_bold_bytes,
         .italic = zed_font_italic_bytes,
         .cjk = cjk_font_bytes,
-    }) catch return;
-    _ = dvui.textEngineSet(system.?.dvuiEngine());
-}
+    });
+    errdefer system.deinit();
 
-pub fn deinit() void {
-    if (system) |*value| value.deinit();
-    system = null;
+    try systems.put(allocator, window, system);
+    return system;
 }
 
 fn addFontSource(

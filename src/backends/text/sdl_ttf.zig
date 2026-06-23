@@ -261,8 +261,11 @@ pub const System = struct {
             }
         }
 
+        const previous_clip_enabled = c.SDL_RenderClipEnabled(self.renderer);
         var previous_clip: c.SDL_Rect = undefined;
-        const had_clip = c.SDL_GetRenderClipRect(self.renderer, &previous_clip);
+        if (!c.SDL_GetRenderClipRect(self.renderer, &previous_clip)) {
+            return error.SdlRenderStateFailed;
+        }
         const clip = dvui.clipGet();
         const next_clip: c.SDL_Rect = .{
             .x = @intFromFloat(@floor(clip.x)),
@@ -270,8 +273,10 @@ pub const System = struct {
             .w = @intFromFloat(@ceil(clip.w)),
             .h = @intFromFloat(@ceil(clip.h)),
         };
-        _ = c.SDL_SetRenderClipRect(self.renderer, &next_clip);
-        defer _ = c.SDL_SetRenderClipRect(self.renderer, if (had_clip) &previous_clip else null);
+        if (!c.SDL_SetRenderClipRect(self.renderer, &next_clip)) {
+            return error.SdlRenderStateFailed;
+        }
+        defer _ = c.SDL_SetRenderClipRect(self.renderer, if (previous_clip_enabled) &previous_clip else null);
 
         if (!c.TTF_DrawRendererText(text, start.x, start.y)) return error.SdlTtfDrawFailed;
     }
