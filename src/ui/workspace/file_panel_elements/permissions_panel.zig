@@ -141,7 +141,7 @@ fn header(state: *const State, palette: theme.Palette, id_extra: usize) void {
     var title_buf: [320]u8 = undefined;
     const title = std.fmt.bufPrint(&title_buf, "Permissions: {s}", .{state.nameText()}) catch "Permissions";
     dvui.label(@src(), "{s}", .{title}, .{
-        .font = theme.textFont(title, 11),
+        .font = theme.textFont(title, 14),
         .color_text = palette.text,
         .gravity_y = 0.5,
         .id_extra = id_extra + 1,
@@ -167,7 +167,7 @@ fn content(state: *State, palette: theme.Palette, height: f32, id_extra: usize) 
 
     if (state.error_len > 0) {
         dvui.label(@src(), "{s}", .{state.errorText()}, .{
-            .font = theme.textFont(state.errorText(), 9),
+            .font = theme.textFont(state.errorText(), 12),
             .color_text = palette.danger,
             .min_size_content = .height(18),
             .id_extra = id_extra + 70,
@@ -187,7 +187,7 @@ fn textRow(label: []const u8, value: []const u8, palette: theme.Palette, id_extr
 
     fieldLabel(label, palette, id_extra + 1);
     dvui.label(@src(), "{s}", .{value}, .{
-        .font = theme.textFont(value, 10),
+        .font = theme.textFont(value, 13),
         .color_text = palette.text,
         .expand = .horizontal,
         .gravity_y = 0.5,
@@ -211,7 +211,7 @@ fn modeRow(state: *State, palette: theme.Palette, id_extra: usize) void {
     te.init(@src(), .{ .text = .{ .buffer = &state.mode_text } }, theme.panel(.{
         .min_size_content = .{ .w = 72, .h = 22 },
         .max_size_content = .{ .w = 72, .h = 22 },
-        .font = theme.textFont("000", 10),
+        .font = theme.textFont("000", 13),
         .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
         .corner_radius = .all(4),
         .id_extra = id_extra + 2,
@@ -254,7 +254,7 @@ fn permissionGrid(state: *State, palette: theme.Palette, id_extra: usize) void {
             const bit_idx = row_idx * 3 + col_idx;
             if (theme.checkbox(@src(), &state.bits[bit_idx], bit_labels[col_idx], palette, .{
                 .id_extra = id_extra + 3 + row_idx * 10 + col_idx,
-                .font_size = 9,
+                .font_size = 12,
                 .layout = .{
                     .min_size_content = .{ .w = 78, .h = 22 },
                     .max_size_content = .{ .w = 78, .h = 22 },
@@ -289,7 +289,7 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?remote_file.F
         .margin = .{ .y = 2, .w = 4, .h = 2 },
         .padding = .all(0),
         .id_extra = id_extra + 2,
-    }, palette, .{ .variant = .ghost, .font_size = 10 })) {
+    }, palette, .{ .variant = .ghost, .font_size = 13 })) {
         state.open = false;
         return null;
     }
@@ -300,7 +300,7 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?remote_file.F
         .margin = .{ .y = 2, .w = 10, .h = 2 },
         .padding = .all(0),
         .id_extra = id_extra + 3,
-    }, palette, .{ .variant = .solid, .font_size = 10 })) {
+    }, palette, .{ .variant = .solid, .font_size = 13 })) {
         const mode = state.parseMode() orelse {
             state.setError("Mode must be octal, e.g. 755");
             return null;
@@ -317,7 +317,7 @@ fn footer(state: *State, palette: theme.Palette, id_extra: usize) ?remote_file.F
 
 fn fieldLabel(label: []const u8, palette: theme.Palette, id_extra: usize) void {
     dvui.label(@src(), "{s}", .{label}, .{
-        .font = theme.textFont(label, 10),
+        .font = theme.textFont(label, 13),
         .color_text = palette.text_subtle,
         .min_size_content = .{ .w = label_width, .h = row_height },
         .max_size_content = .{ .w = label_width, .h = row_height },

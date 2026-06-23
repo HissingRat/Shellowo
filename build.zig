@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
         exe.subsystem = .windows;
     }
     attachWindowChrome(b, exe);
+    attachTextPlatform(b, exe);
     exe.root_module.addWin32ResourceFile(.{
         .file = b.path("assets/shellowo.rc"),
         .include_paths = &.{b.path("assets")},
@@ -160,6 +161,7 @@ pub fn build(b: *std.Build) void {
     });
     attachNativeDeps(b, tests, native_deps);
     attachWindowChrome(b, tests);
+    attachTextPlatform(b, tests);
     tests.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     tests.root_module.addAnonymousImport("shellowo-ssh-status-script", .{
         .root_source_file = b.path("assets/script/ssh_status_linux.sh"),
@@ -235,6 +237,24 @@ fn attachWindowChrome(b: *std.Build, compile: *std.Build.Step.Compile) void {
                 .flags = &.{},
             });
             compile.root_module.linkSystemLibrary("dwmapi", .{});
+        },
+        else => {},
+    }
+}
+
+fn attachTextPlatform(b: *std.Build, compile: *std.Build.Step.Compile) void {
+    switch (compile.root_module.resolved_target.?.result.os.tag) {
+        .macos => {
+            compile.root_module.addCSourceFile(.{
+                .file = b.path("src/backends/text/platform_fonts_macos.c"),
+                .flags = &.{},
+            });
+            compile.root_module.addCSourceFile(.{
+                .file = b.path("src/backends/text/platform_emoji_macos.m"),
+                .flags = &.{"-fobjc-arc"},
+            });
+            compile.root_module.linkFramework("CoreFoundation", .{});
+            compile.root_module.linkFramework("CoreText", .{});
         },
         else => {},
     }

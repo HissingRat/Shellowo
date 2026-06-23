@@ -52,6 +52,15 @@ TextLayout 命中和 TextEntry cluster 边界可以由同一 shaped-text backend
   `TTF_TextEngine`、字体、fallback 和 shaped layout cache 生命周期。
 - Zed Mono Extended 的 regular/bold/italic 是主字体，Noto Sans CJK SC
   通过 SDL3_ttf fallback chain 提供中文 glyph。
+- macOS 通过 `src/backends/text/platform_fonts_macos.c` 使用 CoreText
+  发现 Apple Color Emoji、Apple Symbols 和系统 cascade 字体；这些系统
+  字体作为 SDL3_ttf fallback chain 的后续候选，用于 emoji、符号和更广
+  Unicode 覆盖。Windows/Linux 保留同一 Shellowo-owned 边界，后续分别接
+  DirectWrite/known fonts 与 Fontconfig。
+- macOS 还通过 `src/backends/text/platform_emoji_macos.m` 提供
+  AppKit-backed emoji bitmap overlay。普通文字的 geometry 仍来自
+  SDL3_ttf；overlay 只在 render 阶段补 Apple Color Emoji 这类当前
+  FreeType/SDL_ttf 构建无法直接 rasterize 的彩色 glyph。
 - DVUI 的测量、绘制、鼠标命中、caret、selection 和 TextEntry
   cluster movement 使用同一个 text engine。
 - terminal 继续由 libvterm cell grid 决定列宽、选择和 cursor；启用 shaped
@@ -61,6 +70,11 @@ TextLayout 命中和 TextEntry cluster 边界可以由同一 shaped-text backend
 
 - Raw `TTF_Font`、`TTF_Text` 和 `TTF_TextEngine` 只允许出现在
   `src/backends/text/`。
+- 平台字体发现只能返回候选路径/元数据；UI 不直接调用 CoreText、
+  DirectWrite 或 Fontconfig。
+- emoji overlay 不得成为第二套测量/命中系统；如果未来引入通用 emoji
+  atlas，必须显式接入 TextEngine 的 layout、caret、selection 和 hit
+  testing。
 - 不允许重新引入“绘制走 SDL3_ttf、测量走 DVUI”的双几何路径。
 - 新增字体 fallback 时必须保持主字体和 fallback 的 size/style 一致。
 - 更新 SDL3_ttf、FreeType、HarfBuzz 或 DVUI fork 后必须执行

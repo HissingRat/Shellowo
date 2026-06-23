@@ -41,14 +41,14 @@ pub fn show(app: *App, palette: theme.Palette) void {
     defer content.deinit();
 
     dvui.label(@src(), "Shellowo", .{}, .{
-        .font = theme.textFont("Shellowo", 17),
+        .font = theme.textFont("Shellowo", 20),
         .color_text = palette.text,
         .margin = .{ .h = 8 },
         .id_extra = 930_002,
     });
 
     dvui.label(@src(), "Password:", .{}, .{
-        .font = theme.textFont("Password:", 10),
+        .font = theme.textFont("Password:", 13),
         .color_text = palette.muted_text,
         .margin = .{ .h = 4 },
         .id_extra = 930_003,
@@ -87,7 +87,7 @@ fn passwordEntry(buffer: []u8, width: f32, palette: theme.Palette, id_extra: usi
     }, theme.panel(.{
         .min_size_content = .{ .w = width, .h = field_height },
         .max_size_content = .{ .w = width, .h = field_height },
-        .font = theme.textFont("password", 10),
+        .font = theme.textFont("password", 13),
         .corner_radius = .all(5),
         .padding = .{ .x = 8, .y = 5, .w = 8, .h = 0 },
         .id_extra = id_extra,

@@ -3,7 +3,7 @@ const std = @import("std");
 const terminal = @import("../../../contracts/terminal_emulator.zig");
 const theme = @import("../../theme.zig");
 
-pub const font_size: f32 = 10;
+pub const font_size: f32 = 13;
 pub const default_line_height: f32 = 18;
 pub const default_cjk_baseline_lift: f32 = 2;
 pub const cursor_underline_height: f32 = 2;

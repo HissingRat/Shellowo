@@ -4,12 +4,12 @@ pub const zed_font_family = "Zed Mono Extended";
 pub const cjk_font_family = "Noto Sans CJK SC";
 
 pub const FontSizes = struct {
-    body: f32 = 14,
-    heading: f32 = 15,
-    title: f32 = 22,
-    control: f32 = 11,
-    tab: f32 = 11,
-    close: f32 = 10,
+    body: f32 = 17,
+    heading: f32 = 18,
+    title: f32 = 25,
+    control: f32 = 14,
+    tab: f32 = 14,
+    close: f32 = 13,
 };
 
 pub const font_sizes: FontSizes = .{};
