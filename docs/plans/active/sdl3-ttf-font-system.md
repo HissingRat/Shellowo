@@ -97,8 +97,8 @@ Responsibilities:
 - Open embedded fonts from memory.
 - Build normal, bold, and italic face variants.
 - Attach the CJK face as fallback.
-- Cache `TTF_Text` layouts by text, face, size, scale, wrap width, direction,
-  and relevant style.
+- Create and release `TTF_Text` layouts on demand, while caching reusable font
+  faces, simple metrics, font heights, and emoji textures.
 - Expose measurement, drawing, hit testing, caret, selection, and cluster
   boundaries through `dvui.TextEngine`.
 - Apply and restore the SDL renderer clip rectangle around direct text draws.

@@ -49,7 +49,8 @@ TextLayout 命中和 TextEntry cluster 边界可以由同一 shaped-text backend
 - SDL3_ttf 使用 DVUI 同一份 SDL3 3.4.4 renderer/backend。
 - FreeType 使用 DVUI 已有的固定依赖，HarfBuzz 源码随 fork 固定。
 - `src/backends/text/sdl_ttf.zig` 是 Shellowo-owned backend，负责
-  `TTF_TextEngine`、字体、fallback 和 shaped layout cache 生命周期。
+  `TTF_TextEngine`、字体、fallback、按需 `TTF_Text` layout 生命周期以及
+  metrics/emoji texture cache。
 - Zed Mono Extended 的 regular/bold/italic 是主字体，Noto Sans CJK SC
   通过 SDL3_ttf fallback chain 提供中文 glyph。
 - macOS 通过 `src/backends/text/platform_fonts_macos.c` 使用 CoreText
