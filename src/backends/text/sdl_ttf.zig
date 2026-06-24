@@ -17,6 +17,7 @@ pub const System = struct {
     font_heights: std.AutoHashMapUnmanaged(u64, f32) = .empty,
     simple_metrics: std.AutoHashMapUnmanaged(u64, SimpleMetrics) = .empty,
     emoji_textures: std.AutoHashMapUnmanaged(u64, EmojiTexture) = .empty,
+    measure_cache: std.ArrayListUnmanaged(MeasureCacheEntry) = .empty,
 
     pub const FontSources = struct {
         regular: []const u8,
@@ -52,6 +53,20 @@ pub const System = struct {
 
         fn deinit(self: EmojiTexture) void {
             c.SDL_DestroyTexture(self.texture);
+        }
+    };
+
+    const MeasureCacheEntry = struct {
+        font_key: u64,
+        text_hash: u64,
+        text: []u8,
+        size: dvui.Size,
+        end_idx: usize,
+        ascent: f32,
+
+        fn deinit(self: *MeasureCacheEntry, allocator: std.mem.Allocator) void {
+            allocator.free(self.text);
+            self.* = undefined;
         }
     };
 
@@ -92,6 +107,8 @@ pub const System = struct {
         var emoji_it = self.emoji_textures.valueIterator();
         while (emoji_it.next()) |texture| texture.deinit();
         self.emoji_textures.deinit(self.allocator);
+        self.clearMeasureCache();
+        self.measure_cache.deinit(self.allocator);
         self.simple_metrics.deinit(self.allocator);
         self.font_heights.deinit(self.allocator);
         var it = self.fonts.valueIterator();
@@ -200,7 +217,7 @@ pub const System = struct {
         wrap_width: ?f32,
     ) ?Layout {
         const face = self.faceFor(font, scale) orelse return null;
-        const safe_text = emojiSafeLayoutText(self.allocator, text) catch return null;
+        const safe_text = overlaySafeLayoutText(self.allocator, text) catch return null;
         defer if (safe_text) |buffer| self.allocator.free(buffer);
         const layout_text = safe_text orelse text;
         const result = c.TTF_CreateText(
@@ -249,6 +266,61 @@ pub const System = struct {
         return emojiAdvanceForBox(self.emojiBoxPhysical(font, scale));
     }
 
+    fn measureCacheGet(
+        self: *System,
+        font: dvui.Font,
+        text: []const u8,
+        scale: f32,
+        options: dvui.Font.TextSizeOptions,
+    ) ?dvui.Size {
+        if (!measureCacheEligible(text, options)) return null;
+
+        const font_key = fontScaleKey(font, physicalFontSize(font, scale));
+        const text_hash = std.hash.Wyhash.hash(0x6d656173757265, text);
+        for (self.measure_cache.items) |entry| {
+            if (entry.font_key != font_key or entry.text_hash != text_hash) continue;
+            if (!std.mem.eql(u8, entry.text, text)) continue;
+            if (options.end_idx) |out| out.* = entry.end_idx;
+            if (options.ascent_out) |out| out.* = entry.ascent;
+            return entry.size;
+        }
+
+        return null;
+    }
+
+    fn measureCachePut(
+        self: *System,
+        font: dvui.Font,
+        text: []const u8,
+        scale: f32,
+        options: dvui.Font.TextSizeOptions,
+        size: dvui.Size,
+        end_idx: usize,
+        ascent: f32,
+    ) void {
+        if (!measureCacheEligible(text, options)) return;
+        if (self.measure_cache.items.len >= max_measure_cache_entries) self.clearMeasureCache();
+
+        const owned_text = self.allocator.dupe(u8, text) catch return;
+
+        self.measure_cache.append(self.allocator, .{
+            .font_key = fontScaleKey(font, physicalFontSize(font, scale)),
+            .text_hash = std.hash.Wyhash.hash(0x6d656173757265, text),
+            .text = owned_text,
+            .size = size,
+            .end_idx = end_idx,
+            .ascent = ascent,
+        }) catch {
+            self.allocator.free(owned_text);
+            return;
+        };
+    }
+
+    fn clearMeasureCache(self: *System) void {
+        for (self.measure_cache.items) |*entry| entry.deinit(self.allocator);
+        self.measure_cache.clearRetainingCapacity();
+    }
+
     fn measure(
         context: *anyopaque,
         font: dvui.Font,
@@ -258,9 +330,11 @@ pub const System = struct {
         const self: *System = @ptrCast(@alignCast(context));
         const scale = currentScale();
         if (self.measureSimple(font, text, scale, options)) |fast| return fast;
+        if (self.measureCacheGet(font, text, scale, options)) |cached| return cached;
 
         const line = firstLine(text);
-        if (self.measureEmojiLine(font, line, scale, options)) |emoji| return emoji;
+        const analysis = analyzeText(line.bytes);
+        if (self.measureEmojiLine(font, text, line, scale, options, analysis.has_emoji)) |emoji| return emoji;
 
         const shaped = self.layout(font, line.bytes, scale, null) orelse
             return .{ .w = font.size, .h = font.size };
@@ -274,7 +348,7 @@ pub const System = struct {
         }
 
         var end = line.bytes.len;
-        const has_emoji = containsEmojiCluster(line.bytes);
+        const has_emoji = analysis.has_emoji;
         const emoji_box = self.emojiBoxPhysical(font, scale);
         const emoji_advance = emojiAdvanceForBox(emoji_box);
         if (options.max_width) |max_width| {
@@ -303,14 +377,13 @@ pub const System = struct {
             }
         }
         if (line.has_newline and end == line.bytes.len) end += 1;
-        if (options.end_idx) |out| out.* = @min(end, text.len);
-        if (options.ascent_out) |out| {
-            const face = self.faceFor(font, scale) orelse {
-                out.* = font.size;
-                return .{ .w = @as(f32, @floatFromInt(width_px)) / scale, .h = @as(f32, @floatFromInt(height_px)) / scale };
-            };
-            out.* = @as(f32, @floatFromInt(c.TTF_GetFontAscent(face.primary))) / scale;
-        }
+        const measured_end = @min(end, text.len);
+        if (options.end_idx) |out| out.* = measured_end;
+        const ascent = if (self.faceFor(font, scale)) |face|
+            @as(f32, @floatFromInt(c.TTF_GetFontAscent(face.primary))) / scale
+        else
+            font.size;
+        if (options.ascent_out) |out| out.* = ascent;
 
         const measured_width_px = if (end < line.bytes.len)
             compensatedCaretXPhysical(layout_text, line.bytes, end, emoji_advance)
@@ -320,21 +393,25 @@ pub const System = struct {
             @max(self.fontTextHeightPhysical(font, scale), emoji_box)
         else
             @as(f32, @floatFromInt(height_px));
-        return .{
+        const result: dvui.Size = .{
             .w = @max(0, measured_width_px) / scale,
             .h = measured_height_px / scale,
         };
+        self.measureCachePut(font, text, scale, options, result, measured_end, ascent);
+        return result;
     }
 
     fn measureEmojiLine(
         self: *System,
         font: dvui.Font,
+        text: []const u8,
         line: TextLine,
         scale: f32,
         options: dvui.Font.TextSizeOptions,
+        has_emoji: bool,
     ) ?dvui.Size {
         if (!emojiOverlayEnabled()) return null;
-        if (!containsEmojiCluster(line.bytes)) return null;
+        if (!has_emoji) return null;
 
         const face = self.faceFor(font, scale) orelse return null;
         const emoji_box = self.emojiBoxPhysical(font, scale);
@@ -351,10 +428,12 @@ pub const System = struct {
         if (options.end_idx) |out| out.* = @min(end, line.bytes.len + @intFromBool(line.has_newline));
         if (options.ascent_out) |out| out.* = @as(f32, @floatFromInt(c.TTF_GetFontAscent(face.primary))) / scale;
 
-        return .{
+        const result: dvui.Size = .{
             .w = @max(0, measured.width_px) / scale,
             .h = @max(self.fontTextHeightPhysical(font, scale), emoji_box) / scale,
         };
+        self.measureCachePut(font, text, scale, options, result, @min(end, text.len), @as(f32, @floatFromInt(c.TTF_GetFontAscent(face.primary))) / scale);
+        return result;
     }
 
     fn measureEmojiWidth(
@@ -367,6 +446,8 @@ pub const System = struct {
     ) struct { end: usize, width_px: f32 } {
         var emoji_index: usize = 0;
         var next_emoji = nextEmojiCluster(bytes, &emoji_index);
+        var symbol_index: usize = 0;
+        var next_symbol = nextSymbolOverlay(bytes, &symbol_index);
         var pos: usize = 0;
         var end: usize = 0;
         var width_px: f32 = 0;
@@ -376,18 +457,26 @@ pub const System = struct {
                 if (cluster.end > pos) break;
                 next_emoji = nextEmojiCluster(bytes, &emoji_index);
             }
+            while (next_symbol) |symbol| {
+                if (symbol.range.end > pos) break;
+                next_symbol = nextSymbolOverlay(bytes, &symbol_index);
+            }
 
-            const token: EmojiMeasureToken = if (next_emoji) |cluster| blk: {
-                if (cluster.start == pos) {
-                    break :blk .{ .end = cluster.end, .advance = emoji_advance };
+            const token: EmojiMeasureToken = blk: {
+                if (next_emoji) |cluster| {
+                    if (cluster.start == pos) {
+                        break :blk .{ .end = cluster.end, .advance = emoji_advance };
+                    }
                 }
-                const token_end = @min(nextCodepoint(bytes, pos), cluster.start);
-                break :blk .{
-                    .end = token_end,
-                    .advance = nonEmojiTokenAdvancePhysical(primary, metrics, bytes[pos..token_end]),
-                };
-            } else blk: {
-                const token_end = nextCodepoint(bytes, pos);
+                if (next_symbol) |symbol| {
+                    if (symbol.range.start == pos) {
+                        break :blk .{ .end = symbol.range.end, .advance = symbolPlaceholderAdvancePhysical(primary, metrics) };
+                    }
+                }
+
+                var token_end = nextCodepoint(bytes, pos);
+                if (next_emoji) |cluster| token_end = @min(token_end, cluster.start);
+                if (next_symbol) |symbol| token_end = @min(token_end, symbol.range.start);
                 break :blk .{
                     .end = token_end,
                     .advance = nonEmojiTokenAdvancePhysical(primary, metrics, bytes[pos..token_end]),
@@ -433,6 +522,17 @@ pub const System = struct {
             return @floatFromInt(@max(0, width_px));
         }
         return 0;
+    }
+
+    fn symbolPlaceholderAdvancePhysical(
+        primary: *c.TTF_Font,
+        metrics: ?*SimpleMetrics,
+    ) f32 {
+        if (metrics) |m| return @floatFromInt(m.advance(' '));
+
+        const measured = nonEmojiTokenAdvancePhysical(primary, null, symbol_placeholder);
+        if (measured > 0) return measured;
+        return nonEmojiTokenAdvancePhysical(primary, null, " ");
     }
 
     fn measureSimple(
@@ -533,8 +633,10 @@ pub const System = struct {
             16 * scale;
         const emoji_box = self.emojiBoxPhysical(options.font, scale);
         const emoji_advance = emojiAdvanceForBox(emoji_box);
-        const has_emoji = containsEmojiCluster(options.text);
+        const analysis = analyzeText(options.text);
+        const has_emoji = analysis.has_emoji;
         const use_emoji_overlay = has_emoji and emojiOverlayEnabled();
+        const use_symbol_overlay = analysis.has_symbol_overlay;
         const emoji_extra = if (use_emoji_overlay) emojiCompensationBefore(text, options.text, options.text.len, emoji_advance) else 0;
         const render_height = if (use_emoji_overlay) @max(self.fontTextHeightPhysical(options.font, scale), emoji_box) else default_h;
 
@@ -602,11 +704,12 @@ pub const System = struct {
         }
         defer _ = c.SDL_SetRenderClipRect(self.renderer, if (previous_clip_enabled) &previous_clip else null);
 
-        const align_cjk = containsCjkBaselineCodepoint(options.text) and !isCjkFont(options.font);
+        const align_cjk = analysis.has_cjk_baseline and !isCjkFont(options.font);
         if (use_emoji_overlay or align_cjk) {
             try self.renderVisualTextSegments(options.font, text, options.text, start, scale, options.color, emoji_advance, use_emoji_overlay, align_cjk);
         } else if (!c.TTF_DrawRendererText(text, start.x, start.y)) return error.SdlTtfDrawFailed;
         if (use_emoji_overlay) self.renderEmojiOverlays(text, options.text, start, emoji_box, emoji_advance, render_height);
+        if (use_symbol_overlay) renderSymbolOverlays(text, options.text, start, options.color, emoji_advance, render_height, scale);
     }
 
     fn caretX(
@@ -923,6 +1026,121 @@ pub const System = struct {
         }
     }
 
+    fn renderSymbolOverlays(
+        layout_text: *c.TTF_Text,
+        bytes: []const u8,
+        start: dvui.Point.Physical,
+        color: dvui.Color,
+        emoji_advance: f32,
+        line_h: f32,
+        scale: f32,
+    ) void {
+        var index: usize = 0;
+        while (nextSymbolOverlay(bytes, &index)) |symbol| {
+            const x0 = compensatedCaretXPhysical(layout_text, bytes, symbol.range.start, emoji_advance);
+            const x1 = compensatedCaretXPhysical(layout_text, bytes, symbol.range.end, emoji_advance);
+            const slot_x = @min(x0, x1);
+            const slot_w = @max(1, @abs(x1 - x0));
+            const center: dvui.Point.Physical = .{
+                .x = start.x + slot_x + slot_w * 0.5,
+                .y = start.y + line_h * 0.5,
+            };
+            drawSymbolOverlay(symbol.kind, center, slot_w, line_h, color, scale);
+        }
+    }
+
+    fn drawSymbolOverlay(
+        kind: SymbolOverlayKind,
+        center: dvui.Point.Physical,
+        slot_w: f32,
+        line_h: f32,
+        color: dvui.Color,
+        scale: f32,
+    ) void {
+        switch (kind) {
+            .square_outline => drawSymbolSquare(center, slot_w, line_h, color, scale, false, false),
+            .square_filled => drawSymbolSquare(center, slot_w, line_h, color, scale, true, false),
+            .small_square_outline => drawSymbolSquare(center, slot_w, line_h, color, scale, false, true),
+            .small_square_filled => drawSymbolSquare(center, slot_w, line_h, color, scale, true, true),
+            .triangle_up => drawSymbolTriangle(.up, center, slot_w, line_h, color, false),
+            .triangle_down => drawSymbolTriangle(.down, center, slot_w, line_h, color, false),
+            .triangle_left => drawSymbolTriangle(.left, center, slot_w, line_h, color, false),
+            .triangle_right => drawSymbolTriangle(.right, center, slot_w, line_h, color, false),
+            .triangle_up_outline => drawSymbolTriangle(.up, center, slot_w, line_h, color, true),
+            .triangle_down_outline => drawSymbolTriangle(.down, center, slot_w, line_h, color, true),
+            .triangle_left_outline => drawSymbolTriangle(.left, center, slot_w, line_h, color, true),
+            .triangle_right_outline => drawSymbolTriangle(.right, center, slot_w, line_h, color, true),
+        }
+    }
+
+    fn drawSymbolSquare(
+        center: dvui.Point.Physical,
+        slot_w: f32,
+        line_h: f32,
+        color: dvui.Color,
+        scale: f32,
+        filled: bool,
+        small: bool,
+    ) void {
+        const ratio: f32 = if (small) 0.32 else 0.56;
+        const slot_ratio: f32 = if (small) 0.72 else 0.86;
+        const size = @max(2 * scale, @min(line_h * ratio, slot_w * slot_ratio));
+        const rect: dvui.Rect.Physical = .{
+            .x = center.x - size * 0.5,
+            .y = center.y - size * 0.5,
+            .w = size,
+            .h = size,
+        };
+        if (filled) {
+            rect.fill(.all(0), .{ .color = color, .fade = 0 });
+        } else {
+            rect.stroke(.all(0), .{ .thickness = @max(1, @round(1.15 * scale)), .color = color });
+        }
+    }
+
+    const TriangleDirection = enum { up, down, left, right };
+
+    fn drawSymbolTriangle(
+        direction: TriangleDirection,
+        center: dvui.Point.Physical,
+        slot_w: f32,
+        line_h: f32,
+        color: dvui.Color,
+        outline: bool,
+    ) void {
+        const size = @max(3, @min(line_h * 0.72, slot_w * 0.96));
+        const half = size * 0.5;
+        const third = size / 6;
+        const pts = switch (direction) {
+            .down => [_]dvui.Point.Physical{
+                .{ .x = center.x - half, .y = center.y - half + third },
+                .{ .x = center.x + half, .y = center.y - half + third },
+                .{ .x = center.x, .y = center.y + half + third },
+            },
+            .up => [_]dvui.Point.Physical{
+                .{ .x = center.x, .y = center.y - half - third },
+                .{ .x = center.x + half, .y = center.y + half - third },
+                .{ .x = center.x - half, .y = center.y + half - third },
+            },
+            .right => [_]dvui.Point.Physical{
+                .{ .x = center.x - half + third, .y = center.y - half },
+                .{ .x = center.x + half + third, .y = center.y },
+                .{ .x = center.x - half + third, .y = center.y + half },
+            },
+            .left => [_]dvui.Point.Physical{
+                .{ .x = center.x - half - third, .y = center.y },
+                .{ .x = center.x + half - third, .y = center.y + half },
+                .{ .x = center.x + half - third, .y = center.y - half },
+            },
+        };
+        const path: dvui.Path = .{ .points = &pts };
+        if (outline) {
+            path.stroke(.{ .thickness = @max(1, line_h * 0.06), .color = color, .closed = true });
+        } else {
+            path.fillConvex(.{ .color = color, .fade = 0 });
+        }
+    }
+
     fn emojiTexture(self: *System, cluster: []const u8, physical_size: f32) ?EmojiTexture {
         if (builtin.os.tag != .macos) return null;
         const size_key: u16 = @intFromFloat(@max(1, @round(physical_size)));
@@ -1085,6 +1303,14 @@ const EmojiMeasureToken = struct {
     end: usize,
     advance: f32,
 };
+
+const max_measure_cache_entries: usize = 128;
+const max_measure_cache_text_bytes: usize = 512;
+
+fn measureCacheEligible(text: []const u8, options: dvui.Font.TextSizeOptions) bool {
+    if (options.max_width != null) return false;
+    return text.len <= max_measure_cache_text_bytes;
+}
 
 const boundary_context_bytes: usize = 512;
 
@@ -1364,16 +1590,45 @@ fn containsEmojiCluster(bytes: []const u8) bool {
     return nextEmojiCluster(bytes, &index) != null;
 }
 
-fn emojiSafeLayoutText(allocator: std.mem.Allocator, bytes: []const u8) !?[]u8 {
-    if (!emojiOverlayEnabled()) return null;
-    if (!containsEmojiCluster(bytes)) return null;
+const TextAnalysis = struct {
+    has_emoji: bool = false,
+    has_cjk_baseline: bool = false,
+    has_symbol_overlay: bool = false,
+};
+
+fn analyzeText(bytes: []const u8) TextAnalysis {
+    var result: TextAnalysis = .{};
+    var index: usize = 0;
+    while (index < bytes.len) {
+        const start = index;
+        const codepoint = nextCodepointValue(bytes, &index) orelse {
+            index = start + 1;
+            continue;
+        };
+        if (!result.has_emoji and isEmojiBase(codepoint)) result.has_emoji = true;
+        if (!result.has_cjk_baseline and isCjkBaselineCodepoint(codepoint)) result.has_cjk_baseline = true;
+        if (!result.has_symbol_overlay and symbolOverlayKindForCodepoint(codepoint) != null) result.has_symbol_overlay = true;
+        if (result.has_emoji and result.has_cjk_baseline and result.has_symbol_overlay) break;
+    }
+    return result;
+}
+
+fn overlaySafeLayoutText(allocator: std.mem.Allocator, bytes: []const u8) !?[]u8 {
+    const needs_emoji_safe_text = emojiOverlayEnabled() and containsEmojiCluster(bytes);
+    const needs_symbol_safe_text = containsSymbolOverlay(bytes);
+    if (!needs_emoji_safe_text and !needs_symbol_safe_text) return null;
 
     const safe = try allocator.dupe(u8, bytes);
-    var index: usize = 0;
-    while (nextEmojiCluster(bytes, &index)) |cluster| {
-        @memset(safe[cluster.start..cluster.end], ' ');
+    if (needs_emoji_safe_text) {
+        var index: usize = 0;
+        while (nextEmojiCluster(bytes, &index)) |cluster| {
+            @memset(safe[cluster.start..cluster.end], ' ');
+        }
+        replaceEmojiJoiners(safe);
     }
-    replaceEmojiJoiners(safe);
+    if (needs_symbol_safe_text) {
+        replaceSymbolOverlaysWithPlaceholders(bytes, safe);
+    }
     return safe;
 }
 
@@ -1387,6 +1642,26 @@ fn replaceEmojiJoiners(bytes: []u8) void {
         };
         if (codepoint == 0x200d) {
             @memset(bytes[start..index], ' ');
+        }
+    }
+}
+
+const symbol_placeholder = "\u{2007}";
+
+fn containsSymbolOverlay(bytes: []const u8) bool {
+    var index: usize = 0;
+    return nextSymbolOverlay(bytes, &index) != null;
+}
+
+fn replaceSymbolOverlaysWithPlaceholders(original: []const u8, safe: []u8) void {
+    std.debug.assert(original.len == safe.len);
+    var index: usize = 0;
+    while (nextSymbolOverlay(original, &index)) |symbol| {
+        const target = safe[symbol.range.start..symbol.range.end];
+        if (target.len == symbol_placeholder.len) {
+            @memcpy(target, symbol_placeholder);
+        } else {
+            @memset(target, ' ');
         }
     }
 }
@@ -1409,14 +1684,6 @@ fn nextEmojiBoundary(bytes: []const u8, byte_offset: usize) ?usize {
         if (cluster.start > offset) break;
     }
     return null;
-}
-
-fn containsCjkBaselineCodepoint(bytes: []const u8) bool {
-    var index: usize = 0;
-    while (nextCodepointValue(bytes, &index)) |codepoint| {
-        if (isCjkBaselineCodepoint(codepoint)) return true;
-    }
-    return false;
 }
 
 fn isCjkBaselineCodepoint(codepoint: u21) bool {
@@ -1552,6 +1819,60 @@ const ByteRange = struct {
     end: usize,
 };
 
+const SymbolOverlay = struct {
+    range: ByteRange,
+    kind: SymbolOverlayKind,
+};
+
+const SymbolOverlayKind = enum {
+    square_outline,
+    square_filled,
+    small_square_outline,
+    small_square_filled,
+    triangle_up,
+    triangle_down,
+    triangle_left,
+    triangle_right,
+    triangle_up_outline,
+    triangle_down_outline,
+    triangle_left_outline,
+    triangle_right_outline,
+};
+
+fn nextSymbolOverlay(text: []const u8, index: *usize) ?SymbolOverlay {
+    while (index.* < text.len) {
+        const start = index.*;
+        const codepoint = nextCodepointValue(text, index) orelse return null;
+        const kind = symbolOverlayKindForCodepoint(codepoint) orelse continue;
+        return .{ .range = .{ .start = start, .end = index.* }, .kind = kind };
+    }
+    return null;
+}
+
+fn symbolOverlayKindForCodepoint(codepoint: u21) ?SymbolOverlayKind {
+    return switch (codepoint) {
+        0x25a0 => .square_filled, // BLACK SQUARE
+        0x25a1, 0x25a2 => .square_outline, // WHITE SQUARE, WHITE SQUARE WITH ROUNDED CORNERS
+        0x25aa => .small_square_filled, // BLACK SMALL SQUARE
+        0x25ab => .small_square_outline, // WHITE SMALL SQUARE
+        0x25b2, 0x25b4, 0x25b6, 0x25b8, 0x25ba, 0x25bc, 0x25be, 0x25c0, 0x25c2, 0x25c4 => |cp| switch (cp) {
+            0x25b2, 0x25b4 => .triangle_up,
+            0x25b6, 0x25b8, 0x25ba => .triangle_right,
+            0x25bc, 0x25be => .triangle_down,
+            0x25c0, 0x25c2, 0x25c4 => .triangle_left,
+            else => unreachable,
+        },
+        0x25b3, 0x25b5, 0x25b7, 0x25b9, 0x25bd, 0x25bf, 0x25c1, 0x25c3 => |cp| switch (cp) {
+            0x25b3, 0x25b5 => .triangle_up_outline,
+            0x25b7, 0x25b9 => .triangle_right_outline,
+            0x25bd, 0x25bf => .triangle_down_outline,
+            0x25c1, 0x25c3 => .triangle_left_outline,
+            else => unreachable,
+        },
+        else => null,
+    };
+}
+
 fn nextEmojiCluster(text: []const u8, index: *usize) ?ByteRange {
     while (index.* < text.len) {
         const start = index.*;
@@ -1676,10 +1997,60 @@ fn loadNativeEmojiBitmap(cluster: []const u8, physical_size: f32) ?NativeEmojiBi
 test "emoji safe layout text preserves byte offsets" {
     if (!emojiOverlayEnabled()) return;
 
-    const safe = (try emojiSafeLayoutText(std.testing.allocator, "a😂b")).?;
+    const safe = (try overlaySafeLayoutText(std.testing.allocator, "a😂b")).?;
     defer std.testing.allocator.free(safe);
 
     try std.testing.expectEqualStrings("a    b", safe);
+}
+
+test "symbol safe layout text preserves byte offsets" {
+    const text = "a▫▼b";
+    const safe = (try overlaySafeLayoutText(std.testing.allocator, text)).?;
+    defer std.testing.allocator.free(safe);
+
+    try std.testing.expectEqual(text.len, safe.len);
+    try std.testing.expectEqualStrings("a\u{2007}\u{2007}b", safe);
+}
+
+test "text analysis detects emoji and cjk in one scan" {
+    const plain = analyzeText("Shellowo");
+    try std.testing.expect(!plain.has_emoji);
+    try std.testing.expect(!plain.has_cjk_baseline);
+    try std.testing.expect(!plain.has_symbol_overlay);
+
+    const mixed = analyzeText("连接 😊");
+    try std.testing.expect(mixed.has_emoji);
+    try std.testing.expect(mixed.has_cjk_baseline);
+    try std.testing.expect(!mixed.has_symbol_overlay);
+}
+
+test "text analysis detects symbol overlays" {
+    const square = analyzeText("▫");
+    try std.testing.expect(square.has_symbol_overlay);
+
+    const triangle = analyzeText("▼");
+    try std.testing.expect(triangle.has_symbol_overlay);
+}
+
+test "symbol overlay scanner maps geometric shapes" {
+    var index: usize = 0;
+    const first = nextSymbolOverlay("a▫▼", &index).?;
+    try std.testing.expectEqual(SymbolOverlayKind.small_square_outline, first.kind);
+    const second = nextSymbolOverlay("a▫▼", &index).?;
+    try std.testing.expectEqual(SymbolOverlayKind.triangle_down, second.kind);
+    try std.testing.expectEqual(@as(?SymbolOverlay, null), nextSymbolOverlay("a▫▼", &index));
+}
+
+test "measure cache only accepts short unwrapped text" {
+    var options: dvui.Font.TextSizeOptions = .{};
+    try std.testing.expect(measureCacheEligible("连接", options));
+
+    options.max_width = 120;
+    try std.testing.expect(!measureCacheEligible("连接", options));
+
+    options.max_width = null;
+    const long = "a" ** (max_measure_cache_text_bytes + 1);
+    try std.testing.expect(!measureCacheEligible(long, options));
 }
 
 test "emoji boundaries treat utf8 emoji as one cluster" {
