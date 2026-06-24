@@ -256,6 +256,20 @@ fn attachTextPlatform(b: *std.Build, compile: *std.Build.Step.Compile) void {
             compile.root_module.linkFramework("CoreFoundation", .{});
             compile.root_module.linkFramework("CoreText", .{});
         },
+        .windows => {
+            compile.root_module.addCSourceFile(.{
+                .file = b.path("src/backends/text/platform_fonts_windows.c"),
+                .flags = &.{},
+            });
+            compile.root_module.linkSystemLibrary("advapi32", .{});
+        },
+        .linux => {
+            compile.root_module.addCSourceFile(.{
+                .file = b.path("src/backends/text/platform_fonts_linux.c"),
+                .flags = &.{"-std=c99"},
+            });
+            compile.root_module.linkSystemLibrary("dl", .{});
+        },
         else => {},
     }
 }

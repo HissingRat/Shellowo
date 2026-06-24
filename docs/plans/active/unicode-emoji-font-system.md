@@ -1,7 +1,7 @@
 # Unicode and Emoji Font System
 
-Implementation status: first macOS pass implemented; the temporary Home visual
-probe has been retired after acceptance.
+Implementation status: system font fallback is implemented for macOS, Windows,
+and Linux; the temporary Home visual probe has been retired after acceptance.
 
 ## Goal
 
@@ -63,12 +63,16 @@ macOS implementation:
 - `src/backends/text/platform_emoji_macos.m` renders emoji clusters into
   AppKit bitmap images when SDL3_ttf/FreeType cannot draw the color glyph.
 
-Planned platform implementations:
+Windows/Linux implementation:
 
-- Windows: Segoe UI Emoji, Segoe UI Symbol, and eventually DirectWrite-backed
-  fallback discovery.
-- Linux: Fontconfig-backed discovery, prioritizing Noto Color Emoji, Noto Sans
-  Symbols 2, and Noto CJK families.
+- Windows: `src/backends/text/platform_fonts_windows.c` checks known Windows
+  font files and the system font registry for Segoe UI Emoji, Segoe UI Symbol,
+  Microsoft YaHei, SimSun, Yu Gothic, Malgun, Nirmala, and related fallback
+  families.
+- Linux: `src/backends/text/platform_fonts_linux.c` loads Fontconfig at runtime
+  when available, prioritizing Noto Color Emoji, Noto Sans Symbols 2, Noto CJK,
+  and common complex-script families, with known distro font paths as a safe
+  fallback.
 
 ## SDL3_ttf Fallback Chain
 
@@ -129,9 +133,8 @@ User checks:
 
 ## Future Work
 
-- Add Windows and Linux platform font discovery.
-- Add optional diagnostic logging for the concrete fallback paths discovered at
-  runtime.
+- Add optional visual diagnostics/logging for the concrete fallback paths
+  discovered at runtime.
 - If platform emoji fonts still render as tofu, revisit the DVUI fork's
   SDL3_ttf build options for color/SVG glyph support.
 - Only after that, evaluate an inline emoji atlas with layout integration.

@@ -56,8 +56,15 @@ TextLayout 命中和 TextEntry cluster 边界可以由同一 shaped-text backend
 - macOS 通过 `src/backends/text/platform_fonts_macos.c` 使用 CoreText
   发现 Apple Color Emoji、Apple Symbols 和系统 cascade 字体；这些系统
   字体作为 SDL3_ttf fallback chain 的后续候选，用于 emoji、符号和更广
-  Unicode 覆盖。Windows/Linux 保留同一 Shellowo-owned 边界，后续分别接
-  DirectWrite/known fonts 与 Fontconfig。
+  Unicode 覆盖。
+- Windows 通过 `src/backends/text/platform_fonts_windows.c` 保留同一
+  Shellowo-owned 边界，优先发现 Segoe UI Emoji、Segoe UI Symbol、
+  Microsoft YaHei、SimSun、Yu Gothic、Malgun、Nirmala 等常见系统字体，
+  再从 Windows 字体注册表补齐实际安装的 emoji、symbol 和 cascade 候选。
+- Linux 通过 `src/backends/text/platform_fonts_linux.c` 保留同一
+  Shellowo-owned 边界，运行时动态加载 Fontconfig 发现 Noto Color Emoji、
+  Noto Sans Symbols、Noto CJK 与常见 complex-script fallback；Fontconfig
+  不可用时退回常见发行版字体路径。该路径不把 Fontconfig 作为构建期依赖。
 - macOS 还通过 `src/backends/text/platform_emoji_macos.m` 提供
   AppKit-backed emoji bitmap overlay。普通文字的 geometry 仍来自
   SDL3_ttf；overlay 只在 render 阶段补 Apple Color Emoji 这类当前

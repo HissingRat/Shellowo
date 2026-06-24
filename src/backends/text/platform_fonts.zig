@@ -21,8 +21,15 @@ const max_candidates_per_kind = 32;
 const max_total_candidates = 48;
 
 pub fn discoverFallbacks(allocator: std.mem.Allocator) !List {
-    if (builtin.os.tag != .macos) return .{};
+    return switch (builtin.os.tag) {
+        .macos => discoverPlatformFallbacks(allocator),
+        .windows => discoverPlatformFallbacks(allocator),
+        .linux => discoverPlatformFallbacks(allocator),
+        else => .{},
+    };
+}
 
+fn discoverPlatformFallbacks(allocator: std.mem.Allocator) !List {
     var paths = std.ArrayList([]const u8).empty;
     errdefer {
         for (paths.items) |path| allocator.free(path);
