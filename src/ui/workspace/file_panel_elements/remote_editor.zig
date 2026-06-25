@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const dvui = @import("dvui");
 
 const search_icon_bytes = @embedFile("shellowo-search-icon");
@@ -8,6 +7,7 @@ const search_next_icon_bytes = @embedFile("shellowo-search-next-icon");
 const replace_next_icon_bytes = @embedFile("shellowo-replace-next-icon");
 const replace_all_icon_bytes = @embedFile("shellowo-replace-all-icon");
 
+const keybindings = @import("../../../app/keybindings.zig");
 const remote_file = @import("../../../core/remote_file.zig");
 const ui_fonts = @import("../../fonts.zig");
 const theme = @import("../../theme.zig");
@@ -24,10 +24,19 @@ const save_flash_total_s: f32 = 0.45;
 const save_flash_fade_in_s: f32 = 0.1;
 const save_flash_fade_out_s: f32 = save_flash_total_s - save_flash_fade_in_s;
 const save_flash_frame_us: i32 = 16_000;
+const editor_history_max_entries: usize = 80;
+const editor_history_max_snapshot_bytes: usize = 2 * 1024 * 1024;
+const editor_history_max_total_bytes: usize = 8 * 1024 * 1024;
+const editor_text_realloc_bin_size: usize = 100;
 
 const ConfirmAction = enum { cancel, discard, save };
 const ConflictAction = enum { keep_editing, reload, overwrite };
 const SearchAction = enum { find_nearest, find_prev, find_next, replace_next, replace_all };
+
+const EditorHistoryEntry = struct {
+    text: []u8,
+    cursor: usize,
+};
 
 pub const State = struct {
     open: bool = false,
@@ -35,7 +44,7 @@ pub const State = struct {
     positioned: bool = false,
     fonts_loaded: bool = false,
     loaded_version: u64 = 0,
-    editor_text: []u8 = &.{},
+    editor_text: std.ArrayList(u8) = .empty,
     editor_text_allocator: ?std.mem.Allocator = null,
     editor_text_len: usize = 0,
     dirty: bool = false,
@@ -66,16 +75,25 @@ pub const State = struct {
     search_stats_scan_pos: usize = 0,
     search_stats_scan_count: usize = 0,
     search_stats_scan_active_index: usize = 0,
+    undo_history: std.ArrayList(EditorHistoryEntry) = .empty,
+    redo_history: std.ArrayList(EditorHistoryEntry) = .empty,
+    history_bytes: usize = 0,
+    history_restoring: bool = false,
 
     pub fn deinit(self: *State) void {
-        if (self.editor_text.len > 0) {
-            if (self.editor_text_allocator) |allocator| {
-                allocator.free(self.editor_text);
+        if (self.editor_text_allocator) |allocator| {
+            self.editor_text.deinit(allocator);
+            if (self.undo_history.items.len > 0 or self.redo_history.items.len > 0) {
+                clearHistoryList(self, allocator, &self.undo_history);
+                clearHistoryList(self, allocator, &self.redo_history);
             }
+            self.undo_history.deinit(allocator);
+            self.redo_history.deinit(allocator);
         }
-        self.editor_text = &.{};
+        self.editor_text = .empty;
         self.editor_text_allocator = null;
         self.editor_text_len = 0;
+        self.history_bytes = 0;
     }
 
     fn reset(self: *State) void {
@@ -84,7 +102,7 @@ pub const State = struct {
     }
 
     fn text(self: *const State) []const u8 {
-        return self.editor_text[0..@min(self.editor_text_len, self.editor_text.len)];
+        return self.editor_text.items[0..@min(self.editor_text_len, self.editor_text.items.len)];
     }
 };
 
@@ -716,7 +734,7 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
         .scroll_vertical_bar = .auto_overlay,
         .scroll_horizontal = false,
         .scroll_horizontal_bar = .hide,
-        .text = .{ .buffer_dynamic = .{
+        .text = .{ .array_list = .{
             .backing = &state.editor_text,
             .allocator = editor_text_allocator,
             .limit = remote_file.max_editor_bytes,
@@ -729,10 +747,12 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
         te.textSet(snapshot.content, false);
         state.loaded_version = snapshot.version;
         state.dirty = false;
+        resetEditorHistory(state, editor_text_allocator, snapshot.content, 0);
         clearSearchMatch(state);
         markSearchStatsDirty(state);
     }
 
+    handleEditorTextShortcuts(te.data(), state, te, editor_text_allocator);
     applySearchAction(state, te);
     te.processEvents();
     te.draw();
@@ -741,6 +761,11 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
     if (te.text_changed) {
         dirty = editorBufferDirty(current_text, snapshot.content);
         markSearchStatsDirty(state);
+        if (state.history_restoring) {
+            state.history_restoring = false;
+        } else {
+            recordEditorHistory(state, editor_text_allocator, current_text, te.textLayout.selection.cursor);
+        }
     }
     state.editor_text_len = current_text.len;
     updateSearchStatsLight(state, current_text);
@@ -749,6 +774,127 @@ fn editorBody(state: *State, snapshot: remote_file.FileEditorSnapshot, palette: 
 
 fn editorBufferDirty(current_text: []const u8, snapshot_content: []const u8) bool {
     return current_text.len != snapshot_content.len or !std.mem.eql(u8, current_text, snapshot_content);
+}
+
+fn resetEditorHistory(state: *State, allocator: std.mem.Allocator, text: []const u8, cursor: usize) void {
+    clearHistoryList(state, allocator, &state.undo_history);
+    clearHistoryList(state, allocator, &state.redo_history);
+    state.history_restoring = false;
+    if (text.len > editor_history_max_snapshot_bytes) return;
+    pushHistoryEntry(state, allocator, &state.undo_history, text, cursor);
+}
+
+fn recordEditorHistory(state: *State, allocator: std.mem.Allocator, text: []const u8, cursor: usize) void {
+    if (text.len > editor_history_max_snapshot_bytes) {
+        clearHistoryList(state, allocator, &state.undo_history);
+        clearHistoryList(state, allocator, &state.redo_history);
+        return;
+    }
+    if (state.undo_history.items.len > 0) {
+        const last = state.undo_history.items[state.undo_history.items.len - 1];
+        if (last.cursor == cursor and std.mem.eql(u8, last.text, text)) return;
+    }
+    clearHistoryList(state, allocator, &state.redo_history);
+    pushHistoryEntry(state, allocator, &state.undo_history, text, cursor);
+    pruneEditorHistory(state, allocator);
+}
+
+fn restoreEditorHistory(state: *State, allocator: std.mem.Allocator, te: *dvui.TextEntryWidget, redo: bool) bool {
+    if (redo) {
+        if (state.redo_history.items.len == 0) return false;
+        if (!ensureEditorTextCapacity(state, allocator, te, state.redo_history.items[state.redo_history.items.len - 1].text.len)) return false;
+        const restored = state.redo_history.orderedRemove(state.redo_history.items.len - 1);
+        state.undo_history.append(allocator, restored) catch {
+            state.redo_history.append(allocator, restored) catch {
+                state.history_bytes -|= restored.text.len;
+                allocator.free(restored.text);
+            };
+            return false;
+        };
+        applyHistoryEntry(state, te, restored);
+        pruneEditorHistory(state, allocator);
+        return true;
+    }
+
+    if (state.undo_history.items.len <= 1) return false;
+    if (!ensureEditorTextCapacity(state, allocator, te, state.undo_history.items[state.undo_history.items.len - 2].text.len)) return false;
+    const current = state.undo_history.orderedRemove(state.undo_history.items.len - 1);
+    state.redo_history.append(allocator, current) catch {
+        state.undo_history.append(allocator, current) catch {
+            state.history_bytes -|= current.text.len;
+            allocator.free(current.text);
+        };
+        return false;
+    };
+    const restored = state.undo_history.items[state.undo_history.items.len - 1];
+    applyHistoryEntry(state, te, restored);
+    return true;
+}
+
+fn applyHistoryEntry(state: *State, te: *dvui.TextEntryWidget, entry: EditorHistoryEntry) void {
+    const old_len = te.len;
+    @memcpy(te.text[0..entry.text.len], entry.text);
+    te.len = entry.text.len;
+    state.editor_text.items.len = te.len;
+    if (te.len < te.text.len) te.text[te.len] = 0;
+    te.textChanged(0, old_len, @as(i64, @intCast(entry.text.len)) - @as(i64, @intCast(old_len)));
+    const cursor = @min(entry.cursor, te.len);
+    var sel = te.textLayout.selectionGet(te.len);
+    sel.start = cursor;
+    sel.cursor = cursor;
+    sel.end = cursor;
+    te.textLayout.scroll_to_cursor = true;
+    state.history_restoring = true;
+    clearSearchMatch(state);
+    markSearchStatsDirty(state);
+    dvui.refresh(null, @src(), te.data().id);
+}
+
+fn ensureEditorTextCapacity(state: *State, allocator: std.mem.Allocator, te: *dvui.TextEntryWidget, len: usize) bool {
+    if (len <= te.text.len) return true;
+    if (len > remote_file.max_editor_bytes) return false;
+
+    const bins = @divTrunc(len, editor_text_realloc_bin_size) + 1;
+    const new_size = @min(remote_file.max_editor_bytes, bins * editor_text_realloc_bin_size);
+    if (new_size < len) return false;
+
+    state.editor_text.ensureTotalCapacity(allocator, new_size) catch return false;
+    te.text = state.editor_text.items.ptr[0..@min(remote_file.max_editor_bytes, state.editor_text.capacity)];
+    return true;
+}
+
+fn pushHistoryEntry(state: *State, allocator: std.mem.Allocator, list: *std.ArrayList(EditorHistoryEntry), text: []const u8, cursor: usize) void {
+    const owned = allocator.dupe(u8, text) catch return;
+    list.append(allocator, .{
+        .text = owned,
+        .cursor = @min(cursor, text.len),
+    }) catch {
+        allocator.free(owned);
+        return;
+    };
+    state.history_bytes += owned.len;
+}
+
+fn clearHistoryList(state: *State, allocator: std.mem.Allocator, list: *std.ArrayList(EditorHistoryEntry)) void {
+    for (list.items) |entry| {
+        state.history_bytes -|= entry.text.len;
+        allocator.free(entry.text);
+    }
+    list.clearRetainingCapacity();
+}
+
+fn pruneEditorHistory(state: *State, allocator: std.mem.Allocator) void {
+    while (state.undo_history.items.len > editor_history_max_entries or state.history_bytes > editor_history_max_total_bytes) {
+        if (state.undo_history.items.len <= 1) break;
+        const removed = state.undo_history.orderedRemove(0);
+        state.history_bytes -|= removed.text.len;
+        allocator.free(removed.text);
+    }
+    while (state.history_bytes > editor_history_max_total_bytes and state.redo_history.items.len > 0) {
+        const removed = state.redo_history.orderedRemove(0);
+        state.history_bytes -|= removed.text.len;
+        allocator.free(removed.text);
+    }
 }
 
 const SearchMatch = struct {
@@ -1171,8 +1317,9 @@ fn handleEditorShortcuts(data: *dvui.WidgetData, state: *State) void {
         if (event.handled or event.evt != .key) continue;
         const key = event.evt.key;
         if (key.action != .down and key.action != .repeat) continue;
-        const is_save = key.code == .s and primaryShortcutModifier(key);
-        const is_find = key.code == .f and primaryShortcutModifier(key);
+        const shortcut = keybindings.editorShortcut(key);
+        const is_save = shortcut == .save;
+        const is_find = shortcut == .find;
         const is_close = key.code == .escape;
         if (!is_save and !is_find and !is_close) continue;
 
@@ -1185,11 +1332,22 @@ fn handleEditorShortcuts(data: *dvui.WidgetData, state: *State) void {
     }
 }
 
-fn primaryShortcutModifier(key: dvui.Event.Key) bool {
-    return switch (builtin.os.tag) {
-        .macos => key.mod.command() and !key.mod.control() and !key.mod.shift() and !key.mod.alt(),
-        else => key.mod.control() and !key.mod.command() and !key.mod.shift() and !key.mod.alt(),
-    };
+fn handleEditorTextShortcuts(data: *dvui.WidgetData, state: *State, te: *dvui.TextEntryWidget, allocator: std.mem.Allocator) void {
+    for (dvui.events()) |*event| {
+        if (event.handled or event.evt != .key) continue;
+        const key = event.evt.key;
+        if (key.action != .down and key.action != .repeat) continue;
+        const shortcut = keybindings.editorShortcut(key) orelse continue;
+        const handled = switch (shortcut) {
+            .undo => restoreEditorHistory(state, allocator, te, false),
+            .redo => restoreEditorHistory(state, allocator, te, true),
+            .save, .find => false,
+        };
+        if (!handled) continue;
+
+        event.handle(@src(), data);
+        dvui.refresh(null, @src(), data.id);
+    }
 }
 
 fn closeShortcut(data: *dvui.WidgetData) bool {

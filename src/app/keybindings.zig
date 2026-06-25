@@ -10,6 +10,7 @@ pub const Platform = enum {
 
 pub const Scope = enum {
     app,
+    editor,
     terminal,
 };
 
@@ -45,12 +46,24 @@ pub const ShortcutAction = enum {
     upload_file,
     upload_directory,
     download_file,
+    editor_undo,
+    editor_redo,
+    editor_save,
+    editor_find,
+    editor_close,
 };
 
 pub const TerminalShortcut = enum {
     copy_selection,
     paste_clipboard,
     terminal_search,
+};
+
+pub const EditorShortcut = enum {
+    undo,
+    redo,
+    save,
+    find,
 };
 
 pub const Shortcut = struct {
@@ -97,6 +110,10 @@ pub fn terminalShortcut(key: dvui.Event.Key) ?TerminalShortcut {
     return terminalShortcutForPlatform(currentPlatform(), fromEvent(key));
 }
 
+pub fn editorShortcut(key: dvui.Event.Key) ?EditorShortcut {
+    return editorShortcutForPlatform(currentPlatform(), fromEvent(key));
+}
+
 pub fn terminalShortcutForPlatform(platform: Platform, stroke: KeyStroke) ?TerminalShortcut {
     return switch (platform) {
         .macos => terminalShortcutMacos(stroke),
@@ -129,7 +146,59 @@ fn terminalShortcutWindowsLinux(stroke: KeyStroke) ?TerminalShortcut {
     return null;
 }
 
+pub fn editorShortcutForPlatform(platform: Platform, stroke: KeyStroke) ?EditorShortcut {
+    return switch (platform) {
+        .macos => editorShortcutMacos(stroke),
+        .windows, .linux => editorShortcutWindowsLinux(stroke),
+    };
+}
+
+fn editorShortcutMacos(stroke: KeyStroke) ?EditorShortcut {
+    if (plainControl(stroke)) {
+        return switch (stroke.key) {
+            .z => .undo,
+            .y => .redo,
+            else => null,
+        };
+    }
+    if (plainCommand(stroke)) {
+        return switch (stroke.key) {
+            .z => .undo,
+            .y => .redo,
+            .s => .save,
+            .f => .find,
+            else => null,
+        };
+    }
+    if (!stroke.control and !stroke.alt and stroke.command and stroke.shift and stroke.key == .z) return .redo;
+    return null;
+}
+
+fn editorShortcutWindowsLinux(stroke: KeyStroke) ?EditorShortcut {
+    if (!plainControl(stroke)) return null;
+    return switch (stroke.key) {
+        .z => .undo,
+        .y => .redo,
+        .s => .save,
+        .f => .find,
+        else => null,
+    };
+}
+
+fn plainControl(stroke: KeyStroke) bool {
+    return stroke.control and !stroke.command and !stroke.shift and !stroke.alt;
+}
+
+fn plainCommand(stroke: KeyStroke) bool {
+    return stroke.command and !stroke.control and !stroke.shift and !stroke.alt;
+}
+
 pub const shortcuts = [_]Shortcut{
+    .{ .action = .editor_undo, .scope = .editor, .status = .implemented, .category = "Editor", .label = "Undo edit", .macos = "Command+Z / Ctrl+Z", .windows_linux = "Ctrl+Z" },
+    .{ .action = .editor_redo, .scope = .editor, .status = .implemented, .category = "Editor", .label = "Redo edit", .macos = "Command+Shift+Z / Command+Y / Ctrl+Y", .windows_linux = "Ctrl+Y" },
+    .{ .action = .editor_save, .scope = .editor, .status = .implemented, .category = "Editor", .label = "Save remote file", .macos = "Command+S", .windows_linux = "Ctrl+S" },
+    .{ .action = .editor_find, .scope = .editor, .status = .implemented, .category = "Editor", .label = "Find in editor", .macos = "Command+F", .windows_linux = "Ctrl+F" },
+    .{ .action = .editor_close, .scope = .editor, .status = .implemented, .category = "Editor", .label = "Close editor prompt", .macos = "Esc", .windows_linux = "Esc" },
     .{ .action = .copy_selection, .scope = .terminal, .status = .implemented, .category = "Copy and Paste", .label = "Copy selection", .macos = "Command+C", .windows_linux = "Ctrl+Shift+C / Ctrl+Insert" },
     .{ .action = .paste_clipboard, .scope = .terminal, .status = .implemented, .category = "Copy and Paste", .label = "Paste", .macos = "Command+V", .windows_linux = "Ctrl+Shift+V / Shift+Insert" },
     .{ .action = .new_tab, .scope = .app, .status = .planned, .category = "Tabs", .label = "New tab", .macos = "Command+T", .windows_linux = "Ctrl+T" },
@@ -173,4 +242,15 @@ test "terminal copy and paste shortcuts preserve remote control keys" {
 test "terminal insert compatibility shortcuts" {
     try std.testing.expectEqual(@as(?TerminalShortcut, .copy_selection), terminalShortcutForPlatform(.windows, .{ .key = .insert, .control = true }));
     try std.testing.expectEqual(@as(?TerminalShortcut, .paste_clipboard), terminalShortcutForPlatform(.windows, .{ .key = .insert, .shift = true }));
+}
+
+test "editor undo and redo shortcuts include requested control keys" {
+    try std.testing.expectEqual(@as(?EditorShortcut, .undo), editorShortcutForPlatform(.macos, .{ .key = .z, .control = true }));
+    try std.testing.expectEqual(@as(?EditorShortcut, .redo), editorShortcutForPlatform(.macos, .{ .key = .y, .control = true }));
+    try std.testing.expectEqual(@as(?EditorShortcut, .undo), editorShortcutForPlatform(.macos, .{ .key = .z, .command = true }));
+    try std.testing.expectEqual(@as(?EditorShortcut, .redo), editorShortcutForPlatform(.macos, .{ .key = .z, .command = true, .shift = true }));
+
+    try std.testing.expectEqual(@as(?EditorShortcut, .undo), editorShortcutForPlatform(.linux, .{ .key = .z, .control = true }));
+    try std.testing.expectEqual(@as(?EditorShortcut, .redo), editorShortcutForPlatform(.linux, .{ .key = .y, .control = true }));
+    try std.testing.expectEqual(@as(?EditorShortcut, null), editorShortcutForPlatform(.linux, .{ .key = .z, .control = true, .shift = true }));
 }
