@@ -1,6 +1,6 @@
 # Shellow
 
-Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台，技术路线为 `Zig + DVUI + SDL3`，当前聚焦 SSH 终端、SFTP 文件、多标签工作区和传输任务。
+Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台，技术路线为 `Zig + DVUI + SDL3 + SDL3_ttf`，当前聚焦 SSH 终端、SFTP 文件、多标签工作区和传输任务。
 
 ## Zig 版本
 
@@ -13,9 +13,13 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台，
 - `dvui 0.5.0-dev`
 - `sdl 0.4.2` / `SDL3 3.4.4`
   - 由 `dvui_sdl3` backend 依赖链引入
+- `SDL3_ttf 3.2.2`
+  - 随 Shellowo 的 DVUI fork 固定，用于 FreeType + HarfBuzz shaped text backend
 
 ### C 库
 
+- `FreeType` / `HarfBuzz`
+  - 通过 SDL3_ttf 字体系统提供 glyph rasterization、fallback 和 shaping
 - `libssh2 1.11.1`
 - `mbedTLS 3.6.6`
 - `libvterm 0.3.3`
@@ -30,7 +34,7 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台，
 - 断线后保留最后 terminal screen / scrollback snapshot
 - SFTP 远端目录浏览、基础文件操作、权限编辑和 details 面板
 - 上传/下载任务、传输进度、速度、重试、取消和覆盖确认
-- 远程文件编辑器基础能力
+- 远程文件编辑器、查找/替换、SDL3_ttf shaped text、CJK fallback 和 emoji/symbol 基础支持
 - 主题、窗口布局和下载目录持久化
 
 ## 已完成
@@ -45,7 +49,7 @@ Shellow 是一个以 FinalShell 为参考方向的原生桌面远程工作台，
 
 - 发布级凭据策略；未启用 Master Password 时当前 profile secret 没有静态加密保护
 - 传输中心体验打磨，例如历史持久化、批量控制和更细的占用说明
-- 远程编辑器查找/替换 UI、分块大文件编辑、通用编码转换和可视化 diff/merge
+- 远程编辑器分块大文件编辑、通用编码转换和可视化 diff/merge
 - 正式签名、公证、安装器与三平台运行回归
 - 更多工作台体验打磨
 
