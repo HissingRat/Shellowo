@@ -705,7 +705,7 @@ pub const System = struct {
         defer _ = c.SDL_SetRenderClipRect(self.renderer, if (previous_clip_enabled) &previous_clip else null);
 
         const align_cjk = analysis.has_cjk_baseline and !isCjkFont(options.font);
-        if (use_emoji_overlay or align_cjk) {
+        if (align_cjk) {
             try self.renderVisualTextSegments(options.font, text, options.text, start, scale, options.color, emoji_advance, use_emoji_overlay, align_cjk);
         } else if (!c.TTF_DrawRendererText(text, start.x, start.y)) return error.SdlTtfDrawFailed;
         if (use_emoji_overlay) self.renderEmojiOverlays(text, options.text, start, emoji_box, emoji_advance, render_height);
@@ -1622,7 +1622,7 @@ fn overlaySafeLayoutText(allocator: std.mem.Allocator, bytes: []const u8) !?[]u8
     if (needs_emoji_safe_text) {
         var index: usize = 0;
         while (nextEmojiCluster(bytes, &index)) |cluster| {
-            @memset(safe[cluster.start..cluster.end], ' ');
+            fillEmojiPlaceholder(safe[cluster.start..cluster.end]);
         }
         replaceEmojiJoiners(safe);
     }
@@ -1630,6 +1630,25 @@ fn overlaySafeLayoutText(allocator: std.mem.Allocator, bytes: []const u8) !?[]u8
         replaceSymbolOverlaysWithPlaceholders(bytes, safe);
     }
     return safe;
+}
+
+fn fillEmojiPlaceholder(bytes: []u8) void {
+    const nbsp = [_]u8{ 0xc2, 0xa0 };
+    const figure_space = [_]u8{ 0xe2, 0x80, 0x87 };
+
+    var pos: usize = 0;
+    var remaining = bytes.len;
+    if (remaining % 2 == 1 and remaining >= figure_space.len) {
+        @memcpy(bytes[pos..][0..figure_space.len], &figure_space);
+        pos += figure_space.len;
+        remaining -= figure_space.len;
+    }
+    while (remaining >= nbsp.len) {
+        @memcpy(bytes[pos..][0..nbsp.len], &nbsp);
+        pos += nbsp.len;
+        remaining -= nbsp.len;
+    }
+    if (remaining > 0) bytes[pos] = ' ';
 }
 
 fn replaceEmojiJoiners(bytes: []u8) void {
@@ -2000,7 +2019,29 @@ test "emoji safe layout text preserves byte offsets" {
     const safe = (try overlaySafeLayoutText(std.testing.allocator, "a😂b")).?;
     defer std.testing.allocator.free(safe);
 
-    try std.testing.expectEqualStrings("a    b", safe);
+    try std.testing.expectEqualStrings("a\xc2\xa0\xc2\xa0b", safe);
+}
+
+test "emoji safe layout text keeps trailing emoji measurable" {
+    if (!emojiOverlayEnabled()) return;
+
+    const text = "哈 😂";
+    const safe = (try overlaySafeLayoutText(std.testing.allocator, text)).?;
+    defer std.testing.allocator.free(safe);
+
+    try std.testing.expectEqual(text.len, safe.len);
+    try std.testing.expectEqualStrings("哈 \xc2\xa0\xc2\xa0", safe);
+}
+
+test "emoji safe layout text preserves odd byte clusters" {
+    if (!emojiOverlayEnabled()) return;
+
+    const text = "a👨‍👩b";
+    const safe = (try overlaySafeLayoutText(std.testing.allocator, text)).?;
+    defer std.testing.allocator.free(safe);
+
+    try std.testing.expectEqual(text.len, safe.len);
+    try std.testing.expectEqualStrings("a\xe2\x80\x87\xc2\xa0\xc2\xa0\xc2\xa0\xc2\xa0b", safe);
 }
 
 test "symbol safe layout text preserves byte offsets" {
